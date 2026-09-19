@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 import { createApp } from '../src/app.js';
 import { escapeHtml, renderPage } from '../src/html.js';
-import { listeningPort, runIfMain, startServer } from '../src/main.js';
+import { listeningPort, resolvePort, runIfMain, startServer } from '../src/main.js';
 
 async function withServer(evaluator, callback) {
   const server = createApp({ evaluator });
@@ -42,6 +42,7 @@ test('app evaluates a submitted inquiry and renders structured results', async (
         refundRequested: { type: 'boolean', probability: 0.83 },
       },
       usage: { inputTokens: 42, outputTokens: 9 },
+      responseMs: 124,
     };
   }, async baseUrl => {
     const response = await fetch(`${baseUrl}/evaluate`, {
@@ -58,6 +59,7 @@ test('app evaluates a submitted inquiry and renders structured results', async (
     assert.match(html, /83%/);
     assert.match(html, /&lt;二重請求&gt;されました。/);
     assert.match(html, /42 input \/ 9 output/);
+    assert.match(html, /Jev response 124 ms/);
   });
 });
 
@@ -192,6 +194,7 @@ test('html helpers escape values and render incomplete results', () => {
   assert.match(html, /確信度は取得できませんでした/);
   assert.match(html, /確率は取得できませんでした/);
   assert.match(html, /使用量は取得できませんでした/);
+  assert.match(html, /応答速度は取得できませんでした/);
 });
 
 test('createApp requires an evaluator', () => {
@@ -204,12 +207,10 @@ test('main starts a server and only auto-starts for its own module path', async 
   assert.equal(server.listening, true);
   await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 
-  const defaultServer = startServer(undefined, () => {});
-  await new Promise(resolve => defaultServer.once('listening', resolve));
-  await new Promise((resolve, reject) => defaultServer.close(error => error ? reject(error) : resolve()));
-
   assert.equal(listeningPort({ port: 4321 }, 0), 4321);
   assert.equal(listeningPort(null, 4321), 4321);
+  assert.equal(resolvePort('4321'), 4321);
+  assert.equal(resolvePort(''), 3000);
 
   const moduleUrl = pathToFileURL('/tmp/main.js').href;
   let called = 0;

@@ -3,7 +3,11 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from './app.js';
 import { createGatewayEvaluator } from './gateway.js';
 
-export function startServer(port = Number(process.env.PORT) || 3000, log = console.log) {
+export function resolvePort(value = process.env.PORT) {
+  return Number(value) || 3000;
+}
+
+export function startServer(port = resolvePort(), log = console.log) {
   const server = createApp({ evaluator: createGatewayEvaluator() });
   server.listen(port, () => {
     const actualPort = listeningPort(server.address(), port);

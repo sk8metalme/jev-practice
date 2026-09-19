@@ -24,6 +24,9 @@ function renderResult(result) {
     && Number.isFinite(result.usage.outputTokens)
     ? `${result.usage.inputTokens} input / ${result.usage.outputTokens} output`
     : '使用量は取得できませんでした';
+  const responseTime = Number.isFinite(result?.responseMs)
+    ? `Jev response ${Math.round(result.responseMs)} ms`
+    : '応答速度は取得できませんでした';
 
   return `
     <section class="results" aria-labelledby="result-title">
@@ -51,7 +54,10 @@ function renderResult(result) {
           <small>boolean probability</small>
         </article>
       </div>
-      <p class="usage">${escapeHtml(usage)}</p>
+      <div class="result-meta">
+        <p class="usage">${escapeHtml(usage)}</p>
+        <p class="response-time">${escapeHtml(responseTime)}</p>
+      </div>
     </section>`;
 }
 

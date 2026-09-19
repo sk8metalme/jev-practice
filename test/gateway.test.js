@@ -21,6 +21,14 @@ test('gateway evaluator sends the documented request to Jev', async () => {
   const calls = [];
   const evaluate = createGatewayEvaluator({
     apiKey: 'test-key',
+    now: (() => {
+      let timestamp = 1000;
+      return () => {
+        const current = timestamp;
+        timestamp += 123.7;
+        return current;
+      };
+    })(),
     fetchImpl: async (...args) => {
       calls.push(args);
       return {
@@ -46,7 +54,7 @@ test('gateway evaluator sends the documented request to Jev', async () => {
   assert.equal(body.questions.category.type, 'choice');
   assert.equal(body.questions.urgency.type, 'score');
   assert.equal(body.questions.refundRequested.type, 'boolean');
-  assert.deepEqual(result, successPayload);
+  assert.deepEqual(result, { ...successPayload, responseMs: 124 });
 });
 
 test('gateway evaluator rejects when API key is missing', async () => {
@@ -120,6 +128,7 @@ test('gateway evaluator uses safe fallbacks for incomplete upstream responses', 
 
   const fallbackResponse = createGatewayEvaluator({
     apiKey: 'test-key',
+    now: () => 50,
     fetchImpl: async () => ({
       ok: true,
       async json() {
@@ -131,6 +140,7 @@ test('gateway evaluator uses safe fallbacks for incomplete upstream responses', 
     model: 'typesafe-ai/jev',
     answers: {},
     usage: null,
+    responseMs: 0,
   });
 });
 

@@ -14,6 +14,7 @@ export function createGatewayEvaluator({
   apiKey = process.env.AI_GATEWAY_API_KEY,
   endpoint = EVALUATION_ENDPOINT,
   fetchImpl = globalThis.fetch,
+  now = () => Date.now(),
 } = {}) {
   if (typeof fetchImpl !== 'function') {
     throw new GatewayError('fetchが利用できません。', 500);
@@ -25,6 +26,7 @@ export function createGatewayEvaluator({
       throw new GatewayError('AI_GATEWAY_API_KEYを設定してね。', 500);
     }
 
+    const startedAt = now();
     let response;
     try {
       response = await fetchImpl(endpoint, {
@@ -61,6 +63,7 @@ export function createGatewayEvaluator({
       model: payload.model ?? MODEL_ID,
       answers: payload.answers,
       usage: payload.usage ?? null,
+      responseMs: Math.max(0, Math.round(now() - startedAt)),
     };
   };
 }

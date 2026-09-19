@@ -242,9 +242,23 @@ button span {
   font-size: 0.75rem;
 }
 
-.usage {
-  margin: 1rem 0 0;
-  text-align: right;
+.result-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.usage,
+.response-time {
+  margin: 0;
+}
+
+.response-time {
+  color: var(--mint);
+  font-size: 0.75rem;
+  font-weight: 700;
 }
 
 .empty-state,
