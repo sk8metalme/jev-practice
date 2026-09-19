@@ -46,6 +46,22 @@ npm run dev
 
 APIキーが未設定でも画面は表示できるけど、判定ボタンを使うには `AI_GATEWAY_API_KEY` が必要だよ。
 
+## 動作例
+
+問い合わせ文を入力してJevで判定すると、カテゴリ・緊急度・返金要求の可能性・使用量をまとめて確認できるよ。
+
+### 配送に関する問い合わせ
+
+![配送に関する問い合わせの判定例](docs/screenshots/jev-triage-shipping.png)
+
+### 請求・返金に関する問い合わせ
+
+![請求・返金に関する問い合わせの判定例](docs/screenshots/jev-triage-billing.png)
+
+### 身に覚えのない請求に関する問い合わせ
+
+![身に覚えのない請求に関する問い合わせの判定例](docs/screenshots/jev-triage-invisible-charge.png)
+
 ## 実装の流れ
 
 ブラウザからの入力はNode.jsサーバーが受け取り、サーバー側からVercel AI Gatewayの評価APIへ送信するよ。APIキーをブラウザへ渡さないのがポイント。
