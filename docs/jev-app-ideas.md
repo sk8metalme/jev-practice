@@ -31,7 +31,7 @@ Jevは自由文を生成するよりも、同じ入力に対して複数の型�
 
 | 優先 | アプリ案 | 入力するstate | Jevへの質問例 | MVP難易度 | 期待価値 | 主なリスク |
 | --- | --- | --- | --- | --- | --- | --- |
-| P1 | **Bug / Support Triage Board** | 問い合わせ、再現手順、環境、顧客情報 | category、urgency、返金要求、再現可能性、顧客影響 | 低 | 高 | PII、P0の見落とし |
+| P1 | **Bug / Support Triage Board** | 問い合わせ、再現手順、環境、顧客情報 | category、urgency、返金要求、再現可能性、顧客影響、範囲外シグナル | 低 | 高 | PII、P0の見落とし |
 | P1 | **PR / CI Review Gate** | PR概要、差分要約、変更ファイル、CI結果 | リスク区分、リリース準備度、テスト合格、要レビュー | 中 | 高 | 誤ったブロック、秘密情報 |
 | P1 | **Incident Alert Router** | アラート、サービス、直近デプロイ、ログ要約 | 担当ルート、緊急度、顧客影響、重複アラート | 中 | 高 | 誤ルーティング、偽陰性 |
 | P2 | **Product Feedback Inbox** | 顧客の声、プラン、利用機能、発生頻度 | テーマ、機会スコア、機能要望、解約リスク | 低 | 中 | 顧客・市場の偏り |
@@ -64,11 +64,14 @@ Jevは自由文を生成するよりも、同じ入力に対して複数の型�
 - `reproducible`: 再現手順またはログから再現可能性を判定する `boolean`
 - `customerImpact`: 継続利用や複数ユーザーへの影響を判定する `boolean`
 - `refundRequested`: 返金要求を判定する `boolean`
+- `outOfScope`: 既存4カテゴリに該当しない問い合わせを判定する `boolean`
+
+`needsHuman`はJevへ送る質問ではなく、上記6つの回答とconfidence、欠損状態をコードで集約して導出する。回答欠損、低confidence、範囲外、高緊急度、返金要求、顧客影響のいずれかは `needs-review` に送る。
 
 #### MVP
 
 1. 現在の入力画面に再現手順・顧客プランを追加する。
-2. 1回の評価で4問を送信し、結果をカードと `Jev response xxx ms` で表示する。
+2. 1回の評価で6問を送信し、結果をカードと `Jev response xxx ms` で表示する。`needsHuman`は6問の結果からコードで計算する。
 3. 結果をローカルの一覧に追加し、カテゴリ・深刻度で絞り込む。
 
 #### 注意点
@@ -86,7 +89,11 @@ Pull Requestの差分とCI結果をまとめ、レビューが必要な変更を
   "title": "決済エラー時のリトライ処理を追加",
   "diffSummary": "決済クライアントと注文状態更新を変更。認証処理は未変更。",
   "changedFiles": ["src/payment.js", "test/payment.test.js"],
-  "checks": { "unit": "passed", "lint": "passed", "coverage": 99.1 }
+  "checks": {
+    "unit": "passed",
+    "lint": "passed",
+    "coverage": { "status": "passed", "percent": 99.1, "requiredPercent": 98.0 }
+  }
 }
 ```
 
@@ -94,7 +101,7 @@ Pull Requestの差分とCI結果をまとめ、レビューが必要な変更を
 - `readiness`: 未準備・確認中・準備完了の `score`
 - `securitySensitive`: 認証・決済・個人情報に触れる変更かの `boolean`
 
-`testsPassing`はJevへの質問ではなく、必須CIのunit・lint・coverageからコードで決定する値。Jevがテスト合否を推測したり上書きしたりしない。
+`testsPassing`はJevへの質問ではなく、unit・lintが`passed`、coverageの`status`が`passed`、かつ`percent >= requiredPercent`（この例では98.0）を満たす場合だけコードで`true`にする値。項目のmissing、failure、閾値未満はfalseとし、Jevがテスト合否を推測したり上書きしたりしない。
 
 #### MVP
 

@@ -197,14 +197,35 @@ TypeSafe公式はDoomやWikiracingを、コミュニティはMario、Pac-Man、T
 }
 ```
 
+Stage Aの回答後、コード側で候補IDを解決し、検証済みの引数と元の要求を含む`selectedInvocation`をStage Bへ渡す。Jevには未検証の引数や任意の実行コマンドを生成させない。
+
+```json
+{
+  "selectedAction": {
+    "id": "read_config",
+    "description": "設定を読む",
+    "risk": "read-only"
+  },
+  "selectedInvocation": {
+    "actionId": "read_config",
+    "validatedArguments": { "path": "config/app.json" },
+    "requestContext": {
+      "request": "設定ファイルのタイムアウトを確認して",
+      "currentNode": "operations"
+    }
+  },
+  "projectRules": ["秘密情報の外部送信は禁止", "変更は承認後のみ"]
+}
+```
+
 #### 質問とポリシー
 
 - **Stage Aの`nextAction`**: `Choice`。`allowedActions`の候補IDに加えて`clarify`と`stop`を含める。候補はコード側で生成し、Jevが候補外や`blockedActions`のIDを返しても拒否する。
 - **Stage Bの`riskLevel`**: `Score`。Stage Aでコードが解決した`selectedAction`だけをstateに入れ、read-only、可逆変更、承認必須、不可逆・禁止の意味を評価する。選択前の候補一覧をまとめて評価しない。
-- **Stage Bの`containsSecretEgress`**: `Noul / boolean`。`selectedAction`が秘密情報を外部へ送るかを評価する。候補一覧や無関係なblocked actionは参照しない。
+- **Stage Bの`containsSecretEgress`**: `Noul / boolean`。検証済み引数と元の要求を含む`selectedInvocation`が秘密情報を外部へ送るかを評価する。候補一覧や無関係なblocked actionは参照しない。
 - **Stage Bの`requiresHumanApproval`**: `Noul / boolean`。「このselectedActionはユーザー確認なしに実行してよいか」ではなく、「このselectedActionには人の承認が必要か」を直接問う。trueは必ず確認ルートに送る。
 
-コード側の既定動作は、blocked actionと禁止ルールをJev評価前に停止し、Stage Aの候補外・回答欠損・未知IDも停止する。Stage Aで選ばれたIDをコード側で`selectedAction`へ解決してからStage Bを呼び、コード定義のriskを権威ある値として扱う。Stage Bのsecret egressは停止、`requiresHumanApproval`は確認、低confidenceは再取得または人手確認へ送る。Jevのrisk評価は選択済みactionの意味的な補助判定であり、単独で実行許可を与えない。
+コード側の既定動作は、blocked actionと禁止ルールをJev評価前に停止し、Stage Aの候補外・回答欠損・未知IDも停止する。Stage Aで選ばれたIDをコード側で`selectedAction`へ解決し、引数を検証した`selectedInvocation`を作ってからStage Bを呼ぶ。コード定義のriskを権威ある値として扱い、引数・宛先・元の要求によって秘密情報の外部送信になる場合もStage Bで検出する。Stage Bのsecret egressは停止、`requiresHumanApproval`は確認、低confidenceは再取得または人手確認へ送る。Jevのrisk評価は選択済みactionの意味的な補助判定であり、単独で実行許可を与えない。
 
 #### ローカルMVP
 
@@ -219,6 +240,7 @@ TypeSafe公式はDoomやWikiracingを、コミュニティはMario、Pac-Man、T
 - 候補外アクションが一度も実行扱いにならないこと。
 - blocked actionを候補に混ぜても、read-onlyの`read_config`が誤って停止されないこと。
 - selected actionのsecret egressがすべて停止または人手確認になること。
+- 許可されたactionでも、検証済み引数や宛先によってsecret egressになるfixtureが停止または人手確認になること。
 - `requiresHumanApproval`がtrue、低confidence、回答欠損のケースが実行扱いにならないこと。
 - Stage Aの候補外IDとStage Bのselected action不一致が実行扱いにならないこと。
 - golden labelに対するroute accuracy、危険操作のrecall、confidence帯ごとの誤判定を記録。
@@ -302,9 +324,12 @@ TypeSafe公式はDoomやWikiracingを、コミュニティはMario、Pac-Man、T
 - `urgency`: `Score`。現行アプリと同じ0〜2の`low`、`medium`、`high`を使う。
 - `refundRequested`: `Noul / boolean`。現行アプリと同じ返金要求の命題を使う。
 - `reproducible`: `Noul / boolean`。再現手順と環境情報から再現可能性を判定する追加質問。
-- `needsHuman`: `Noul / boolean`。高リスク・低confidence・欠損回答を人手確認へ送る追加質問。
+- `customerImpact`: `Noul / boolean`。継続利用や複数ユーザーへの影響を判定する追加質問。
+- `outOfScope`: `Noul / boolean`。4つの既存カテゴリに該当しない問い合わせかを判定するboundedな追加シグナル。
 
-カテゴリ・緊急度・返金要求は既存アプリのschema、ラベル、Score範囲と互換にする。`intent`という別名や4段階のseverityをそのまま導入しない。プロダクト固有の細かい分類が必要なら、既存`category`からコード側のmappingを明示的に作り、保存済みデータと表示ロジックを移行してから使う。追加質問は一覧の優先順位と確認ルートに使い、P0や返金はconfidenceが高くても自動処理しない。
+カテゴリ・緊急度・返金要求は既存アプリのschema、ラベル、Score範囲と互換にする。`intent`という別名や4段階のseverityをそのまま導入しない。プロダクト固有の細かい分類が必要なら、既存`category`からコード側のmappingを明示的に作り、保存済みデータと表示ロジックを移行してから使う。`outOfScope`は既存の保存値を置き換えず、未知カテゴリを`needs-review`へ送るための別シグナルとして扱う。
+
+`needsHuman`はJevへ尋ねず、`category`・`urgency`・`refundRequested`・`reproducible`・`customerImpact`・`outOfScope`の回答、各confidence、欠損状態をコードで検証した後に導出する。たとえば、回答欠損、低confidence、`outOfScope=true`、`urgency=high`、`refundRequested=true`、`customerImpact=true`のいずれかがあればtrueとし、trueは`needs-review`へ送る。これにより、独立評価されたJev回答が人手確認の必要性を上書きしない。P0や返金はconfidenceが高くても自動処理しない。
 
 #### ローカルMVP
 
@@ -316,8 +341,8 @@ TypeSafe公式はDoomやWikiracingを、コミュニティはMario、Pac-Man、T
 #### 評価
 
 - 日本語の問い合わせ60件以上を手動ラベル。
-- intent macro-F1、重大障害recall、返金要求のprecisionを測る。
-- 低confidence・欠損回答・未知カテゴリを`needs-review`へ送るテストを追加。
+- `category` macro-F1、`outOfScope`のrecall、重大障害recall、返金要求のprecisionを測る。
+- 低confidence・欠損回答・`outOfScope=true`を`needs-review`へ送るテストを追加。
 - PIIマスキング前後で判定が変わるケースを用意する。
 
 #### 差別化とリスク
@@ -339,7 +364,11 @@ PRの差分要約・CI結果・変更ファイルから、レビューの観点�
     "diffSummary": "決済クライアントと注文状態更新を変更",
     "changedFiles": ["src/payment.js", "test/payment.test.js"]
   },
-  "checks": { "unit": "passed", "lint": "passed", "coverage": 99.1 },
+  "checks": {
+    "unit": "passed",
+    "lint": "passed",
+    "coverage": { "status": "passed", "percent": 99.1, "requiredPercent": 98.0 }
+  },
   "policies": ["認証・決済変更は担当者レビュー必須"]
 }
 ```
@@ -349,7 +378,7 @@ PRの差分要約・CI結果・変更ファイルから、レビューの観点�
 - `securitySensitive`: `Noul / boolean`。
 - `reviewRoute`: `Choice`。通常レビュー、security、owner、human escalation。
 
-`testsPassing`はJevの質問ではなく、必須CIの`unit`、`lint`、`coverage`をコードで読み、全てpassした場合だけ`true`にする決定的な値。missingやfailureはfalseとする。
+`testsPassing`はJevの質問ではなく、必須CIの`unit`、`lint`、`coverage`をコードで読み、`unit`と`lint`が`passed`、`coverage.status`が`passed`、かつ`coverage.percent >= coverage.requiredPercent`（この例では98.0）を満たした場合だけ`true`にする決定的な値。項目のmissing、failure、閾値未満はfalseとする。
 
 CI・CODEOWNERS・secret scannerが主判定で、`testsPassing`もCIの決定的な結果からコードで作る。Jevの結果は意味的なレビュー観点と担当ルートの優先順位に使い、Jev単独でmerge・deploy・blockを確定しない。
 
@@ -387,6 +416,15 @@ CSVや文書レコードを行単位で検査し、機械的に判定できる�
     "receiptText": "Tokyo Taxi 2026-09-18"
   },
   "schema": { "category": "travel", "currency": "JPY" },
+  "duplicateCandidates": [
+    {
+      "id": "EXP-1042",
+      "date": "2026-09-17",
+      "amount": 12750,
+      "currency": "JPY",
+      "merchant": "Tokyo Taxi"
+    }
+  ],
   "policy": "出張交通費は領収書の内容と一致し、業務目的が説明できること。"
 }
 ```
@@ -394,11 +432,11 @@ CSVや文書レコードを行単位で検査し、機械的に判定できる�
 - `semanticMatch`: `Noul / boolean`。説明と領収書・規程の意味が一致するか。
 - `hasMissingEvidence`: `Noul / boolean`。必要な領収書・説明・出典が不足しているか。
 - `hasPolicyMismatch`: `Noul / boolean`。規程に反する意味的な不一致があるか。
-- `hasPossibleDuplicate`: `Noul / boolean`。重複候補として別レコードとの確認が必要か。
+- `hasPossibleDuplicate`: `Noul / boolean`。stateに渡した最大5件の`duplicateCandidates`と意味的に重複する可能性があり、別レコードとの確認が必要か。候補がない場合はこの質問を送らず、コード側で`duplicateCheck=not-run`として扱う。
 - `severity`: `Score`。情報、要修正、要確認、処理停止。
 - `needsHuman`: `Noul / boolean`。
 
-金額合計、日付形式、必須列、重複ID、通貨換算はコードで検証する。Jevには1つの`issueType`を選ばせず、独立したissue flagを評価させる。コード側でtrueになったflagを`issueTypes`の配列へ集約し、全flagがfalseのときだけ`none`とする。これにより、証拠不足・規程違反・重複候補が同時に存在する行を隠さない。
+金額合計、日付形式、必須列、重複ID、通貨換算はコードで検証する。重複の意味判定には、検索・絞り込み済みの最大5件の`duplicateCandidates`だけを渡し、候補がないのにJevへ推測させない。Jevには1つの`issueType`を選ばせず、独立したissue flagを評価させる。コード側でtrueになったflagを`issueTypes`の配列へ集約し、全flagがfalseのときだけ`none`とする。これにより、証拠不足・規程違反・重複候補が同時に存在する行を隠さない。
 
 #### ローカルMVP
 
