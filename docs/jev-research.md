@@ -15,8 +15,8 @@ JevはLLMの代替というより、**コードが制御するワークフロー
 | 1 | **Confidence-Gated Agent Tool Router** | Jevの「選ぶ・危険度を測る・不確実なら止める」を最小のローカルデモで検証でき、実際の副作用をシミュレーションに閉じ込められる。 |
 | 2 | **Citation / Response Verifier** | 生成LLMとJevを組み合わせるCascadeを可視化でき、正解データと「根拠があるか」を分離して評価しやすい。 |
 | 3 | **Bug / Support Triage Board** | 既存のJev Triageをそのまま拡張でき、問い合わせ・緊急度・人手確認・レスポンス時間を再利用できる。 |
-| 4 | **PR / CI Review Gate** | 開発者向け価値が高く、公開実例も多い。ただしコードレビュー領域は競合が多く、最終判断は既存のCIと人に残す必要がある。 |
-| 5 | **CSV / Document Quality Auditor** | 大量データを1行ずつ意味判定するJevの経済性を検証でき、数値・日付の厳密処理をコードへ分離しやすい。 |
+| 4 | **CSV / Document Quality Auditor** | 大量データを1行ずつ意味判定するJevの経済性を検証でき、数値・日付の厳密処理をコードへ分離しやすい。 |
+| 5 | **PR / CI Review Gate** | 開発者向け価値が高く、公開実例も多い。ただしコードレビュー領域は競合が多く、最終判断は既存のCIと人に残す必要がある。 |
 
 ブラウザ操作、ゲーム、ロボティクス、トレーディングはJevの速度を見せるデモとして魅力的だけど、最初の実装としては外部状態・副作用・検証コストが大きい。採用・与信・医療・法務の最終判断は、高リスクかつ公平性・説明責任の検証が必要なため、現段階では実装候補から外す。
 
@@ -92,6 +92,8 @@ TypeSafeのローンチ記事は、Jevの入力価格を`$0.042 / 1M input token
 
 confidenceは「正しさの保証」ではなく、行動を変えるための補助信号。低confidenceは人へ、高confidenceでも破壊的な処理にはより高い閾値や確認を要求する。閾値は候補ごとのラベル付きデータで決める。
 
+boolean / Noulの確率 `p` をconfidenceとしてそのまま扱わない。命題が真である確率が `p` のとき、命題の確信度は `max(p, 1-p)` とし、`p` 自体は「真に寄せる閾値判定」に使う。例えば `p >= 0.9` は真として進める候補、`p <= 0.1` は偽として進める候補、`0.1 < p < 0.9` は不確実として確認へ送る。Choiceは選択肢の最大確率、Scoreはlegendの最大確率をconfidenceとして記録する。
+
 ## 3. 公開事例から見えた利用パターン
 
 ### 3.1 エージェントの行動選択・ガードレール
@@ -146,28 +148,30 @@ TypeSafe公式はDoomやWikiracingを、コミュニティはMario、Pac-Man、T
 
 | # | 候補 | Jevが決めること | stateの中心 | MVP難易度 | 証拠 / 先行例 | 主な注意 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | **Confidence-Gated Agent Tool Router** | 次の許可済みツール、危険度、要確認 | request、現在ノード、許可候補、ルール | 中 | A/B:公式Intent Routing、Playground tool router、pi-warden | 選択結果を実行コマンドに直結しない |
-| 2 | **Citation / Response Verifier** | 根拠が支持・部分支持・不支持か | 質問、抜粋、ドラフト回答、出典 | 中 | A/B:公式Use Case Map、OpenRouter Cascade | 支持判定は真実性の証明ではない |
-| 3 | **Bug / Support Triage Board** | 種別、緊急度、再現性、顧客影響、担当 | ticket、account、product、既知障害 | 低 | A/B:公式Support例、既存アプリ、Jev Examples | P0・返金・PIIは人手確認 |
-| 4 | **PR / CI Review Gate** | リスク、レビュー観点、担当、準備度 | diff要約、変更ファイル、CI、ポリシー | 中 | B:jev-review、clarity-judge | 自動merge・自動blockをしない |
-| 5 | **CSV / Document Quality Auditor** | 意味的な欠損、異常、分類、要確認 | row、schema、policy、source metadata | 中 | A/B:CSV validation、pg-jev、paper screening | 数値・日付・件数はコードで検証 |
-| 6 | **Incident / Log Triage Router** | アラートの担当、優先度、顧客影響、重複 | alert、service、deploy、ログ要約 | 中 | B/C:Jev Logs、log triage記事 | 通知抑制の唯一の根拠にしない |
-| 7 | **LLM Tool-Call Firewall** | jailbreak、secret、policy violation、harm | prompt、tool call、resource、policy | 中 | A/B:公式Guardrail、ai-firewall、tripwire | fail closedと監査ログが必要 |
-| 8 | **Agent Progress / Stagnation Gate** | 継続、警告、再計画、停止 | 目標、履歴、直近結果、反復回数 | 中 | B:ProgressGate、pi-warden | 停止判定で正当な長時間処理を壊す可能性 |
-| 9 | **Model Router** | 小型LLM、強いLLM、コード、人のどれへ送るか | request、domain、difficulty、risk、budget | 中 | B:jev-router群、公式Intent Routing | 高難度を安価モデルへ誤送しない |
-| 10 | **Context Compaction / Relevance Filter** | 残すtool result、捨てるノイズ、再取得要否 | agent history、tool result、goal | 中 | B:fast-jev-compaction、winnow | 重要な証拠を削除しない評価が必要 |
+| 1 | **Confidence-Gated Agent Tool Router** | 次の許可済みツール、危険度、要確認 | request、現在ノード、許可候補、ルール | 中 | A/B: [公式Intent Routing](https://docs.typesafe.ai/patterns/intent-routing)、[tool router](https://github.com/TypeSafeAI/typesafe-playground/blob/main/docs/tool-router.md)、[pi-warden](https://github.com/DevMortimer/pi-warden) | 選択結果を実行コマンドに直結しない |
+| 2 | **Citation / Response Verifier** | 根拠が支持・部分支持・不支持か | 質問、抜粋、ドラフト回答、出典 | 中 | A/B: [公式Use Case Map](https://docs.typesafe.ai/concepts/use-case-map)、[OpenRouter Cascade](https://openrouter.ai/docs/cookbook/evaluate-and-optimize/jev-verified-cascade) | 支持判定は真実性の証明ではない |
+| 3 | **Bug / Support Triage Board** | 種別、緊急度、再現性、顧客影響、担当 | ticket、account、product、既知障害 | 低 | A/B: [Workflow Evals](https://evals.typesafe.ai/)、[既存アプリ](../README.md)、[Jev Examples](https://github.com/rajivkuriakose/typesafe-jev-examples) | P0・返金・PIIは人手確認 |
+| 4 | **CSV / Document Quality Auditor** | 意味的な欠損、異常、分類、要確認 | row、schema、policy、source metadata | 中 | A/B: [jev-curate](https://github.com/AkashPriyadarshii/jev-curate)、[pg-jev](https://github.com/realZachi/pg-jev)、[TiAb Review](https://github.com/youkiti/tiab-review-plugin) | 数値・日付・件数はコードで検証 |
+| 5 | **PR / CI Review Gate** | リスク、レビュー観点、担当、準備度 | diff要約、変更ファイル、CI、ポリシー | 中 | B: [jev-review](https://github.com/devagrawal09/jev-review)、[clarity-judge](https://github.com/TypeSafeAI/clarity-judge) | 自動merge・自動blockをしない |
+| 6 | **Incident / Log Triage Router** | アラートの担当、優先度、顧客影響、重複 | alert、service、deploy、ログ要約 | 中 | B/C: [Jev Logs](https://github.com/reachjalil/jevlogs)、[log triage記事](https://dev.to/reachjalil/how-we-tuned-typesafe-jev-for-log-triage-without-alert-storms-1ei0) | 通知抑制の唯一の根拠にしない |
+| 7 | **LLM Tool-Call Firewall** | jailbreak、secret、policy violation、harm | prompt、tool call、resource、policy | 中 | A/B: [LLM guardrails](https://docs.typesafe.ai/cookbooks/llm_guardrails)、[tripwire](https://github.com/noelzappy/tripwire)、[jev-secret-detection](https://github.com/teyhouse/jev-secret-detection) | fail closedと監査ログが必要 |
+| 8 | **Agent Progress / Stagnation Gate** | 継続、警告、再計画、停止 | 目標、履歴、直近結果、反復回数 | 中 | B: [ProgressGate](https://github.com/AshutoshVJTI/progressgate)、[pi-warden](https://github.com/DevMortimer/pi-warden) | 停止判定で正当な長時間処理を壊す可能性 |
+| 9 | **Model Router** | 小型LLM、強いLLM、コード、人のどれへ送るか | request、domain、difficulty、risk、budget | 中 | B: [jev-router](https://github.com/gargpratyush/jev-router)、[公式Intent Routing](https://docs.typesafe.ai/patterns/intent-routing) | 高難度を安価モデルへ誤送しない |
+| 10 | **Context Compaction / Relevance Filter** | 残すtool result、捨てるノイズ、再取得要否 | agent history、tool result、goal | 中 | B: [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction)、[SkillRanker](https://github.com/Dicklesworthstone/skillranker) | 重要な証拠を削除しない評価が必要 |
 | 11 | **Browser Action Selector** | click、select、scroll、wait、done、blocked | DOM/ARIA要素表、目標、直近結果 | 高 | B:Jev Ultrafast、jev-browser | Webサイトごとの変化、認証、副作用 |
-| 12 | **Semantic Code / Document Search** | 候補ファイル・関数・文書の関連度 | query、candidate、必要な証拠 | 低〜中 | B:Every、blink、Jev Search | 検索漏れとランキングを別評価 |
-| 13 | **Natural-Language SQL Filter** | 行が条件に合うか、分類、順位 | row、自然言語条件、既存列 | 中 | B:pg-jev、sqlite3-jev | 大量行のコストとデータ漏洩 |
-| 14 | **Research Paper Screening** | inclusion、exclusion、topic、evidence quality | title、abstract、criteria、metadata | 中 | B:TiAb Review、1kpapers | 医学判断ではなく文献選別に限定 |
-| 15 | **Invoice / Expense Policy Checker** | 費目、規程適合、領収書、承認要否 | invoice、receipt、order、policy | 中 | A:公式Invoice workflow、Use Case Map | 支払いの最終承認を自動化しない |
+| 12 | **Semantic Code / Document Search** | 候補ファイル・関数・文書の関連度 | query、candidate、必要な証拠 | 低〜中 | B: [Every](https://github.com/sufianetaouil/every)、[blink](https://github.com/ellipsis-dev/blink)、[Jev Search](https://github.com/superagents-lab/jev-search) | 検索漏れとランキングを別評価 |
+| 13 | **Natural-Language SQL Filter** | 行が条件に合うか、分類、順位 | row、自然言語条件、既存列 | 中 | B: [pg-jev](https://github.com/realZachi/pg-jev)、[sqlite3-jev](https://github.com/mattn/sqlite3-jev) | 大量行のコストとデータ漏洩 |
+| 14 | **Research Paper Screening** | inclusion、exclusion、topic、evidence quality | title、abstract、criteria、metadata | 中 | B: [TiAb Review](https://github.com/youkiti/tiab-review-plugin)、[1kpapers](https://madewithjev.com/builds/1kpapers) | 医学判断ではなく文献選別に限定 |
+| 15 | **Invoice / Expense Policy Checker** | 費目、規程適合、領収書、承認要否 | invoice、receipt、order、policy | 中 | A: [Workflow Evals](https://evals.typesafe.ai/)、[Use Case Map](https://docs.typesafe.ai/concepts/use-case-map) | 支払いの最終承認を自動化しない |
 | 16 | **Email / Lead Intent Router** | 問い合わせ種別、購入意図、担当、緊急度 | email、account、campaign、ICP | 低〜中 | B:email workflow、Xのlead分析投稿 | 顧客評価のバイアス、個人情報 |
-| 17 | **Content / Brand Preflight** | ブランド適合、規制表現、根拠、audience fit | post、channel、region、policy | 低〜中 | D/C:広告・投稿スコアリング、AI slop detector | 法務・医療の最終判断は人へ |
-| 18 | **Moderation / Community Safety** | allow、warn、review、block、危険度 | message、前後文脈、channel rules、user state | 中 | A/B:公式Moderation、Discord bot | 誤ブロック、異議申し立て、公平性 |
+| 17 | **Content / Brand Preflight** | ブランド適合、規制表現、根拠、audience fit | post、channel、region、policy | 低〜中 | C/D: [Made with Jev](https://madewithjev.com/)、[Jev Web Analyzer](https://github.com/replynodes/jev-web-analyzer) | 法務・医療の最終判断は人へ |
+| 18 | **Moderation / Community Safety** | allow、warn、review、block、危険度 | message、前後文脈、channel rules、user state | 中 | A/B: [Use Case Map](https://docs.typesafe.ai/concepts/use-case-map)、[Jev Moderation Bot](https://github.com/brainstormity/Jev-Moderation-Bot) | 誤ブロック、異議申し立て、公平性 |
 | 19 | **Structured Record Normalizer** | boundedな属性・カテゴリ・欠損の判定 | raw record、schema、allowed values | 低 | A:公式Structured Data Extraction | 自由文の完全な抽出・生成には使わない |
 | 20 | **Realtime Game / Device Decision Lab** | 次の行動、状態遷移、危険回避 | 構造化された環境状態、候補行動 | 高 | A/B:Doom、Mario、Browser/robotics実例 | 現実の機器・資金に接続しない |
 
 ## 5. 上位5案の詳細設計
+
+詳細節は設計を比較しやすい順に掲載している。候補の推奨順位と合計点の正本は、冒頭の結論と第7節のスコア表であり、詳細節の番号順とは別に扱う。
 
 ### 5.1 Confidence-Gated Agent Tool Router
 
@@ -183,7 +187,9 @@ TypeSafe公式はDoomやWikiracingを、コミュニティはMario、Pac-Man、T
   "currentNode": "operations",
   "allowedActions": [
     { "id": "read_config", "description": "設定を読む", "risk": "read-only" },
-    { "id": "modify_config", "description": "設定を変更する", "risk": "approval-required" },
+    { "id": "modify_config", "description": "設定を変更する", "risk": "approval-required" }
+  ],
+  "blockedActions": [
     { "id": "export_secret", "description": "秘密情報を外部へ送る", "risk": "blocked" }
   ],
   "projectRules": ["秘密情報の外部送信は禁止", "変更は承認後のみ"],
@@ -193,12 +199,12 @@ TypeSafe公式はDoomやWikiracingを、コミュニティはMario、Pac-Man、T
 
 #### 質問とポリシー
 
-- `nextAction`: `Choice`。候補IDに加えて`clarify`と`stop`を含む。候補はコード側で生成し、Jevが候補外のIDを返しても拒否する。
-- `riskLevel`: `Score`。read-only、可逆変更、承認必須、不可逆・禁止の段階。
-- `containsSecretEgress`: `Noul / boolean`。要求や候補に秘密情報の外部送信が含まれるか。
-- `needsHumanApproval`: `Noul / boolean`。ユーザー確認なしで実行してよいか。
+- **Stage Aの`nextAction`**: `Choice`。`allowedActions`の候補IDに加えて`clarify`と`stop`を含める。候補はコード側で生成し、Jevが候補外や`blockedActions`のIDを返しても拒否する。
+- **Stage Bの`riskLevel`**: `Score`。Stage Aでコードが解決した`selectedAction`だけをstateに入れ、read-only、可逆変更、承認必須、不可逆・禁止の意味を評価する。選択前の候補一覧をまとめて評価しない。
+- **Stage Bの`containsSecretEgress`**: `Noul / boolean`。`selectedAction`が秘密情報を外部へ送るかを評価する。候補一覧や無関係なblocked actionは参照しない。
+- **Stage Bの`requiresHumanApproval`**: `Noul / boolean`。「このselectedActionはユーザー確認なしに実行してよいか」ではなく、「このselectedActionには人の承認が必要か」を直接問う。trueは必ず確認ルートに送る。
 
-コード側の既定動作は、候補外・回答欠損・secret egress・禁止ルール一致を即停止。低confidenceは確認へ、read-onlyだけ低い閾値で許可し、変更・外部送信・削除は高い閾値と明示確認を要求する。
+コード側の既定動作は、blocked actionと禁止ルールをJev評価前に停止し、Stage Aの候補外・回答欠損・未知IDも停止する。Stage Aで選ばれたIDをコード側で`selectedAction`へ解決してからStage Bを呼び、コード定義のriskを権威ある値として扱う。Stage Bのsecret egressは停止、`requiresHumanApproval`は確認、低confidenceは再取得または人手確認へ送る。Jevのrisk評価は選択済みactionの意味的な補助判定であり、単独で実行許可を与えない。
 
 #### ローカルMVP
 
@@ -211,7 +217,10 @@ TypeSafe公式はDoomやWikiracingを、コミュニティはMario、Pac-Man、T
 
 - 読み取り、可逆変更、不可逆変更、秘密情報、曖昧な依頼を含む30件以上のfixture。
 - 候補外アクションが一度も実行扱いにならないこと。
-- secret egressがすべて停止または人手確認になること。
+- blocked actionを候補に混ぜても、read-onlyの`read_config`が誤って停止されないこと。
+- selected actionのsecret egressがすべて停止または人手確認になること。
+- `requiresHumanApproval`がtrue、低confidence、回答欠損のケースが実行扱いにならないこと。
+- Stage Aの候補外IDとStage Bのselected action不一致が実行扱いにならないこと。
 - golden labelに対するroute accuracy、危険操作のrecall、confidence帯ごとの誤判定を記録。
 
 #### 差別化とリスク
@@ -230,6 +239,9 @@ TypeSafe公式はDoomやWikiracingを、コミュニティはMario、Pac-Man、T
 {
   "question": "返金期限は何日ですか？",
   "draftAnswer": "購入から30日以内なら返金できます。",
+  "claims": [
+    { "id": "claim-1", "text": "購入から30日以内なら返金できます。", "citedEvidenceIds": ["doc-12"] }
+  ],
   "evidence": [
     { "id": "doc-12", "text": "未使用品は購入後30日以内に返品できます。" },
     { "id": "doc-19", "text": "セール品は返品対象外です。" }
@@ -244,22 +256,23 @@ TypeSafe公式はDoomやWikiracingを、コミュニティはMario、Pac-Man、T
 - `evidenceCoverage`: `Score`。主要主張の大半を支える、部分的、ほぼ支えない、の段階。
 - `containsUncitedClaim`: `Noul / boolean`。根拠にない追加主張があるか。
 - `needsEscalation`: `Noul / boolean`。人または強いモデルの再確認が必要か。
+- `supports_<claimId>_<evidenceId>`: claimとevidenceの組み合わせごとに生成するboundedな`Noul / boolean`。trueになったIDをコード側で`supportingEvidenceIds`へ集約し、選択された根拠を明示する。claim数とevidence数に上限を置き、質問キーはコードで生成する。
 
-supportedかつconfidenceが十分なら回答を返す。それ以外は「根拠不足」として追加検索・強いLLM・人へ送る。Jevに回答文を書かせない。
+質問の作成、claimの分割、IDの対応付け、`supportingEvidenceIds`の集約はコード側で行い、Jevに自由なIDや回答文を生成させない。`send`は、全claimに1つ以上のsupportingEvidenceIdsがあり、supportがsupported、uncited claimが高確信でfalse、needsEscalationが高確信でfalse、かつ各閾値を満たす場合だけ許可する。insufficient-evidence、根拠ID欠損、シグナル間の不一致、低confidenceは`retrieve-more`または`handoff`へ送る。
 
 #### ローカルMVP
 
 1. 質問、根拠抜粋、ドラフト回答を貼り付ける画面。
-2. 判定された根拠ID、支持状態、confidence、確認理由を表示。
+2. claimごとのsupportingEvidenceIds、支持状態、confidence、確認理由を表示。
 3. `send`、`retrieve-more`、`handoff`の3ルートを表示。
 4. 同じ入力で質問文を変えたA/B比較を保存。
 
 #### 評価
 
-- 50件以上の合成QAを、supported / partial / unsupportedで手動ラベル。
-- 誤ってsendしたunsupported回答の割合を最重要指標にする。
-- recallを上げるために過剰handoffになっていないか、human-review率も測る。
-- evidenceの追加・削除で判定がどう変わるかをテストする。
+- 50件以上の合成QAを、supported / partially-supported / unsupported / insufficient-evidenceの4クラスで手動ラベルする。
+- 誤ってsendしたunsupported回答、未引用主張、needsEscalationを見逃した割合を最重要指標にする。
+- claimごとのsupportingEvidenceIdsのprecision / recallと、過剰handoffになっていないかを測る。
+- evidenceの追加・削除、複数claim、1claimに複数evidence、根拠なしclaimで判定がどう変わるかをテストする。
 
 #### 差別化とリスク
 
@@ -285,13 +298,13 @@ supportedかつconfidenceが十分なら回答を返す。それ以外は「根�
 }
 ```
 
-- `intent`: `Choice`。bug、billing、feature-request、information、other。
-- `urgency`: `Score`。待てる、不便、業務影響、重大障害。
-- `refundRequested`: `Noul / boolean`。
-- `reproducible`: `Noul / boolean`。
-- `needsHuman`: `Noul / boolean`。
+- `category`: `Choice`。現行アプリと同じ`billing`、`account`、`technical`、`shipping`を使う。
+- `urgency`: `Score`。現行アプリと同じ0〜2の`low`、`medium`、`high`を使う。
+- `refundRequested`: `Noul / boolean`。現行アプリと同じ返金要求の命題を使う。
+- `reproducible`: `Noul / boolean`。再現手順と環境情報から再現可能性を判定する追加質問。
+- `needsHuman`: `Noul / boolean`。高リスク・低confidence・欠損回答を人手確認へ送る追加質問。
 
-カテゴリ・緊急度・返金要求は既存アプリと互換にし、追加の質問は一覧の優先順位と確認ルートに使う。P0や返金はconfidenceが高くても自動処理しない。
+カテゴリ・緊急度・返金要求は既存アプリのschema、ラベル、Score範囲と互換にする。`intent`という別名や4段階のseverityをそのまま導入しない。プロダクト固有の細かい分類が必要なら、既存`category`からコード側のmappingを明示的に作り、保存済みデータと表示ロジックを移行してから使う。追加質問は一覧の優先順位と確認ルートに使い、P0や返金はconfidenceが高くても自動処理しない。
 
 #### ローカルMVP
 
@@ -333,11 +346,12 @@ PRの差分要約・CI結果・変更ファイルから、レビューの観点�
 
 - `risk`: `Choice`。low、review-required、high、blocked。
 - `readiness`: `Score`。未準備、確認中、準備完了。
-- `testsPassing`: `Noul / boolean`。
 - `securitySensitive`: `Noul / boolean`。
 - `reviewRoute`: `Choice`。通常レビュー、security、owner、human escalation。
 
-CI・CODEOWNERS・secret scannerが主判定。Jevの結果はレビュー優先順位に使い、Jev単独でmerge・deploy・blockを確定しない。
+`testsPassing`はJevの質問ではなく、必須CIの`unit`、`lint`、`coverage`をコードで読み、全てpassした場合だけ`true`にする決定的な値。missingやfailureはfalseとする。
+
+CI・CODEOWNERS・secret scannerが主判定で、`testsPassing`もCIの決定的な結果からコードで作る。Jevの結果は意味的なレビュー観点と担当ルートの優先順位に使い、Jev単独でmerge・deploy・blockを確定しない。
 
 #### ローカルMVP
 
@@ -349,6 +363,7 @@ CI・CODEOWNERS・secret scannerが主判定。Jevの結果はレビュー優先
 
 - low-risk、認証変更、決済変更、テスト欠落、秘密情報混入のfixtureを30件以上。
 - high-risk変更のrecallと、通常変更を過剰にblockしないprecisionを測る。
+- CIがpass、failure、missingの各ケースで、Jevがテスト合否を上書きできないことを確認する。
 - diffに未信頼の指示文が含まれるprompt injectionケースをテストする。
 
 #### 差別化とリスク
@@ -377,11 +392,13 @@ CSVや文書レコードを行単位で検査し、機械的に判定できる�
 ```
 
 - `semanticMatch`: `Noul / boolean`。説明と領収書・規程の意味が一致するか。
-- `issueType`: `Choice`。none、missing-evidence、policy-mismatch、possible-duplicate、other。
+- `hasMissingEvidence`: `Noul / boolean`。必要な領収書・説明・出典が不足しているか。
+- `hasPolicyMismatch`: `Noul / boolean`。規程に反する意味的な不一致があるか。
+- `hasPossibleDuplicate`: `Noul / boolean`。重複候補として別レコードとの確認が必要か。
 - `severity`: `Score`。情報、要修正、要確認、処理停止。
 - `needsHuman`: `Noul / boolean`。
 
-金額合計、日付形式、必須列、重複ID、通貨換算はコードで検証。Jevは説明・証拠・規程の意味的な対応だけを判定する。
+金額合計、日付形式、必須列、重複ID、通貨換算はコードで検証する。Jevには1つの`issueType`を選ばせず、独立したissue flagを評価させる。コード側でtrueになったflagを`issueTypes`の配列へ集約し、全flagがfalseのときだけ`none`とする。これにより、証拠不足・規程違反・重複候補が同時に存在する行を隠さない。
 
 #### ローカルMVP
 
@@ -392,7 +409,8 @@ CSVや文書レコードを行単位で検査し、機械的に判定できる�
 
 #### 評価
 
-- 正常、欠損、意味不一致、重複候補、曖昧な説明を含む100行以上。
+- 正常、欠損、意味不一致、重複候補、複数問題、曖昧な説明を含む100行以上。
+- issue flagごとのprecision / recallと、複数flagを同時に検出できる割合を測る。
 - 問題検出のprecision / recall、100行あたりのusage、p50/p95を測る。
 - 同じレコードを再評価したときの結果・キャッシュ方針を確認する。
 
@@ -425,10 +443,12 @@ Choice / Score / Noul(boolean) を1リクエストで評価
 - 1問につき1つの判断になっているか。
 - Choiceには`other`または`none`が必要か確認したか。
 - Scoreの各レベルに境界を文章で書いたか。
-- Noul / booleanの命題が肯定形で明確か。
+- Noul / booleanの命題が肯定形で明確か。真偽確率とconfidenceを混同せず、`max(p, 1-p)`などの変換と閾値を決めたか。
+- 複数の根拠・問題・安全シグナルを単一Choiceへ押し込めず、boundedなboolean群をコード側で集合へ戻しているか。
 - 同じ意味をNoulとChoiceで重複評価し、確率の合計を期待していないか。
 - 質問が参照するstateのパスを明示したか。
 - 数値計算、日付比較、集計をコードへ戻したか。
+- CIの合否、認可、候補の存在、上限値など決定的に取得できる事実をJevへ推測させていないか。
 - state内のユーザー入力・文書・ログを開発者指示として扱っていないか。
 - 欠損回答、低confidence、Gatewayエラーを人手確認または安全なfallbackへ送るか。
 
@@ -451,8 +471,8 @@ Choice / Score / Noul(boolean) を1リクエストで評価
 | Confidence-Gated Tool Router | 5 | 5 | 5 | 4 | 5 | 24 | **次の第一候補** |
 | Citation / Response Verifier | 4 | 5 | 5 | 4 | 4 | 22 | **第二候補** |
 | Bug / Support Triage Board | 5 | 4 | 5 | 4 | 3 | 21 | **最短実装候補** |
-| PR / CI Review Gate | 4 | 4 | 4 | 4 | 3 | 19 | 開発者向け候補 |
 | CSV / Document Quality Auditor | 4 | 4 | 5 | 3 | 4 | 20 | データ処理候補 |
+| PR / CI Review Gate | 4 | 4 | 4 | 4 | 3 | 19 | 開発者向け候補 |
 | Browser Action Selector | 2 | 5 | 3 | 2 | 3 | 15 | 後回し |
 | Trading / Finance Decision App | 2 | 4 | 2 | 1 | 3 | 12 | 対象外 |
 
@@ -524,6 +544,7 @@ Choice / Score / Noul(boolean) を1リクエストで評価
 - [TypeSafe AI: Example Use Cases](https://docs.typesafe.ai/concepts/use-case-map)
 - [TypeSafe AI: Jev 1.13 Jaggedness](https://docs.typesafe.ai/model-jaggedness/jev-1.13)
 - [TypeSafe AI: Workflow Evals](https://evals.typesafe.ai/)
+- [TypeSafe AI: LLM guardrails cookbook](https://docs.typesafe.ai/cookbooks/llm_guardrails)
 - [Vercel AI Gateway: Evaluation](https://vercel.com/docs/ai-gateway/modalities/evaluation)
 - [Vercel AI Gateway: Jev model page](https://vercel.com/ai-gateway/models/jev)
 
@@ -540,6 +561,20 @@ Choice / Score / Noul(boolean) を1リクエストで評価
 - [DevMortimer/pi-warden](https://github.com/DevMortimer/pi-warden)
 - [jkudish/jev-mcp](https://github.com/jkudish/jev-mcp)
 - [youkiti/tiab-review-plugin](https://github.com/youkiti/tiab-review-plugin)
+- [reachjalil/jevlogs](https://github.com/reachjalil/jevlogs)
+- [noelzappy/tripwire](https://github.com/noelzappy/tripwire)
+- [teyhouse/jev-secret-detection](https://github.com/teyhouse/jev-secret-detection)
+- [leepokai/jev-guard](https://github.com/leepokai/jev-guard)
+- [AshutoshVJTI/ProgressGate](https://github.com/AshutoshVJTI/progressgate)
+- [gargpratyush/jev-router](https://github.com/gargpratyush/jev-router)
+- [tamaratran/fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction)
+- [Dicklesworthstone/SkillRanker](https://github.com/Dicklesworthstone/skillranker)
+- [sufianetaouil/every](https://github.com/sufianetaouil/every)
+- [ellipsis-dev/blink](https://github.com/ellipsis-dev/blink)
+- [superagents-lab/jev-search](https://github.com/superagents-lab/jev-search)
+- [mattn/sqlite3-jev](https://github.com/mattn/sqlite3-jev)
+- [AkashPriyadarshii/jev-curate](https://github.com/AkashPriyadarshii/jev-curate)
+- [replynodes/jev-web-analyzer](https://github.com/replynodes/jev-web-analyzer)
 
 ### ブログ・実装記事（証拠レベルC）
 
