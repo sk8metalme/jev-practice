@@ -155,3 +155,109 @@ responseMs はJevプロバイダ内部だけの処理時間ではなく、Gatewa
 - [Jev API, Pricing & Playground](https://vercel.com/ai-gateway/models/jev)
 - [Vercel AI SDKの評価モデル実装](https://github.com/vercel/ai/blob/main/packages/gateway/src/gateway-evaluation-model.ts)
 - [Vercel AI Gateway経由でJevを利用する準備（Zenn）](https://zenn.dev/shinyaa31/articles/97581a58a3a76b)
+
+## jevx: Codex CLI向けSkillセレクタ
+
+`jevx/`には、今の依頼に合いそうなCodex SkillをJevで提案するmacOS向けRust CLIを入れているよ。v1はShadow Modeなので、Skillの自動ロード・実行や会話の書き換えはしない。提案結果とJevの速度を確認してから、Codex側が通常のSkillルールに従って利用する設計だよ。
+
+### ローカルで動作確認
+
+Rust stableとCargoを用意して、まずテストと設定診断を実行するよ。
+
+```bash
+cargo test --locked --manifest-path jevx/Cargo.toml
+cargo run --locked --manifest-path jevx/Cargo.toml -- doctor --json
+```
+
+Skillを一覧表示するには、プロジェクトのSkillディレクトリを指定できるよ。
+
+```bash
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  skills list --skill-dir "$PWD/.agents/skills" --json
+```
+
+Jevを使った提案には、既存アプリと同じ `AI_GATEWAY_API_KEY` が必要だよ。
+
+```bash
+export AI_GATEWAY_API_KEY="<your-ai-gateway-api-key>"
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  skills suggest --prompt "PDFを結合して内容を確認したい" --json
+```
+
+Codex Skillとして使う場合は、リポジトリのルートで次を実行すると、jevxバイナリと advisory Skillをユーザー領域へセットアップできるよ。
+
+```bash
+sh jevx/scripts/setup.sh --scope user
+```
+
+プロジェクトだけに入れる場合は `sh jevx/scripts/setup.sh --scope project --repo "$PWD"` を使ってね。Skillの探索対象はプロジェクトの `.agents/skills` / `.codex/skills` と、ユーザーの `~/.agents/skills` / `$CODEX_HOME/skills` だよ。
+
+### リクエストとレスポンス例
+
+入力をJSONで渡す場合は、`prompt` と任意の `cwd` / `explicit_skill` を指定するよ。
+
+```bash
+printf '%s\n' '{"prompt":"テストを追加して失敗原因を調べたい","cwd":"/tmp/sample-repo"}' \
+  | cargo run --locked --manifest-path jevx/Cargo.toml -- \
+      skills suggest --input-json --json --no-telemetry
+```
+
+レスポンスは、Skill提案の根拠と計測値を機械的に扱える安定したJSONだよ。`jevResponseMs` がJevへのリクエスト開始から構造化レスポンスを受け取るまでのアプリ側計測値で、`totalMs` はSkill探索を含む全体時間だよ。
+
+```json
+{
+  "schemaVersion": 1,
+  "decision": "selected",
+  "selected": {
+    "id": "testing",
+    "name": "testing",
+    "description": "Write and run tests",
+    "path": "/Users/example/.agents/skills/testing/SKILL.md",
+    "source": "user",
+    "local_score": 25,
+    "probability": 0.91
+  },
+  "candidates": [
+    {
+      "id": "testing",
+      "name": "testing",
+      "description": "Write and run tests",
+      "path": "/Users/example/.agents/skills/testing/SKILL.md",
+      "source": "user",
+      "local_score": 25,
+      "probability": 0.91
+    }
+  ],
+  "metrics": {
+    "discoveryMs": 7,
+    "jevResponseMs": 124,
+    "totalMs": 138,
+    "candidateCount": 1,
+    "inputTokens": 82,
+    "outputTokens": 12
+  },
+  "mode": "shadow"
+}
+```
+
+確信度が低い場合は安全側に倒して `decision: "none"` になるよ。APIキー未設定やタイムアウトは、JSONなら `error.code` と終了コードで明示する。人間向け出力でも次のようにJevの速度を表示するよ。
+
+```text
+jevx skill suggestion
+Selected: testing
+Probability: 0.91
+Candidates: 3
+Jev response: 124 ms
+Total: 138 ms
+Mode: shadow
+```
+
+### Telemetry
+
+既定では `~/.jevx/events.jsonl` に、依頼文そのものではなくSHA-256・文字数・判定・候補数・Jev応答時間・usageだけを追記するよ。保存を止めるときは `--no-telemetry`、集計を見るときは `jevx stats --json` を使ってね。
+
+```bash
+cargo run --locked --manifest-path jevx/Cargo.toml -- stats --json
+```
+
+設計と評価ケースは [`docs/jevx-requirements.md`](docs/jevx-requirements.md)、[`docs/jevx-architecture.md`](docs/jevx-architecture.md)、[`docs/jevx-evaluation.md`](docs/jevx-evaluation.md) にまとめているよ。
