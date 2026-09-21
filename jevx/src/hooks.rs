@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::Config;
@@ -84,8 +84,14 @@ pub struct CompactionEvaluationReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct CompactionRun {
     pub run: usize,
+    #[serde(rename = "caseId", skip_serializing_if = "Option::is_none")]
+    pub case_id: Option<String>,
     #[serde(rename = "eventCount")]
     pub event_count: usize,
+    #[serde(rename = "observedEvents", skip_serializing_if = "Vec::is_empty")]
+    pub observed_events: Vec<String>,
+    #[serde(rename = "compactionCompleted")]
+    pub compaction_completed: bool,
     #[serde(rename = "requiredFactCount")]
     pub required_fact_count: usize,
     #[serde(rename = "retainedRequiredFacts")]
@@ -111,6 +117,8 @@ pub struct CompactionSummary {
     pub secret_leaks: usize,
     #[serde(rename = "errorRate")]
     pub error_rate: Option<f64>,
+    #[serde(rename = "compactionCompletionRate")]
+    pub compaction_completion_rate: Option<f64>,
     #[serde(rename = "durationMsP50")]
     pub duration_ms_p50: Option<u64>,
     #[serde(rename = "durationMsP95")]
@@ -119,6 +127,19 @@ pub struct CompactionSummary {
     pub output_chars_p50: Option<u64>,
     #[serde(rename = "outputCharsP95")]
     pub output_chars_p95: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationCompactionCase {
+    pub case_id: String,
+    pub required_facts: Vec<String>,
+    pub follow_up_text: String,
+    pub secret_markers: Vec<String>,
+    pub compaction_completed: bool,
+    pub compaction_duration_ms: u64,
+    pub input_chars: usize,
+    pub observed_events: Vec<String>,
 }
 
 pub async fn run_shadow(
@@ -249,6 +270,183 @@ pub fn compact_evaluation(run_count: usize) -> Result<CompactionEvaluationReport
     for run in 1..=run_count {
         runs.push(compact_once(run));
     }
+    Ok(build_compaction_report(
+        "shadow",
+        "synthetic-codex-compaction-v1",
+        runs,
+    ))
+}
+
+pub fn load_conversation_cases(path: &Path) -> Result<Vec<ConversationCompactionCase>, JevxError> {
+    let content = fs::read_to_string(path)?;
+    let mut cases = Vec::new();
+    for (line_number, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let case = serde_json::from_str::<ConversationCompactionCase>(line).map_err(|_| {
+            JevxError::InvalidInput(format!(
+                "invalid conversation fixture at line {}",
+                line_number + 1
+            ))
+        })?;
+        validate_conversation_case(&case, &format!("line {}", line_number + 1))?;
+        cases.push(case);
+    }
+    if cases.is_empty() {
+        return Err(JevxError::InvalidInput(
+            "conversation fixture must contain at least one case".to_owned(),
+        ));
+    }
+    Ok(cases)
+}
+
+pub fn evaluate_conversation_compaction(
+    cases: &[ConversationCompactionCase],
+) -> Result<CompactionEvaluationReport, JevxError> {
+    if cases.is_empty() {
+        return Err(JevxError::InvalidInput(
+            "conversation cases must contain at least one case".to_owned(),
+        ));
+    }
+    for case in cases {
+        validate_conversation_case(case, "conversation case")?;
+    }
+    let runs = cases
+        .iter()
+        .enumerate()
+        .map(|(index, case)| conversation_once(index + 1, case))
+        .collect();
+    Ok(build_compaction_report(
+        "live",
+        "real-conversation-codex-v1",
+        runs,
+    ))
+}
+
+fn validate_conversation_case(
+    case: &ConversationCompactionCase,
+    context: &str,
+) -> Result<(), JevxError> {
+    if !safe_identifier(&case.case_id, 64) {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: caseId must be a short ASCII identifier"
+        )));
+    }
+    if case.required_facts.is_empty() || case.required_facts.len() > 32 {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: requiredFacts must contain 1..32 items"
+        )));
+    }
+    if case
+        .required_facts
+        .iter()
+        .any(|fact| fact.is_empty() || fact.chars().count() > 512)
+    {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: requiredFacts contains an invalid item"
+        )));
+    }
+    if case.secret_markers.is_empty() || case.secret_markers.len() > 32 {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: secretMarkers must contain 1..32 items"
+        )));
+    }
+    if case
+        .secret_markers
+        .iter()
+        .any(|marker| marker.is_empty() || marker.chars().count() > 512)
+    {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: secretMarkers contains an invalid item"
+        )));
+    }
+    if case.follow_up_text.chars().count() > 1_000_000 {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: followUpText is too large"
+        )));
+    }
+    if case.input_chars > 1_000_000 {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: inputChars is too large"
+        )));
+    }
+    if case.observed_events.is_empty() || case.observed_events.len() > 32 {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: observedEvents must contain 1..32 items"
+        )));
+    }
+    if case
+        .observed_events
+        .iter()
+        .any(|event| !safe_identifier(event, 64))
+    {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: observedEvents contains an invalid item"
+        )));
+    }
+    Ok(())
+}
+
+fn safe_identifier(value: &str, max_chars: usize) -> bool {
+    !value.is_empty()
+        && value.chars().count() <= max_chars
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "_-/.".contains(character))
+}
+
+fn conversation_once(run: usize, case: &ConversationCompactionCase) -> CompactionRun {
+    let retained_required_facts = case
+        .required_facts
+        .iter()
+        .filter(|fact| fact_is_retained(&case.follow_up_text, fact))
+        .count();
+    let secret_leaks = case
+        .secret_markers
+        .iter()
+        .filter(|marker| case.follow_up_text.contains(*marker))
+        .count();
+    let error_code = if !case.compaction_completed {
+        Some("compaction_incomplete".to_owned())
+    } else if retained_required_facts != case.required_facts.len() {
+        Some("required_fact_lost".to_owned())
+    } else {
+        None
+    };
+    CompactionRun {
+        run,
+        case_id: Some(case.case_id.clone()),
+        event_count: case.observed_events.len(),
+        observed_events: case.observed_events.clone(),
+        compaction_completed: case.compaction_completed,
+        required_fact_count: case.required_facts.len(),
+        retained_required_facts,
+        secret_leaks,
+        input_chars: case.input_chars,
+        output_chars: case.follow_up_text.chars().count(),
+        duration_ms: case.compaction_duration_ms,
+        error_code,
+    }
+}
+
+fn fact_is_retained(response: &str, fact: &str) -> bool {
+    if response.contains(fact) {
+        return true;
+    }
+    let Some((key, value)) = fact.split_once('=') else {
+        return false;
+    };
+    response.contains(&format!("{key}: {value}")) || response.contains(&format!("{key}:{value}"))
+}
+
+fn build_compaction_report(
+    mode: &str,
+    scenario: &str,
+    runs: Vec<CompactionRun>,
+) -> CompactionEvaluationReport {
+    let run_count = runs.len();
     let passed = runs
         .iter()
         .filter(|run| run.error_code.is_none() && run.secret_leaks == 0)
@@ -268,10 +466,11 @@ pub fn compact_evaluation(run_count: usize) -> Result<CompactionEvaluationReport
         .map(|run| run.output_chars as u64)
         .collect::<Vec<_>>();
     let secret_leaks = runs.iter().map(|run| run.secret_leaks).sum();
-    Ok(CompactionEvaluationReport {
+    let completed_runs = runs.iter().filter(|run| run.compaction_completed).count();
+    CompactionEvaluationReport {
         schema_version: HOOK_SCHEMA_VERSION,
-        mode: "shadow".to_owned(),
-        scenario: "synthetic-codex-compaction-v1".to_owned(),
+        mode: mode.to_owned(),
+        scenario: scenario.to_owned(),
         run_count,
         runs,
         summary: CompactionSummary {
@@ -279,12 +478,13 @@ pub fn compact_evaluation(run_count: usize) -> Result<CompactionEvaluationReport
             retention_rate: ratio(retained_facts, required_facts),
             secret_leaks,
             error_rate: ratio(run_count.saturating_sub(passed), run_count),
+            compaction_completion_rate: ratio(completed_runs, run_count),
             duration_ms_p50: percentile(&durations, 50),
             duration_ms_p95: percentile(&durations, 95),
             output_chars_p50: percentile(&output_chars, 50),
             output_chars_p95: percentile(&output_chars, 95),
         },
-    })
+    }
 }
 
 fn compact_once(run: usize) -> CompactionRun {
@@ -303,7 +503,10 @@ fn compact_once(run: usize) -> CompactionRun {
         .then_some("required_fact_lost".to_owned());
     CompactionRun {
         run,
+        case_id: None,
         event_count: 3,
+        observed_events: Vec::new(),
+        compaction_completed: true,
         required_fact_count: REQUIRED_FACTS.len(),
         retained_required_facts,
         secret_leaks,

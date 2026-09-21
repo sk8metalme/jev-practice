@@ -11,7 +11,7 @@ Codex CLIの日常利用へjevxを接続する前に、Hookへ入れても会話
 
 仕様の一次情報は[Codex Hooks公式ドキュメント](https://developers.openai.com/codex/hooks)を参照した。
 
-この実装はまだCodexの設定を自動変更しない。`hooks shadow`へHook相当のJSONをstdinで渡し、stdoutの応答契約と安全なJSONL記録を検証する方式になっている。したがって、今回の実測は「実Codexが実際に発火したイベント」の測定ではなく、Codex仕様に沿ったshadow入力に対するjevxの実行評価だよ。
+この実装はまだCodexの設定を自動変更しない。`hooks shadow`へHook相当のJSONをstdinで渡し、stdoutの応答契約と安全なJSONL記録を検証する方式になっている。このページのAPIキーあり結果はshadow入力に対するjevxの実行評価で、実Codex CLIとApp Serverを使った実測は[別の詳細記録](jevx-real-codex-compaction-evaluation-2026-09-21.md)へ分けているよ。
 
 ## Shadowの動作
 
@@ -31,7 +31,7 @@ stdout: {"continue":true,"suppressOutput":true}
 記録: promptのSHA-256・文字数・判定・Skill ID・遅延・usage・errorCodeのみ
 ```
 
-成功・失敗に関係なく、shadowのstdoutは次の固定契約を返す。`additionalContext`を返さず、会話本文を書き換えず、HookからCodexの処理を停止しない。
+成功・失敗に関係なく、shadowのstdoutは次の固定契約を返す。`additionalContext`を返さず、会話本文を書き換えず、HookからCodexの処理を停止しない。`suppressOutput`は互換性のため出力しているが、Codex公式ドキュメントでは現在パースされるだけで未実装と説明されているため、出力抑制の保証として扱わない。
 
 ```json
 {"continue":true,"suppressOutput":true}
@@ -227,7 +227,7 @@ durationが0msなのは、固定文字列のredactionがmacOSのミリ秒時計�
 
 ### まだ証明していないこと
 
-- 実Codexのtrust確認後に、実際の`PreCompact` / `PostCompact` / `SessionStart`が発火すること。
+- 実Codex CLIのstartup/prompt Hookは実測済み。ただしcompactを伴うCLI経路の`PreCompact` / `PostCompact` / `SessionStart(source=compact)`は未確認で、App Server経路では今回Hook記録に出なかった。
 - Codex内部の要約結果が、長い会話の目的・制約・次アクションを保持すること。
 - 連続利用時のHook累積遅延、Gateway rate limit、API費用、失敗時の再試行戦略。
 - 実ユーザー入力の匿名化fixtureで同じ精度・レイテンシーになること。

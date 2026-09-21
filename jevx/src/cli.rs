@@ -8,7 +8,10 @@ use jevx::evaluation::{
     EvaluationReport, evaluate, evaluate_repeated, load_fixtures, write_case_results,
     write_repeat_report,
 };
-use jevx::hooks::{append_shadow_record, compact_evaluation, run_shadow, write_compaction_report};
+use jevx::hooks::{
+    append_shadow_record, compact_evaluation, evaluate_conversation_compaction,
+    load_conversation_cases, run_shadow, write_compaction_report,
+};
 use jevx::{
     CandidateDecision, Config, GatewayJudge, JevxError, SkillRoot, SuggestInput, SuggestionResult,
     TelemetryEvent, append_telemetry, discover_skill_roots, read_stats, suggest_with_judge,
@@ -122,6 +125,7 @@ struct EvalRepeatArgs {
 enum HooksCommand {
     Shadow(HookShadowArgs),
     CompactEval(CompactEvalArgs),
+    ConversationEval(ConversationEvalArgs),
 }
 
 #[derive(Debug, Args)]
@@ -140,6 +144,16 @@ struct HookShadowArgs {
 struct CompactEvalArgs {
     #[arg(long, default_value = "5")]
     runs: usize,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct ConversationEvalArgs {
+    #[arg(long)]
+    input: PathBuf,
     #[arg(long)]
     json: bool,
     #[arg(long)]
@@ -313,6 +327,7 @@ async fn run_hooks_with_config(command: HooksCommand, config: Config) -> Result<
     match command {
         HooksCommand::Shadow(args) => run_hook_shadow_with_config(args, config).await,
         HooksCommand::CompactEval(args) => run_compact_eval(args),
+        HooksCommand::ConversationEval(args) => run_conversation_eval(args),
     }
 }
 
@@ -366,6 +381,32 @@ fn run_compact_eval(args: CompactEvalArgs) -> Result<i32, JevxError> {
         println!("Error rate: {}", format_ratio(report.summary.error_rate));
         if let Some(p95) = report.summary.duration_ms_p95 {
             println!("Duration p95: {p95} ms");
+        }
+    }
+    Ok(0)
+}
+
+fn run_conversation_eval(args: ConversationEvalArgs) -> Result<i32, JevxError> {
+    let cases = load_conversation_cases(&args.input)?;
+    let report = evaluate_conversation_compaction(&cases)?;
+    if let Some(output) = args.output {
+        write_compaction_report(&output, &report)?;
+    }
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("jevx conversation compaction evaluation");
+        println!("Cases: {}", report.run_count);
+        println!("Passed: {}", report.summary.passed);
+        println!("Retention: {}", format_ratio(report.summary.retention_rate));
+        println!("Secret leaks: {}", report.summary.secret_leaks);
+        println!(
+            "Compaction completion: {}",
+            format_ratio(report.summary.compaction_completion_rate)
+        );
+        println!("Error rate: {}", format_ratio(report.summary.error_rate));
+        if let Some(p95) = report.summary.duration_ms_p95 {
+            println!("Compaction p95: {p95} ms");
         }
     }
     Ok(0)
@@ -997,6 +1038,36 @@ mod tests {
             0
         );
 
+        let conversation_input = root.path().join("conversation.jsonl");
+        fs::write(
+            &conversation_input,
+            r#"{"caseId":"cli-case","requiredFacts":["goal=keep","next=verify"],"followUpText":"goal=keep\nnext=verify\ndecoy_marker=redacted","secretMarkers":["CLI_SECRET_FIXTURE"],"compactionCompleted":true,"compactionDurationMs":12,"inputChars":40,"observedEvents":["contextCompaction","turn/completed"]}"#,
+        )
+        .expect("conversation fixture");
+        let conversation_output = root.path().join("conversation.json");
+        assert_eq!(
+            run_conversation_eval(ConversationEvalArgs {
+                input: conversation_input.clone(),
+                json: true,
+                output: Some(conversation_output.clone()),
+            })
+            .expect("conversation json"),
+            0
+        );
+        let conversation_json =
+            fs::read_to_string(&conversation_output).expect("conversation report");
+        assert!(conversation_json.contains("compactionCompletionRate"));
+        assert!(!conversation_json.contains("CLI_SECRET_FIXTURE"));
+        assert_eq!(
+            run_conversation_eval(ConversationEvalArgs {
+                input: conversation_input.clone(),
+                json: false,
+                output: None,
+            })
+            .expect("conversation human"),
+            0
+        );
+
         let command_repeat = Cli {
             command: Command::EvalRepeat(EvalRepeatArgs {
                 runs: 1,
@@ -1027,6 +1098,25 @@ mod tests {
             run_inner_with_config(command_hooks, Config::for_test(root.path().join("data")))
                 .await
                 .expect("hooks command"),
+            0
+        );
+
+        let command_conversation = Cli {
+            command: Command::Hooks {
+                command: HooksCommand::ConversationEval(ConversationEvalArgs {
+                    input: conversation_input,
+                    json: true,
+                    output: None,
+                }),
+            },
+        };
+        assert_eq!(
+            run_inner_with_config(
+                command_conversation,
+                Config::for_test(root.path().join("data"))
+            )
+            .await
+            .expect("conversation hooks command"),
             0
         );
 
