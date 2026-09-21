@@ -111,6 +111,43 @@ Gatewayからアプリが受け取る構造化レスポンスのイメージは�
 
 responseMs はJevプロバイダ内部だけの処理時間ではなく、GatewayへのHTTP往復とJSON応答の読み取りを含むアプリ側の経過時間だよ。
 
+## TypeSafe APIへ直接curlする例
+
+このアプリの現在の実装はVercel AI Gateway経由だけど、TypeSafeのAPIへ直接リクエストしてJevを試すこともできるよ。直接経路では `TYPESAFE_API_KEY` を使い、送信先は `https://api.typesafe.ai/v1/systemone`、モデルは `jev-latest` だよ。
+
+TypeSafeのwaitlistに登録すると、タイミングによっては1時間ほどでアカウント作成の案内が届くこともあるよ。ただし所要時間は保証されないので、案内が届いたら [TypeSafe Console](https://console.typesafe.ai/) でAPIキーを発行してね。
+
+APIキーをシェルの履歴へ残さず設定するには、次を実行するよ。
+
+```bash
+printf "TypeSafe API key: "
+read -r -s TYPESAFE_API_KEY
+printf "\n"
+export TYPESAFE_API_KEY
+```
+
+最小の直接リクエストはこれ。JSON文字列の中に未エスケープの改行を入れないよう、ヒアドキュメントで送っているよ。
+
+```bash
+curl -sS -X POST "https://api.typesafe.ai/v1/systemone" \
+  -H "Authorization: Bearer ${TYPESAFE_API_KEY}" \
+  -H "Content-Type: application/json" \
+  --data-binary @- <<'JSON'
+{
+  "state": "Stripeの連携に3日間失敗していて、売上にも影響が出ています。",
+  "model": "jev-latest",
+  "questions": {
+    "is_urgent": {
+      "type": "noul",
+      "instructions": "このメッセージは緊急性を表していますか？"
+    }
+  }
+}
+JSON
+```
+
+直接APIの `noul` は、質問への肯定度を `0〜1` で返すよ。レスポンスの例や、現在のアプリと同じカテゴリ・緊急度・返金要求を評価するリクエストは [`docs/typesafe-api.md`](docs/typesafe-api.md) にまとめているよ。
+
 ## 動作例
 
 問い合わせ文を入力してJevで判定すると、カテゴリ・緊急度・返金要求の可能性・使用量をまとめて確認できるよ。
@@ -155,6 +192,7 @@ responseMs はJevプロバイダ内部だけの処理時間ではなく、Gatewa
 - [Jev API, Pricing & Playground](https://vercel.com/ai-gateway/models/jev)
 - [Vercel AI SDKの評価モデル実装](https://github.com/vercel/ai/blob/main/packages/gateway/src/gateway-evaluation-model.ts)
 - [Vercel AI Gateway経由でJevを利用する準備（Zenn）](https://zenn.dev/shinyaa31/articles/97581a58a3a76b)
+- [TypeSafe API直接経路の使い方](docs/typesafe-api.md)
 
 ## jevx: Codex CLI向けSkillセレクタ
 
