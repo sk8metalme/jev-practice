@@ -8,6 +8,7 @@ pub mod hook_config;
 pub mod hooks;
 mod ranking;
 mod redaction;
+mod storage;
 mod telemetry;
 mod types;
 

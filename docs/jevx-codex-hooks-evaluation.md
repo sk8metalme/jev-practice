@@ -135,9 +135,9 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 | イベント | matcher | command |
 | --- | --- | --- |
-| `SessionStart` | `startup|resume|clear|compact` | `hooks compact-assist` |
-| `PreCompact` | `manual|auto` | `hooks compact-assist` |
-| `PostCompact` | `manual|auto` | `hooks compact-assist` |
+| `SessionStart` | `startup\|resume\|clear\|compact` | `hooks compact-assist` |
+| `PreCompact` | `manual\|auto` | `hooks compact-assist` |
+| `PostCompact` | `manual\|auto` | `hooks compact-assist` |
 | `UserPromptSubmit` | なし | `hooks shadow` |
 
 user scopeの保存先は`$CODEX_HOME/hooks.json`（未設定時`~/.codex/hooks.json`）、project scopeは`<repo>/.codex/hooks.json`。既存root・未知イベント・カスタムhandlerを保持し、jevxのmarkerを含む古いcommandだけ置換する。変更前のファイルは初回だけ`hooks.json.jevx.bak`へ退避し、再実行は冪等だよ。

@@ -1,11 +1,12 @@
-use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::JevxError;
 use crate::redaction::sha256_hex;
+use crate::storage::append_json_line;
 use crate::types::{CandidateDecision, CandidateResult, Metrics};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,13 +42,7 @@ impl TelemetryEvent {
 }
 
 pub fn append_telemetry(path: &Path, event: &TelemetryEvent) -> Result<(), JevxError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    serde_json::to_writer(&mut file, event)?;
-    file.write_all(b"\n")?;
-    Ok(())
+    append_json_line(path, event)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -108,9 +103,7 @@ pub fn read_stats(path: &Path) -> Result<Stats, JevxError> {
         if event.metrics.jev_response_ms > 0 {
             response_times.push(event.metrics.jev_response_ms);
         }
-        if event.metrics.total_ms > 0 {
-            total_times.push(event.metrics.total_ms);
-        }
+        total_times.push(event.metrics.total_ms);
         if let Some(tokens) = event.metrics.input_tokens {
             input_tokens.push(tokens);
         }
@@ -138,7 +131,8 @@ pub fn read_stats(path: &Path) -> Result<Stats, JevxError> {
 }
 
 fn average(values: &[u64]) -> Option<f64> {
-    (!values.is_empty()).then(|| values.iter().sum::<u64>() as f64 / values.len() as f64)
+    (!values.is_empty())
+        .then(|| values.iter().map(|&value| value as f64).sum::<f64>() / values.len() as f64)
 }
 
 fn percentile(values: &[u64], percentile: usize) -> Option<u64> {

@@ -41,6 +41,9 @@ fn hook_install_preserves_existing_handlers_and_is_idempotent() {
                     "hooks": [{
                         "type": "command",
                         "command": "/old/jevx hooks shadow --output /old/events.jsonl"
+                    }, {
+                        "type": "command",
+                        "command": "mytool hooks shadow --output /custom/events.jsonl"
                     }]
                 }]
             }
@@ -62,12 +65,18 @@ fn hook_install_preserves_existing_handlers_and_is_idempotent() {
     let user_prompt = written["hooks"]["UserPromptSubmit"]
         .as_array()
         .expect("user prompt groups");
-    assert_eq!(user_prompt.len(), 1);
-    let command = user_prompt[0]["hooks"][0]["command"]
-        .as_str()
-        .expect("command");
+    assert_eq!(user_prompt.len(), 2);
+    let user_prompt_handlers = user_prompt
+        .iter()
+        .flat_map(|group| group["hooks"].as_array().into_iter().flatten());
+    assert!(user_prompt_handlers.clone().any(|handler| {
+        handler["command"] == "mytool hooks shadow --output /custom/events.jsonl"
+    }));
+    let command = user_prompt_handlers
+        .filter_map(|handler| handler["command"].as_str())
+        .find(|command| command.contains("jevx with space"))
+        .expect("generated command");
     assert!(command.contains("hooks shadow"));
-    assert!(command.contains("jevx with space"));
 
     let second = install_hooks(&install_options(root.path(), false)).expect("reinstall");
     assert!(!second.changed);
@@ -153,9 +162,28 @@ async fn compact_assist_records_safe_state_and_restores_redacted_manifest() {
     let context = resume.response["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .expect("additional context");
+    assert!(context.contains("checkpoint event=PostCompact"));
     assert!(context.contains("release checklist"));
     assert!(context.contains("<redacted>"));
     assert!(!context.contains("fixture-only"));
+
+    let resume_without_session = run_compact_assist(
+        &json!({
+            "hook_event_name": "SessionStart",
+            "source": "compact",
+            "cwd": repo
+        })
+        .to_string(),
+        &config,
+        &state_dir,
+    )
+    .await
+    .expect("compact resume without session");
+    let context_without_session =
+        resume_without_session.response["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .expect("additional context without session");
+    assert!(context_without_session.contains("checkpoint metadata was not found"));
 }
 
 #[test]
@@ -167,12 +195,12 @@ fn operational_stats_report_rates_percentiles_and_usage() {
             "one",
             CandidateDecision::Selected,
             10,
-            14,
+            0,
             Some(100),
             Some(20),
         ),
         ("two", CandidateDecision::None, 20, 24, Some(120), Some(25)),
-        ("three", CandidateDecision::Error, 0, 2, None, None),
+        ("three", CandidateDecision::Error, 0, 0, None, None),
     ] {
         append_telemetry(
             &path,
@@ -199,8 +227,34 @@ fn operational_stats_report_rates_percentiles_and_usage() {
     assert_eq!(stats.error_rate, Some(1.0 / 3.0));
     assert_eq!(stats.jev_response_ms_p50, Some(10));
     assert_eq!(stats.jev_response_ms_p95, Some(20));
-    assert_eq!(stats.total_ms_p50, Some(14));
+    assert_eq!(stats.total_ms_p50, Some(0));
     assert_eq!(stats.average_input_tokens, Some(110.0));
     assert_eq!(stats.average_output_tokens, Some(22.5));
     assert_eq!(stats.usage_events, 2);
+}
+
+#[test]
+fn telemetry_token_averages_do_not_overflow_before_conversion() {
+    let root = tempdir().expect("tempdir");
+    let path = root.path().join("events.jsonl");
+    for prompt in ["one", "two"] {
+        append_telemetry(
+            &path,
+            &TelemetryEvent::from_result(
+                prompt,
+                &CandidateDecision::Selected,
+                None,
+                &Metrics {
+                    input_tokens: Some(u64::MAX),
+                    output_tokens: Some(u64::MAX),
+                    ..Metrics::default()
+                },
+            ),
+        )
+        .expect("append");
+    }
+
+    let stats = read_stats(&path).expect("stats");
+    assert_eq!(stats.average_input_tokens, Some(u64::MAX as f64));
+    assert_eq!(stats.average_output_tokens, Some(u64::MAX as f64));
 }

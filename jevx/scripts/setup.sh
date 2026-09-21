@@ -60,13 +60,13 @@ fi
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 
-cargo install --path "$project_root" --locked
+cargo_install_root="${JEVX_INSTALL_ROOT:-${CARGO_INSTALL_ROOT:-${CARGO_HOME:-${HOME:?HOME is required}/.cargo}}}"
+cargo install --path "$project_root" --locked --root "$cargo_install_root"
 mkdir -p "$destination"
 install -m 0644 "$project_root/skill/SKILL.md" "$destination/SKILL.md"
-printf 'Installed jevx and Codex Skill at %s\n' "$destination"
+binary="$cargo_install_root/bin/jevx"
+printf 'Installed jevx at %s and Codex Skill at %s\n' "$binary" "$destination"
 
 if [ "$install_hooks" -eq 1 ]; then
-  cargo_home="${CARGO_HOME:-${HOME:?HOME is required}/.cargo}"
-  binary="$cargo_home/bin/jevx"
   "$binary" hooks install --scope "$scope" --repo "$repo"
 fi

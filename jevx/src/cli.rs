@@ -147,6 +147,8 @@ struct HookShadowArgs {
     skill_dirs: Vec<PathBuf>,
     #[arg(long)]
     output: Option<PathBuf>,
+    #[arg(long = "jevx-managed", hide = true)]
+    _jevx_managed: bool,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -171,6 +173,8 @@ struct HookInstallArgs {
 struct CompactAssistArgs {
     #[arg(long)]
     state_dir: Option<PathBuf>,
+    #[arg(long = "jevx-managed", hide = true)]
+    _jevx_managed: bool,
 }
 
 #[derive(Debug, Args)]
@@ -439,17 +443,33 @@ fn hook_scope(scope: HookScopeArg) -> HookScope {
     }
 }
 
+fn resolve_hook_paths(
+    scope: HookScope,
+    home: Option<PathBuf>,
+    codex_home: Option<PathBuf>,
+) -> Result<(PathBuf, Option<PathBuf>), JevxError> {
+    if scope == HookScope::User && home.is_none() && codex_home.is_none() {
+        return Err(JevxError::InvalidInput(
+            "HOME or CODEX_HOME is required for user hook installation".to_owned(),
+        ));
+    }
+    Ok((home.unwrap_or_else(|| PathBuf::from(".")), codex_home))
+}
+
 fn run_hook_install(args: HookInstallArgs, config: &Config) -> Result<i32, JevxError> {
     let home = env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let codex_home = env::var_os("CODEX_HOME").map(PathBuf::from);
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let codex_home = env::var_os("CODEX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
     let data_home = config
         .telemetry_path
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
     let scope = hook_scope(args.scope);
+    let (home, codex_home) = resolve_hook_paths(scope, home, codex_home)?;
     let report = install_hooks(&HookInstallOptions {
         scope,
         repo: args.repo,
@@ -589,28 +609,7 @@ fn run_stats_with_config(
     if json {
         println!("{}", serde_json::to_string_pretty(&stats)?);
     } else {
-        println!("events: {}", stats.events);
-        println!("selected: {}", stats.selected);
-        println!("none: {}", stats.none);
-        println!("errors: {}", stats.errors);
-        println!("selected rate: {}", format_ratio(stats.selected_rate));
-        println!("none rate: {}", format_ratio(stats.none_rate));
-        println!("error rate: {}", format_ratio(stats.error_rate));
-        println!(
-            "average Jev response: {:.1} ms",
-            stats.average_jev_response_ms
-        );
-        println!(
-            "Jev response p50/p95: {}/{} ms",
-            format_optional_u64(stats.jev_response_ms_p50),
-            format_optional_u64(stats.jev_response_ms_p95)
-        );
-        println!(
-            "Total p50/p95: {}/{} ms",
-            format_optional_u64(stats.total_ms_p50),
-            format_optional_u64(stats.total_ms_p95)
-        );
-        println!("usage events: {}", stats.usage_events);
+        print!("{}", stats_human_output(&stats));
     }
     Ok(0)
 }
@@ -817,6 +816,33 @@ fn format_optional_u64(value: Option<u64>) -> String {
         .unwrap_or_else(|| "n/a".to_owned())
 }
 
+fn format_optional_f64(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{value:.1}"))
+        .unwrap_or_else(|| "n/a".to_owned())
+}
+
+fn stats_human_output(stats: &jevx::Stats) -> String {
+    format!(
+        "events: {}\nselected: {}\nnone: {}\nerrors: {}\nselected rate: {}\nnone rate: {}\nerror rate: {}\naverage Jev response: {:.1} ms\nJev response p50/p95: {}/{} ms\nTotal p50/p95: {}/{} ms\naverage input/output tokens: {}/{}\nusage events: {}\n",
+        stats.events,
+        stats.selected,
+        stats.none,
+        stats.errors,
+        format_ratio(stats.selected_rate),
+        format_ratio(stats.none_rate),
+        format_ratio(stats.error_rate),
+        stats.average_jev_response_ms,
+        format_optional_u64(stats.jev_response_ms_p50),
+        format_optional_u64(stats.jev_response_ms_p95),
+        format_optional_u64(stats.total_ms_p50),
+        format_optional_u64(stats.total_ms_p95),
+        format_optional_f64(stats.average_input_tokens),
+        format_optional_f64(stats.average_output_tokens),
+        stats.usage_events,
+    )
+}
+
 fn error_code(error: &JevxError) -> &'static str {
     match error {
         JevxError::InvalidInput(_) => "invalid_input",
@@ -863,6 +889,25 @@ mod tests {
             skill_dirs: Vec::new(),
             no_telemetry: false,
         }
+    }
+
+    #[test]
+    fn stats_human_output_includes_token_averages_and_home_requirements() {
+        let stats = jevx::Stats {
+            average_input_tokens: Some(110.0),
+            average_output_tokens: Some(22.5),
+            usage_events: 2,
+            ..jevx::Stats::default()
+        };
+        let output = stats_human_output(&stats);
+        assert!(output.contains("average input/output tokens: 110.0/22.5"));
+        assert!(resolve_hook_paths(HookScope::User, None, None).is_err());
+        assert_eq!(
+            resolve_hook_paths(HookScope::Project, None, None)
+                .expect("project paths")
+                .0,
+            PathBuf::from(".")
+        );
     }
 
     fn write_skill(root: &Path, name: &str) {
@@ -1193,6 +1238,7 @@ mod tests {
             cwd: Some(root.path().to_path_buf()),
             skill_dirs: vec![],
             output: Some(hook_output.clone()),
+            _jevx_managed: false,
         };
         let mut hook_input =
             Cursor::new(br#"{"hook_event_name":"PreCompact","trigger":"manual"}"#.to_vec());
@@ -1373,6 +1419,7 @@ mod tests {
                 cwd: Some(root.path().to_path_buf()),
                 skill_dirs: vec![],
                 output: None,
+                _jevx_managed: false,
             }),
             Config::for_test(root.path().join("data")),
         )
@@ -1381,6 +1428,7 @@ mod tests {
         let _ = run_hooks_with_config(
             HooksCommand::CompactAssist(CompactAssistArgs {
                 state_dir: Some(root.path().join("stdin-compaction")),
+                _jevx_managed: false,
             }),
             Config::for_test(root.path().join("data")),
         )
@@ -1530,6 +1578,7 @@ mod tests {
             run_compact_assist_from_reader(
                 CompactAssistArgs {
                     state_dir: Some(root.path().join("reader-compaction")),
+                    _jevx_managed: false,
                 },
                 &data_config,
                 &mut compact_input,

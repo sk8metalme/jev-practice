@@ -1,5 +1,5 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -9,8 +9,10 @@ use crate::Config;
 use crate::JevxError;
 use crate::hooks::{HookShadowRecord, append_shadow_record, run_shadow};
 use crate::redaction::{redact, sha256_hex};
+use crate::storage::append_json_line;
 
 const CONTEXT_LIMIT: usize = 4_000;
+const CONTEXT_READ_LIMIT_BYTES: u64 = CONTEXT_LIMIT as u64 * 4 + 1;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CompactAssistResult {
@@ -68,6 +70,11 @@ pub async fn run_compact_assist(
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     let context = read_context(&cwd)?;
+    let prior_checkpoint = if is_compact_session_start(&payload) {
+        latest_checkpoint(state_dir, shadow.record.session_id_sha256.as_deref())?
+    } else {
+        None
+    };
     let checkpoint = checkpoint_from(&payload, &shadow.record, &cwd, context.as_ref());
 
     fs::create_dir_all(state_dir)?;
@@ -75,8 +82,7 @@ pub async fn run_compact_assist(
     append_checkpoint(&state_dir.join("checkpoints.jsonl"), &checkpoint)?;
 
     let response = if is_compact_session_start(&payload) {
-        let latest = latest_checkpoint(state_dir, checkpoint.session_id_sha256.as_deref())?;
-        session_start_response(latest.as_ref(), context.as_ref())
+        session_start_response(prior_checkpoint.as_ref(), context.as_ref())
     } else {
         serde_json::to_value(shadow.response)?
     };
@@ -114,17 +120,16 @@ fn checkpoint_from(
 }
 
 fn append_checkpoint(path: &Path, checkpoint: &CompactCheckpoint) -> Result<(), JevxError> {
-    path.parent().map(fs::create_dir_all).transpose()?;
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    serde_json::to_writer(&mut file, checkpoint)?;
-    file.write_all(b"\n")?;
-    Ok(())
+    append_json_line(path, checkpoint)
 }
 
 fn latest_checkpoint(
     state_dir: &Path,
     session_id_sha256: Option<&str>,
 ) -> Result<Option<CompactCheckpoint>, JevxError> {
+    let Some(session_id_sha256) = session_id_sha256 else {
+        return Ok(None);
+    };
     let path = state_dir.join("checkpoints.jsonl");
     if !path.exists() {
         return Ok(None);
@@ -135,8 +140,11 @@ fn latest_checkpoint(
         let Ok(checkpoint) = serde_json::from_str::<CompactCheckpoint>(line) else {
             continue;
         };
-        if session_id_sha256.is_none()
-            || checkpoint.session_id_sha256.as_deref() == session_id_sha256
+        if checkpoint.session_id_sha256.as_deref() == Some(session_id_sha256)
+            && matches!(
+                checkpoint.hook_event_name.as_str(),
+                "PreCompact" | "PostCompact"
+            )
         {
             latest = Some(checkpoint);
         }
@@ -149,7 +157,11 @@ fn read_context(cwd: &Path) -> Result<Option<ContextSnapshot>, JevxError> {
     if !path.exists() {
         return Ok(None);
     }
-    let raw = fs::read_to_string(path)?;
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(CONTEXT_READ_LIMIT_BYTES)
+        .read_to_end(&mut bytes)?;
+    let raw = String::from_utf8_lossy(&bytes);
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(None);
@@ -221,6 +233,7 @@ fn truncate(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use tempfile::tempdir;
 
     #[test]
@@ -302,5 +315,20 @@ mod tests {
                 .expect("context")
                 .contains("not found")
         );
+    }
+
+    #[test]
+    fn context_reader_bounds_invalid_utf8_after_the_context_budget() {
+        let root = tempdir().expect("tempdir");
+        fs::create_dir_all(root.path().join(".jevx")).expect("context dir");
+        let mut content = vec![b'a'; CONTEXT_READ_LIMIT_BYTES as usize + 100];
+        content[CONTEXT_READ_LIMIT_BYTES as usize] = 0xff;
+        fs::write(root.path().join(".jevx/compact-context.md"), content).expect("context");
+
+        let snapshot = read_context(root.path())
+            .expect("bounded context read")
+            .expect("context snapshot");
+        assert!(snapshot.redacted.contains("[jevx context truncated]"));
+        assert!(snapshot.redacted.chars().count() < CONTEXT_READ_LIMIT_BYTES as usize);
     }
 }

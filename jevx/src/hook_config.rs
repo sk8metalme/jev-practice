@@ -6,8 +6,10 @@ use serde_json::{Value, json};
 
 use crate::JevxError;
 
-const SHADOW_MARKER: &str = " hooks shadow";
-const COMPACT_ASSIST_MARKER: &str = " hooks compact-assist";
+const JEVX_BINARY_NAME: &str = "jevx";
+const SHADOW_SUBCOMMAND: &str = "shadow";
+const COMPACT_ASSIST_SUBCOMMAND: &str = "compact-assist";
+const JEVX_MANAGED_FLAG: &str = "--jevx-managed";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookScope {
@@ -116,12 +118,12 @@ pub fn install_hooks(options: &HookInstallOptions) -> Result<HookInstallReport, 
 
 fn generated_config(executable: &Path, records_path: &Path, state_dir: &Path) -> Value {
     let shadow_command = format!(
-        "{} hooks shadow --output {}",
+        "{} hooks shadow --output {} {JEVX_MANAGED_FLAG}",
         shell_quote(executable),
         shell_quote(records_path)
     );
     let compact_assist_command = format!(
-        "{} hooks compact-assist --state-dir {}",
+        "{} hooks compact-assist --state-dir {} {JEVX_MANAGED_FLAG}",
         shell_quote(executable),
         shell_quote(state_dir)
     );
@@ -211,13 +213,28 @@ fn remove_jevx_handlers(group: &mut Value) -> bool {
 }
 
 fn is_jevx_handler(handler: &Value) -> bool {
-    handler.get("type").and_then(Value::as_str) == Some("command")
-        && handler
-            .get("command")
-            .and_then(Value::as_str)
-            .is_some_and(|command| {
-                command.contains(SHADOW_MARKER) || command.contains(COMPACT_ASSIST_MARKER)
-            })
+    let Some(command) = handler.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    if handler.get("type").and_then(Value::as_str) != Some("command") {
+        return false;
+    }
+    let Some((executable, arguments)) = command.split_once(" hooks ") else {
+        return false;
+    };
+    let executable = executable.trim().trim_matches('\'');
+    let is_jevx_binary = Path::new(executable)
+        .file_name()
+        .and_then(|name| name.to_str())
+        == Some(JEVX_BINARY_NAME);
+    let is_managed = arguments
+        .split_whitespace()
+        .any(|argument| argument == JEVX_MANAGED_FLAG);
+    (is_jevx_binary || is_managed)
+        && (arguments == SHADOW_SUBCOMMAND
+            || arguments.starts_with(&format!("{SHADOW_SUBCOMMAND} "))
+            || arguments == COMPACT_ASSIST_SUBCOMMAND
+            || arguments.starts_with(&format!("{COMPACT_ASSIST_SUBCOMMAND} ")))
 }
 
 fn shell_quote(path: &Path) -> String {
