@@ -65,7 +65,7 @@ Jev判定は`AI_GATEWAY_API_KEY`を使い、既存アプリと同じVercel AI Ga
 | 重複 | 既存のjevx `shadow` / `compact-assist` handlerだけを置換し、再実行を冪等にする |
 | 復旧 | 変更時の既存ファイルを`hooks.json.jevx.bak`へ初回だけ退避する |
 | 安全確認 | `--dry-run`と`--json`で変更前に確認でき、実行後はCodex `/hooks`でTrustを確認する |
-| matcher | `SessionStart`: `startup|resume|clear|compact`; `PreCompact`/`PostCompact`: `manual|auto` |
+| matcher | `SessionStart`: `startup\|resume\|clear\|compact`; `PreCompact`/`PostCompact`: `manual\|auto` |
 
 project-local HookはCodex側のプロジェクトTrustが必要であり、ファイル生成成功だけでは発火成功を意味しない。
 

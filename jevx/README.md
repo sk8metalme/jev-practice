@@ -312,7 +312,7 @@ JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- \
 sh jevx/scripts/setup.sh --scope user
 ```
 
-インストール先は `${HOME}/.agents/skills/jevx/SKILL.md`。スクリプトは `jevx` を `cargo install --path ... --locked` でビルドするため、`~/.cargo/bin` が `PATH` に必要だよ。
+インストール先は `${HOME}/.agents/skills/jevx/SKILL.md`。スクリプトは実際に使うインストール先を `--root` で固定するため、バイナリのrootは `JEVX_INSTALL_ROOT`、`CARGO_INSTALL_ROOT`、`CARGO_HOME`、`${HOME}/.cargo` の順で決まるよ。`--hooks` 付きならそのrootのバイナリを直接使うので、`PATH`へ追加する必要はない。単体で `jevx` を呼ぶ場合だけ、表示された `bin` ディレクトリを `PATH` に追加してね。
 
 Skillのセットアップと同時に、Codex Hookも明示的に登録したい場合は `--hooks` を付ける。Hook設定の生成・Trust確認が発生するので、初回は `--dry-run` 付きのコマンドを先に実行するのがおすすめ。
 
@@ -406,9 +406,9 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 | イベント | matcher | jevx処理 | 外部送信 |
 | --- | --- | --- | --- |
-| `SessionStart` | `startup|resume|clear|compact` | checkpointを補助contextとして復元 | なし |
-| `PreCompact` | `manual|auto` | compact前のmetadataを記録 | なし |
-| `PostCompact` | `manual|auto` | compact後のmetadataを記録 | なし |
+| `SessionStart` | `startup\|resume\|clear\|compact` | checkpointを補助contextとして復元 | なし |
+| `PreCompact` | `manual\|auto` | compact前のmetadataを記録 | なし |
+| `PostCompact` | `manual\|auto` | compact後のmetadataを記録 | なし |
 | `UserPromptSubmit` | なし | Skill選択をshadow観測 | Jev設定時はあり |
 
 変更後はCodexで `/hooks` を開き、対象Hookをreview/trustしてから有効化してね。Codexのproject-local HookはプロジェクトTrustの影響を受けるため、設定ファイルを書けたこととHookが発火することは別に確認する。

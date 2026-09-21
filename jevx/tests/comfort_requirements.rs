@@ -105,7 +105,7 @@ async fn compact_assist_records_safe_state_and_restores_redacted_manifest() {
     fs::create_dir_all(repo.join(".jevx")).expect("mkdir");
     fs::write(
         repo.join(".jevx/compact-context.md"),
-        "goal: preserve the release checklist\nsecret=fixture-only\nnext: run tests",
+        "goal: preserve the release checklist\nsecret=fixture-only\nAPI_KEY: fixture-api-key\npassword = fixture-password\nAuthorization: Bearer fixture-bearer\nAuthorization:Basic fixture-basic\n\"token\":\"fixture-json\"\nnext: run tests",
     )
     .expect("context");
     let state_dir = root.path().join("state");
@@ -129,6 +129,11 @@ async fn compact_assist_records_safe_state_and_restores_redacted_manifest() {
     let checkpoint = fs::read_to_string(state_dir.join("checkpoints.jsonl")).expect("checkpoint");
     assert!(!checkpoint.contains("release checklist"));
     assert!(!checkpoint.contains("fixture-only"));
+    assert!(!checkpoint.contains("fixture-api-key"));
+    assert!(!checkpoint.contains("fixture-password"));
+    assert!(!checkpoint.contains("fixture-bearer"));
+    assert!(!checkpoint.contains("fixture-basic"));
+    assert!(!checkpoint.contains("fixture-json"));
 
     let post = run_compact_assist(
         &json!({
@@ -166,6 +171,11 @@ async fn compact_assist_records_safe_state_and_restores_redacted_manifest() {
     assert!(context.contains("release checklist"));
     assert!(context.contains("<redacted>"));
     assert!(!context.contains("fixture-only"));
+    assert!(!context.contains("fixture-api-key"));
+    assert!(!context.contains("fixture-password"));
+    assert!(!context.contains("fixture-bearer"));
+    assert!(!context.contains("fixture-basic"));
+    assert!(!context.contains("fixture-json"));
 
     let resume_without_session = run_compact_assist(
         &json!({

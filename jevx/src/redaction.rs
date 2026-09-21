@@ -23,7 +23,7 @@ pub fn redact(value: &str) -> String {
 
         if let Some(has_value) = sensitive_assignment(token) {
             output.push("<redacted>".to_owned());
-            redact_next = !has_value;
+            redact_next = !has_value || has_embedded_authorization_scheme(token);
         } else if is_sensitive_key(token) || is_bearer_word(token) {
             output.push("<redacted>".to_owned());
             redact_next = true;
@@ -51,6 +51,22 @@ fn sensitive_assignment(token: &str) -> Option<bool> {
         return Some(!value.is_empty());
     }
     None
+}
+
+fn has_embedded_authorization_scheme(token: &str) -> bool {
+    let token = trim_wrappers(token);
+    for (index, character) in token.char_indices() {
+        if !matches!(character, ':' | '=') {
+            continue;
+        }
+        let key = trim_wrappers(&token[..index]);
+        if !key.eq_ignore_ascii_case("authorization") {
+            continue;
+        }
+        let value = trim_wrappers(&token[index + character.len_utf8()..]);
+        return value.eq_ignore_ascii_case("bearer") || value.eq_ignore_ascii_case("basic");
+    }
+    false
 }
 
 fn is_sensitive_key(token: &str) -> bool {

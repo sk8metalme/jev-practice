@@ -190,7 +190,7 @@ Codex Skillとして使う場合は、リポジトリのルートで次を実行
 sh jevx/scripts/setup.sh --scope user
 ```
 
-プロジェクトだけに入れる場合は `sh jevx/scripts/setup.sh --scope project --repo "$PWD"` を使ってね。Skillの探索対象はプロジェクトの `.agents/skills` / `.codex/skills` と、ユーザーの `~/.agents/skills` / `$CODEX_HOME/skills` だよ。
+`setup.sh` のバイナリrootは `JEVX_INSTALL_ROOT`、`CARGO_INSTALL_ROOT`、`CARGO_HOME`、`${HOME}/.cargo` の順で選ばれ、`--hooks` 付きならそのrootのバイナリを直接使うよ。プロジェクトだけに入れる場合は `sh jevx/scripts/setup.sh --scope project --repo "$PWD"` を使ってね。Skillの探索対象はプロジェクトの `.agents/skills` / `.codex/skills` と、ユーザーの `~/.agents/skills` / `$CODEX_HOME/skills` だよ。
 
 ### Jevあり / なしで何が変わるか
 
