@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
@@ -9,8 +10,9 @@ use jevx::evaluation::{
     write_repeat_report,
 };
 use jevx::hooks::{
-    append_shadow_record, compact_evaluation, evaluate_conversation_compaction,
-    load_conversation_cases, run_shadow, write_compaction_report,
+    analyze_hook_correlations, append_shadow_record, compact_evaluation,
+    evaluate_conversation_compaction, load_conversation_cases, load_hook_records, run_shadow,
+    write_compaction_report,
 };
 use jevx::{
     CandidateDecision, Config, GatewayJudge, JevxError, SkillRoot, SuggestInput, SuggestionResult,
@@ -126,6 +128,7 @@ enum HooksCommand {
     Shadow(HookShadowArgs),
     CompactEval(CompactEvalArgs),
     ConversationEval(ConversationEvalArgs),
+    Correlate(CorrelationArgs),
 }
 
 #[derive(Debug, Args)]
@@ -152,6 +155,16 @@ struct CompactEvalArgs {
 
 #[derive(Debug, Args)]
 struct ConversationEvalArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct CorrelationArgs {
     #[arg(long)]
     input: PathBuf,
     #[arg(long)]
@@ -328,6 +341,7 @@ async fn run_hooks_with_config(command: HooksCommand, config: Config) -> Result<
         HooksCommand::Shadow(args) => run_hook_shadow_with_config(args, config).await,
         HooksCommand::CompactEval(args) => run_compact_eval(args),
         HooksCommand::ConversationEval(args) => run_conversation_eval(args),
+        HooksCommand::Correlate(args) => run_hook_correlation(args),
     }
 }
 
@@ -408,6 +422,23 @@ fn run_conversation_eval(args: ConversationEvalArgs) -> Result<i32, JevxError> {
         if let Some(p95) = report.summary.duration_ms_p95 {
             println!("Compaction p95: {p95} ms");
         }
+    }
+    Ok(0)
+}
+
+fn run_hook_correlation(args: CorrelationArgs) -> Result<i32, JevxError> {
+    let records = load_hook_records(&args.input)?;
+    let report = analyze_hook_correlations(&records)?;
+    if let Some(output) = args.output {
+        fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+    }
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("jevx hook correlation analysis");
+        println!("Records: {}", report.record_count);
+        println!("Duplicate groups: {}", report.duplicate_group_count);
+        println!("Duplicate records: {}", report.duplicate_record_count);
     }
     Ok(0)
 }
@@ -1038,6 +1069,35 @@ mod tests {
             0
         );
 
+        let correlation_input = root.path().join("hook-correlation.jsonl");
+        fs::write(
+            &correlation_input,
+            r#"{"schemaVersion":1,"mode":"shadow","hookEventName":"UserPromptSubmit","sessionIdSha256":"session-hash","turnIdSha256":"turn-hash","modelSha256":"model-hash","elapsedMs":1}
+{"schemaVersion":1,"mode":"shadow","hookEventName":"UserPromptSubmit","sessionIdSha256":"session-hash","turnIdSha256":"turn-hash","modelSha256":"model-hash","elapsedMs":2}"#,
+        )
+        .expect("correlation fixture");
+        let correlation_output = root.path().join("hook-correlation.json");
+        assert_eq!(
+            run_hook_correlation(CorrelationArgs {
+                input: correlation_input.clone(),
+                json: true,
+                output: Some(correlation_output.clone()),
+            })
+            .expect("correlation json"),
+            0
+        );
+        let correlation_json = fs::read_to_string(&correlation_output).expect("correlation report");
+        assert!(correlation_json.contains("duplicateGroupCount"));
+        assert_eq!(
+            run_hook_correlation(CorrelationArgs {
+                input: correlation_input.clone(),
+                json: false,
+                output: None,
+            })
+            .expect("correlation human"),
+            0
+        );
+
         let conversation_input = root.path().join("conversation.jsonl");
         fs::write(
             &conversation_input,
@@ -1117,6 +1177,25 @@ mod tests {
             )
             .await
             .expect("conversation hooks command"),
+            0
+        );
+
+        let command_correlation = Cli {
+            command: Command::Hooks {
+                command: HooksCommand::Correlate(CorrelationArgs {
+                    input: correlation_input,
+                    json: true,
+                    output: None,
+                }),
+            },
+        };
+        assert_eq!(
+            run_inner_with_config(
+                command_correlation,
+                Config::for_test(root.path().join("data"))
+            )
+            .await
+            .expect("correlation hooks command"),
             0
         );
 

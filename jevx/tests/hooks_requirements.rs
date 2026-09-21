@@ -3,10 +3,12 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use jevx::hooks::{
-    ConversationCompactionCase, append_shadow_record, compact_evaluation,
-    evaluate_conversation_compaction, load_conversation_cases, run_shadow,
+    ConversationCompactionCase, analyze_hook_correlations, append_shadow_record,
+    compact_evaluation, evaluate_conversation_compaction, load_conversation_cases,
+    load_hook_records, run_shadow,
 };
 use jevx::{Config, JevxError, Judge, JudgeRequest, JudgeResponse, SkillRecord};
+use serde_json::json;
 use tempfile::tempdir;
 
 struct StubJudge;
@@ -42,7 +44,7 @@ async fn hook_shadow_preserves_codex_flow_and_redacts_prompt() {
     let skills = vec![skill(root.path(), "pdf", "PDF pdf 結合")];
     let config = Config::for_test(root.path().join("data"));
     let result = run_shadow(
-        r#"{"hook_event_name":"UserPromptSubmit","prompt":"PDFを結合したい secret=fixture-only","cwd":"/tmp/project"}"#,
+        r#"{"hook_event_name":"UserPromptSubmit","prompt":"PDFを結合したい secret=fixture-only","cwd":"/tmp/project","session_id":"session-fixture","turn_id":"turn-fixture","model":"gpt-5.6-sol"}"#,
         Some("UserPromptSubmit"),
         &skills,
         &config,
@@ -54,6 +56,9 @@ async fn hook_shadow_preserves_codex_flow_and_redacts_prompt() {
     assert!(result.response.continue_running);
     assert!(result.response.suppress_output);
     assert_eq!(result.record.hook_event_name, "UserPromptSubmit");
+    assert!(result.record.session_id_sha256.is_some());
+    assert!(result.record.turn_id_sha256.is_some());
+    assert!(result.record.model_sha256.is_some());
     assert_eq!(result.record.selected_skill.as_deref(), Some("pdf"));
     assert!(result.record.prompt_sha256.is_some());
     let json = serde_json::to_string(&result).expect("shadow json");
@@ -127,7 +132,7 @@ async fn hook_shadow_records_safe_errors_and_session_start_metadata() {
     );
 
     let session_start = run_shadow(
-        r#"{"hook_event_name":"SessionStart","source":"compact"}"#,
+        r#"{"hook_event_name":"SessionStart","source":"compact","session_id":"session-only"}"#,
         None,
         &[],
         &config,
@@ -136,6 +141,8 @@ async fn hook_shadow_records_safe_errors_and_session_start_metadata() {
     .await
     .expect("session start hook");
     assert_eq!(session_start.record.source.as_deref(), Some("compact"));
+    assert!(session_start.record.session_id_sha256.is_some());
+    assert!(session_start.record.correlation_id_sha256.is_some());
 }
 
 #[test]
@@ -201,9 +208,12 @@ fn conversation_case(id: &str, response: &str) -> ConversationCompactionCase {
         required_facts: vec!["goal=keep-context".to_owned(), "next=verify".to_owned()],
         follow_up_text: response.to_owned(),
         secret_markers: vec!["DECOY_DO_NOT_OUTPUT".to_owned()],
+        model: Some("gpt-5.6-sol".to_owned()),
         compaction_completed: true,
         compaction_duration_ms: 120,
         input_chars: 240,
+        conversation_turns: 8,
+        context_chars: 12_400,
         observed_events: vec!["contextCompaction".to_owned(), "turn/completed".to_owned()],
     }
 }
@@ -233,6 +243,9 @@ fn conversation_compaction_evaluation_aggregates_without_storing_raw_text() {
     assert_eq!(report.summary.retention_rate, Some(1.0));
     assert_eq!(report.summary.compaction_completion_rate, Some(1.0));
     assert_eq!(report.runs[0].case_id.as_deref(), Some("case-a"));
+    assert_eq!(report.runs[0].model.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(report.runs[0].conversation_turns, 8);
+    assert_eq!(report.runs[0].context_chars, 12_400);
     assert_eq!(report.runs[0].event_count, 2);
     let json = serde_json::to_string(&report).expect("report json");
     assert!(!json.contains("DECOY_DO_NOT_OUTPUT"));
@@ -374,4 +387,135 @@ fn conversation_fixture_validation_covers_empty_and_boundaries() {
         report.runs[0].error_code.as_deref(),
         Some("required_fact_lost")
     );
+}
+
+#[test]
+fn hook_correlation_analysis_groups_duplicates_without_raw_ids() {
+    let root = tempdir().expect("tempdir");
+    let input = root.path().join("hooks.jsonl");
+    let record = |event: &str, turn: Option<&str>, elapsed: u64| {
+        json!({
+            "schemaVersion": 1,
+            "mode": "shadow",
+            "hookEventName": event,
+            "trigger": if event == "SessionStart" { serde_json::Value::Null } else { json!("manual") },
+            "source": if event == "SessionStart" { json!("startup") } else { serde_json::Value::Null },
+            "sessionIdSha256": "session-hash-fixture",
+            "turnIdSha256": turn,
+            "modelSha256": "model-hash-fixture",
+            "correlationIdSha256": if event == "SessionStart" { json!("session-correlation-fixture") } else { json!("turn-correlation-fixture") },
+            "elapsedMs": elapsed,
+        })
+    };
+    let lines = [
+        record("UserPromptSubmit", Some("turn-hash-fixture"), 10),
+        record("UserPromptSubmit", Some("turn-hash-fixture"), 11),
+        record("SessionStart", None, 0),
+        record("SessionStart", None, 0),
+        record("PostCompact", Some("post-turn"), 12),
+    ]
+    .into_iter()
+    .map(|value| serde_json::to_string(&value).expect("record json"))
+    .collect::<Vec<_>>()
+    .join("\n");
+    fs::write(&input, lines).expect("write hook records");
+
+    let records = load_hook_records(&input).expect("load hook records");
+    let report = analyze_hook_correlations(&records).expect("correlation report");
+    assert_eq!(report.record_count, 5);
+    assert_eq!(report.duplicate_group_count, 2);
+    assert_eq!(report.duplicate_record_count, 2);
+    assert_eq!(report.groups[0].count, 2);
+    let report_json = serde_json::to_string(&report).expect("correlation json");
+    assert!(!report_json.contains("raw-session"));
+    assert!(report_json.contains("session-hash-fixture"));
+
+    let no_identity = root.path().join("hooks-without-identity.jsonl");
+    fs::write(
+        &no_identity,
+        "{\"schemaVersion\":1,\"mode\":\"shadow\",\"hookEventName\":\"SessionStart\",\"elapsedMs\":0}\n{\"schemaVersion\":1,\"mode\":\"shadow\",\"hookEventName\":\"SessionStart\",\"elapsedMs\":0}",
+    )
+    .expect("write uncorrelated hook records");
+    let uncorrelated = load_hook_records(&no_identity).expect("load uncorrelated records");
+    let uncorrelated_report =
+        analyze_hook_correlations(&uncorrelated).expect("uncorrelated report");
+    assert_eq!(uncorrelated_report.duplicate_group_count, 0);
+    assert_eq!(uncorrelated_report.duplicate_record_count, 0);
+}
+
+#[test]
+fn hook_correlation_loader_rejects_empty_and_secret_echo() {
+    let root = tempdir().expect("tempdir");
+    let empty = root.path().join("empty.jsonl");
+    fs::write(&empty, "\n").expect("write empty records");
+    assert!(load_hook_records(&empty).is_err());
+
+    let invalid = root.path().join("invalid.jsonl");
+    fs::write(
+        &invalid,
+        r#"{"hookEventName":"UserPromptSubmit","prompt":"PRIVATE_RAW_INPUT"}"#,
+    )
+    .expect("write invalid records");
+    let error = load_hook_records(&invalid).expect_err("invalid records must fail");
+    assert!(!error.to_string().contains("PRIVATE_RAW_INPUT"));
+    assert!(analyze_hook_correlations(&[]).is_err());
+
+    let valid_record = || {
+        json!({
+            "schemaVersion": 1,
+            "mode": "shadow",
+            "hookEventName": "SessionStart",
+            "elapsedMs": 0,
+        })
+    };
+    for (field, value) in [
+        ("schemaVersion", json!(2)),
+        ("hookEventName", json!("Unknown")),
+        ("mode", json!("unsafe mode")),
+        ("trigger", json!("unsafe trigger")),
+        ("source", json!("unsafe source")),
+        ("sessionIdSha256", json!("unsafe session")),
+        ("turnIdSha256", json!("unsafe turn")),
+        ("modelSha256", json!("unsafe model")),
+        ("correlationIdSha256", json!("unsafe correlation")),
+    ] {
+        let root = tempdir().expect("tempdir");
+        let path = root.path().join("invalid-record.jsonl");
+        let mut record = valid_record();
+        record[field] = value;
+        fs::write(&path, serde_json::to_string(&record).expect("record json"))
+            .expect("write invalid record");
+        let error = load_hook_records(&path).expect_err("unsafe record must fail");
+        assert!(!error.to_string().contains("unsafe mode"));
+    }
+}
+
+#[test]
+fn conversation_fixture_validation_rejects_unsafe_model_and_oversized_context_metadata() {
+    let invalid_model = |mut case: ConversationCompactionCase| {
+        case.model = Some("model with spaces".to_owned());
+        assert!(evaluate_conversation_compaction(&[case]).is_err());
+    };
+    invalid_model(conversation_case(
+        "invalid-model",
+        "goal=keep-context\nnext=verify",
+    ));
+
+    let oversized_turns = |mut case: ConversationCompactionCase| {
+        case.conversation_turns = 1_025;
+        assert!(evaluate_conversation_compaction(&[case]).is_err());
+    };
+    oversized_turns(conversation_case(
+        "oversized-turns",
+        "goal=keep-context\nnext=verify",
+    ));
+
+    let oversized_context = |mut case: ConversationCompactionCase| {
+        case.context_chars = 10_000_001;
+        assert!(evaluate_conversation_compaction(&[case]).is_err());
+    };
+    oversized_context(conversation_case(
+        "oversized-context",
+        "goal=keep-context\nnext=verify",
+    ));
 }

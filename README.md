@@ -312,6 +312,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 - [複数回・APIキーあり実測レポート](docs/jevx-variance-evaluation-2026-09-21.md)
 - [Codex Hook shadow / compaction評価](docs/jevx-codex-hooks-evaluation.md)
 - [実Codex Hook発火・実会話型compaction評価](docs/jevx-real-codex-compaction-evaluation-2026-09-21.md)
+- [`/compact` Hook直接検証・compaction深掘り評価](docs/jevx-compaction-depth-evaluation-2026-09-21.md)
 - [評価Runnerの仕様](docs/jevx-evaluation.md)
 
 Hookを接続する前のshadow確認は、Codex相当のJSONをstdinへ渡して実行できる。stdoutは`{"continue":true,"suppressOutput":true}`だけを返し、会話を書き換えない。
@@ -327,4 +328,14 @@ printf '%s\n' '{"hook_event_name":"UserPromptSubmit","prompt":"PDFを結合し�
 
 ~~~bash
 cargo run --locked --manifest-path jevx/Cargo.toml -- hooks conversation-eval --input /tmp/jevx-conversation-cases.jsonl --json --output /tmp/jevx-conversation-report.json
+~~~
+
+実Codex Hookの相関ID重複を調べるときは、recordへ保存したSHA-256値だけを集計できるよ。生のセッションID・ターンID・prompt本文は再表示しない。
+
+~~~bash
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  hooks correlate \
+  --input /tmp/jevx-hooks.jsonl \
+  --json \
+  --output /tmp/jevx-hook-correlation.json
 ~~~
