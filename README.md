@@ -158,7 +158,7 @@ responseMs はJevプロバイダ内部だけの処理時間ではなく、Gatewa
 
 ## jevx: Codex CLI向けSkillセレクタ
 
-`jevx/`には、今の依頼に合いそうなCodex SkillをJevで提案するmacOS向けRust CLIを入れているよ。v1はShadow Modeなので、Skillの自動ロード・実行や会話の書き換えはしない。提案結果とJevの速度を確認してから、Codex側が通常のSkillルールに従って利用する設計だよ。
+`jevx/`には、今の依頼に合いそうなCodex SkillをJevで提案するmacOS向けRust CLIを入れているよ。Skill選択のコアはShadow Modeなので、Skillの自動ロード・実行や会話の書き換えはしない。一方、明示的に有効化した場合だけCodex Hookの観測とCompaction補助を接続できる設計だよ。
 
 ### ローカルで動作確認
 
@@ -191,6 +191,19 @@ sh jevx/scripts/setup.sh --scope user
 ```
 
 プロジェクトだけに入れる場合は `sh jevx/scripts/setup.sh --scope project --repo "$PWD"` を使ってね。Skillの探索対象はプロジェクトの `.agents/skills` / `.codex/skills` と、ユーザーの `~/.agents/skills` / `$CODEX_HOME/skills` だよ。
+
+### Jevあり / なしで何が変わるか
+
+同梱40ケースで比較すると、今回の条件ではJevが候補からの最終判断を補助することで、ローカルキーワード方式より正解率と `none` の安全側判定が改善したよ。詳細な条件・制約・再現手順は [`docs/jevx-comfort-evaluation.md`](docs/jevx-comfort-evaluation.md) にまとめている。
+
+| 方式 | 正解率 | `none` 精度 | 速度・コスト |
+| --- | ---: | ---: | --- |
+| 選択なし | 10.0% | 100.0% | 外部通信なし |
+| ローカルキーワード | 90.0% | 75.0% | 外部通信なし |
+| jevx + Jev（1回） | 100.0% | 100.0% | Jev p50/p95 407/673ms、平均 2,401 input / 128 output tokens |
+| jevx + Jev（5回平均） | 98.0% | 100.0% | Jev p50/p95 427/610ms、エラー率2.0%、探索p95 2ms |
+
+これは固定fixtureの実測であり、すべての依頼への精度保証ではないよ。Jevを使う分だけ外部通信とToken使用量が増えるので、`--dry-run`・`--skill`・Telemetryで導入効果とコストを分けて確認してね。
 
 ### リクエストとレスポンス例
 
@@ -313,6 +326,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 - [Codex Hook shadow / compaction評価](docs/jevx-codex-hooks-evaluation.md)
 - [実Codex Hook発火・実会話型compaction評価](docs/jevx-real-codex-compaction-evaluation-2026-09-21.md)
 - [`/compact` Hook直接検証・compaction深掘り評価](docs/jevx-compaction-depth-evaluation-2026-09-21.md)
+- [jevxの導入効果・Jevあり/なし比較](docs/jevx-comfort-evaluation.md)
 - [評価Runnerの仕様](docs/jevx-evaluation.md)
 
 Hookを接続する前のshadow確認は、Codex相当のJSONをstdinへ渡して実行できる。stdoutは`{"continue":true,"suppressOutput":true}`だけを返し、会話を書き換えない。
@@ -323,6 +337,28 @@ printf '%s\n' '{"hook_event_name":"UserPromptSubmit","prompt":"PDFを結合し�
       hooks shadow --event UserPromptSubmit \
       --skill-dir jevx/evals/skills --output /tmp/jevx-hooks.jsonl
 ```
+
+Hook設定を明示的に生成・マージする場合は、既存のカスタムHookを保持しながら `hooks.json` へ登録できるよ。初回は必ず `--dry-run` で確認し、Codexの `/hooks` でTrustを確認してから使ってね。
+
+```bash
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  hooks install --scope project --repo "$PWD" --dry-run --json
+
+sh jevx/scripts/setup.sh --scope user --hooks
+```
+
+`hooks install` は `SessionStart` / `PreCompact` / `PostCompact` に決定的なCompaction checkpoint補助、`UserPromptSubmit` にSkill選択のshadow観測を登録する。既存設定のバックアップを `hooks.json.jevx.bak` として作り、同じコマンドを再実行しても重複しないよ。
+
+`SessionStart(source=compact)` の補助を試すときは、必要な目的・制約・次アクションだけを `.jevx/compact-context.md` に置く。
+
+```bash
+printf '%s\n' 'goal: release checklist' 'next: run tests' > .jevx/compact-context.md
+printf '%s\n' '{"hook_event_name":"SessionStart","source":"compact","cwd":"'"$PWD"'"}' \
+  | cargo run --locked --manifest-path jevx/Cargo.toml -- \
+      hooks compact-assist --state-dir /tmp/jevx-compaction
+```
+
+`compact-assist` は会話を要約するLLMではなく、Hook metadata・ハッシュ・redacted manifestを保存して、compact後に `additionalContext` として補助的に返す試作だよ。元の会話の代替ではないので、常に現在のリポジトリと会話を確認してね。
 
 実Codexのcompact後回答を、生の会話本文なしで評価する場合は一時JSONLを作り、`hooks conversation-eval`へ渡すよ。必須事実の保持率、デコイ漏えい、compact完了率、compact p50/p95に加えて、ツール履歴・失敗・interrupt後の復旧率と、compact後のtoken usage/cache利用率をまとめて表示できる。
 

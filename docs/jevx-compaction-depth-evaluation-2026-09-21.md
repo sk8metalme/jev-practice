@@ -247,7 +247,7 @@ jevx/target/debug/jevx hooks conversation-eval \
 
 ## 参考
 
-- [Codex Hooks公式ドキュメント](https://developers.openai.com/codex/hooks)
+- [Codex Hooks公式ドキュメント](https://learn.chatgpt.com/docs/hooks)
 - [Codex App Server公式ドキュメント](https://developers.openai.com/codex/app-server)
 - [OpenAI Agents APIのusage・token observability](https://developers.openai.com/api/docs/guides/agents-api/observability)
 - [既存の実Codex / compaction評価](jevx-real-codex-compaction-evaluation-2026-09-21.md)

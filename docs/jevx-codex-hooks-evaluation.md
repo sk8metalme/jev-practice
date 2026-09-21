@@ -9,9 +9,9 @@ Codex CLIの日常利用へjevxを接続する前に、Hookへ入れても会話
 - `SessionStart`: セッション開始・再開・compact後など。`source` に `startup` / `resume` / `clear` / `compact` が入る。
 - `UserPromptSubmit`: ユーザー入力直前。shadow modeではJev判定を観測するだけ。
 
-仕様の一次情報は[Codex Hooks公式ドキュメント](https://developers.openai.com/codex/hooks)を参照した。
+仕様の一次情報は[Codex Hooks公式ドキュメント](https://learn.chatgpt.com/docs/hooks)を参照した。
 
-この実装はまだCodexの設定を自動変更しない。`hooks shadow`へHook相当のJSONをstdinで渡し、stdoutの応答契約と安全なJSONL記録を検証する方式になっている。このページのAPIキーあり結果はshadow入力に対するjevxの実行評価で、実Codex CLIとApp Serverを使った実測は[別の詳細記録](jevx-real-codex-compaction-evaluation-2026-09-21.md)へ分けているよ。
+`hooks shadow`は引き続きCodex設定を変更しない観測モード。加えて、明示的な`hooks install`で既存設定を保持しながらjevx Hookを登録できるようになった。設定変更を伴うため、`--dry-run`、バックアップ、CodexのHook Trust確認を前提にする。このページのAPIキーあり結果はshadow入力に対するjevxの実行評価で、実Codex CLIとApp Serverを使った実測は[別の詳細記録](jevx-real-codex-compaction-evaluation-2026-09-21.md)へ分けているよ。
 
 ## Shadowの動作
 
@@ -71,7 +71,7 @@ printf '%s\n' '{"hook_event_name":"SessionStart","source":"compact"}' \
       hooks shadow --event SessionStart --output /tmp/jevx-hooks.jsonl
 ```
 
-Codexの`hooks.json`へ接続する場合の形は次のようになる。これは説明用の最小例で、実際には`jevx`の絶対パス、書き込み先、プロジェクトのTrust設定を環境に合わせて決める。設定ファイルをjevxが自動生成・変更することはない。
+Codexの`hooks.json`へ手で接続する場合のshadow-only最小例は次のようになる。実際には`jevx`の絶対パス、書き込み先、プロジェクトのTrust設定を環境に合わせて決める。Compaction補助を含む安全なmergeは、下記の`hooks install`を明示的に実行する方法が使える。
 
 ```json
 {
@@ -121,6 +121,44 @@ Codexの`hooks.json`へ接続する場合の形は次のようになる。これ
 ```
 
 実運用で有効化する前に、Codex公式ドキュメントのHook trust・matcher・`additionalContext`上限を確認し、使い捨てのCodex profileでイベント発火とstdoutを検証すること。
+
+## Hook設定の自動merge（opt-in）
+
+既存のHookを保ちながらjevxを登録する場合は、まず生成結果を確認する。
+
+```bash
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  hooks install --scope project --repo "$PWD" --dry-run --json
+```
+
+実書き込みでは、次の4イベントを追加する。
+
+| イベント | matcher | command |
+| --- | --- | --- |
+| `SessionStart` | `startup|resume|clear|compact` | `hooks compact-assist` |
+| `PreCompact` | `manual|auto` | `hooks compact-assist` |
+| `PostCompact` | `manual|auto` | `hooks compact-assist` |
+| `UserPromptSubmit` | なし | `hooks shadow` |
+
+user scopeの保存先は`$CODEX_HOME/hooks.json`（未設定時`~/.codex/hooks.json`）、project scopeは`<repo>/.codex/hooks.json`。既存root・未知イベント・カスタムhandlerを保持し、jevxのmarkerを含む古いcommandだけ置換する。変更前のファイルは初回だけ`hooks.json.jevx.bak`へ退避し、再実行は冪等だよ。
+
+`jevx/scripts/setup.sh --scope user --hooks` はadvisory Skillの導入後に同じ登録を行う。設定を書けてもCodexが信頼したとは限らないので、`/hooks`でreview/trustし、使い捨て`CODEX_HOME`でstartup→prompt→`/compact`→後続入力の順に発火を確認する。
+
+## `compact-assist` の動作と限界
+
+`compact-assist`は、`PreCompact`と`PostCompact`でcheckpointを追記し、`SessionStart(source=compact)`で最新metadataを参照する。任意の`<cwd>/.jevx/compact-context.md`はredactして最大4,000文字まで補助contextへ入るが、生のmanifestはcheckpointへ保存しない。
+
+```bash
+mkdir -p .jevx
+printf '%s\n' 'goal: preserve the release checklist' 'next: run tests' \
+  > .jevx/compact-context.md
+printf '%s\n' \
+  '{"hook_event_name":"SessionStart","source":"compact","cwd":"'"$PWD"'"}' \
+  | cargo run --locked --manifest-path jevx/Cargo.toml -- \
+      hooks compact-assist --state-dir /tmp/jevx-compaction
+```
+
+出力の`hookSpecificOutput.additionalContext`は、`checkpoint event=...`とredacted manifestを含む補助情報になる。会話履歴を要約・復元するLLMではなく、Codex公式Compactionの代替でもないため、現在の会話とリポジトリを確認する指示を常に含める。`suppressOutput`は公式ドキュメント上パースされるだけで未実装なので、表示抑制の保証には使わない。
 
 ## APIキーありHook実測
 
@@ -221,21 +259,24 @@ durationが0msなのは、固定文字列のredactionがmacOSのミリ秒時計�
 
 - Pre/Post compactとSessionStartを、Jevを呼ばずに安全に観測できる。
 - UserPromptSubmitのJev判定をshadow実行しても、stdoutは固定のcontinue応答にできる。
+- `hooks install`が既存設定を保持し、jevx handlerだけを置換しながら冪等にmergeできる。
+- `compact-assist`がcheckpointへ生のmanifestや秘密値を保存せず、compact後だけredacted contextを返せる。
 - APIキーありの5回実測で、Hook処理全体p95は578msだった。
 - prompt本文を保存せず、選択結果・遅延・usage・ハッシュだけを保存できる。
 - compaction相当fixtureで、必須事実保持とfixture秘密マーカー除去を5/5で確認した。
 
 ### まだ証明していないこと
 
-- 実Codex CLIのstartup/prompt Hookに加え、成功compact経路の`PreCompact` / `PostCompact` / `SessionStart(source=compact)`も実測済み。App Server経路では`contextCompaction`を確認できるが、今回のHook記録にはCLI Hookイベントが追加されなかったため、両経路は別メトリクスとして扱う。
+- 実Codex CLIのstartup/prompt Hookに加え、成功compact経路の`PreCompact` / `PostCompact` / `SessionStart(source=compact)`も実測済み。App Server経路の`contextCompaction`とは別イベント経路なので、両方を同じメトリクスへ混ぜない。
 - Codex内部の要約結果が、長い会話の目的・制約・次アクションを保持すること。
 - 連続利用時のHook累積遅延、Gateway rate limit、API費用、失敗時の再試行戦略。
 - 実ユーザー入力の匿名化fixtureで同じ精度・レイテンシーになること。
 
-次の実装では、使い捨てCodex profileへ明示的にHookを登録し、実イベントのstdout・終了コード・イベント順を収集する。compaction品質は、秘密情報を含まない長文会話fixtureと人手または別評価器による保持判定を追加して測る。
+次は、使い捨てCodex profileで`hooks install`後のtrust・発火順・終了コードを複数回採取し、長文・実利用に近い匿名化fixtureでcompact後の保持判定を増やす。
 
 ## 関連資料
 
 - [複数回・APIキーあり実測](jevx-variance-evaluation-2026-09-21.md)
 - [評価Runnerの仕様](jevx-evaluation.md)
 - [前回の単回APIキーあり実測](jevx-live-evaluation-2026-09-21.md)
+- [Jevあり/なしの導入効果比較](jevx-comfort-evaluation.md)

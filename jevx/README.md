@@ -1,7 +1,7 @@
 # jevx
 
 `jevx` は、Codex CLI の作業を邪魔せずに Jev の有用性と速度を測るための、macOS 向け Rust CLI だよ。
-現在は **Shadow Mode**。依頼に合いそうな Skill を提案するだけで、Skill 本文の自動ロード・実行、会話の書き換え、Compaction の自動介入はしない。
+Skill 選択のコアは **Shadow Mode**。依頼に合いそうな Skill を提案するだけで、Skill 本文の自動ロード・実行や会話の書き換えはしない。Hook と Compaction 補助は、利用者が明示的に登録したときだけ動くオプトイン機能だよ。
 
 ## できること
 
@@ -18,6 +18,8 @@
 - `skills suggest`: 現在の依頼に合う Skill を Jev へ判定させる
 - `skills list`: 探索できる Skill カタログを確認する
 - `hooks shadow`: Codex Hook の発火を変更なしで記録する
+- `hooks install`: 既存設定を保持しながら jevx Hook を明示的に登録する
+- `hooks compact-assist`: Compaction前後の安全なcheckpointを記録し、compact後に補助contextを返す
 - `hooks correlate`: Hook の相関IDと重複を集計する
 - `hooks compact-eval`: 合成 Compaction のベースラインを測る
 - `hooks conversation-eval`: 実測から作った安全な JSONL を評価する
@@ -27,6 +29,8 @@
 ### v1 の境界
 
 `jevx` の提案結果は、Codex が通常の Skill 選択ルールに従うための補助情報だよ。`selected` になっても Skill を自動で読み込んだり、コマンドを実行したりしない。Jev の結果を実行権限へ直結させないことが、このツールの安全上の前提。
+
+`hooks install` は設定ファイルを変更するため、既定では何も実行しない。`--dry-run`で内容を確認してから明示的に実行し、CodexのHook Trustを確認して使う。`compact-assist`も会話を要約するLLMではなく、redactedなローカルmanifestとハッシュを復元する決定的な試作だよ。
 
 ## クイックスタート
 
@@ -260,6 +264,35 @@ Gatewayの構造化レスポンスは、例えば次のようになる。
 cargo run --locked --manifest-path jevx/Cargo.toml -- stats --json
 ```
 
+別のTelemetry JSONLを集計するときは `--input` を使える。JSONには判定率、Jev/totalのp50・p95、平均Token数、usageを持つイベント数が入る。
+
+```bash
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  stats --input /tmp/jevx-events.jsonl --json
+```
+
+例:
+
+```json
+{
+  "events": 40,
+  "selected": 36,
+  "none": 4,
+  "errors": 0,
+  "selectedRate": 0.9,
+  "noneRate": 0.1,
+  "errorRate": 0.0,
+  "averageJevResponseMs": 427.0,
+  "jevResponseMsP50": 407,
+  "jevResponseMsP95": 673,
+  "totalMsP50": 409,
+  "totalMsP95": 675,
+  "averageInputTokens": 2401.2,
+  "averageOutputTokens": 127.7,
+  "usageEvents": 40
+}
+```
+
 一回だけ記録を止める場合は `--no-telemetry`、常に止める場合は次のようにする。
 
 ```bash
@@ -281,6 +314,14 @@ sh jevx/scripts/setup.sh --scope user
 
 インストール先は `${HOME}/.agents/skills/jevx/SKILL.md`。スクリプトは `jevx` を `cargo install --path ... --locked` でビルドするため、`~/.cargo/bin` が `PATH` に必要だよ。
 
+Skillのセットアップと同時に、Codex Hookも明示的に登録したい場合は `--hooks` を付ける。Hook設定の生成・Trust確認が発生するので、初回は `--dry-run` 付きのコマンドを先に実行するのがおすすめ。
+
+```bash
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  hooks install --scope user --dry-run --json
+sh jevx/scripts/setup.sh --scope user --hooks
+```
+
 ### このプロジェクトだけへインストール
 
 ```bash
@@ -288,6 +329,17 @@ sh jevx/scripts/setup.sh --scope project --repo "$PWD"
 ```
 
 インストール先は `$PWD/.agents/skills/jevx/SKILL.md`。Codex側のSkill探索対象を明示したいときは `CODEX_HOME` も確認してね。
+
+プロジェクトHookだけを登録する場合は次のとおり。
+
+```bash
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  hooks install --scope project --repo "$PWD" --dry-run --json
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  hooks install --scope project --repo "$PWD"
+```
+
+`hooks install` の保存先は、user scopeでは `$CODEX_HOME/hooks.json`（未設定なら `~/.codex/hooks.json`）、project scopeでは `<repo>/.codex/hooks.json`。既存のroot設定とカスタムhandlerを保持し、jevxが生成した古いhandlerだけを置き換える。変更時の初回バックアップは `hooks.json.jevx.bak` に保存し、再実行は冪等だよ。
 
 ## Codex Hookを安全にshadow検証する
 
@@ -340,6 +392,45 @@ CodexのHook設定へ接続するときは、絶対パスの `jevx hooks shadow`
 ```
 
 `SessionStart`、`PreCompact`、`PostCompact` も同じコマンドへ接続できるけれど、実環境へ入れる前にイベントごとの標準入力と終了コードを確認すること。`--dangerously-bypass-hook-trust` は一時検証専用で、常用設定へ持ち込まないでね。
+
+### Hookを自動登録する（明示的なopt-in）
+
+既存の `hooks.json` を手で編集せずに接続する場合は、まずdry-runを確認する。
+
+```bash
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  hooks install --scope project --repo "$PWD" --dry-run --json
+```
+
+実行すると、次の4イベントにcommand hookを登録する。
+
+| イベント | matcher | jevx処理 | 外部送信 |
+| --- | --- | --- | --- |
+| `SessionStart` | `startup|resume|clear|compact` | checkpointを補助contextとして復元 | なし |
+| `PreCompact` | `manual|auto` | compact前のmetadataを記録 | なし |
+| `PostCompact` | `manual|auto` | compact後のmetadataを記録 | なし |
+| `UserPromptSubmit` | なし | Skill選択をshadow観測 | Jev設定時はあり |
+
+変更後はCodexで `/hooks` を開き、対象Hookをreview/trustしてから有効化してね。Codexのproject-local HookはプロジェクトTrustの影響を受けるため、設定ファイルを書けたこととHookが発火することは別に確認する。
+
+### Compaction補助の試作
+
+`hooks compact-assist` はHook JSONをstdinから読み、`<state-dir>/hook-records.jsonl` と `checkpoints.jsonl` に安全なmetadataだけを追記する。`SessionStart(source=compact)`のときは、同じセッションのcheckpointと、作業ディレクトリに任意で置いた `.jevx/compact-context.md` をredactして `additionalContext` に返す。
+
+```bash
+mkdir -p .jevx
+printf '%s\n' 'goal: preserve the release checklist' 'next: run tests' \
+  > .jevx/compact-context.md
+
+printf '%s\n' \
+  '{"hook_event_name":"SessionStart","source":"compact","session_id":"sample-session","cwd":"'"$PWD"'"}' \
+  | cargo run --locked --manifest-path jevx/Cargo.toml -- \
+      hooks compact-assist --state-dir /tmp/jevx-compaction
+```
+
+checkpointには生のmanifest本文を保存せず、redacted本文のSHA-256、文字数、event名、相関ハッシュだけを保存する。`additionalContext`も「補助情報」として返すだけで、Codexの会話履歴・現在のリポジトリ確認・公式Compactionの代替ではないよ。
+
+この補助を使わず、発火だけを観測したい場合は従来どおり `hooks shadow` を使う。公式Hookのmatcherと出力契約は [Codex Hooks公式ドキュメント](https://learn.chatgpt.com/docs/hooks) を確認してね。
 
 ### Hookの相関と重複を調べる
 
@@ -439,6 +530,19 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 レポートでは正解率・`none`精度・エラー率と、`discoveryMs`・`jevResponseMs`・`totalMs` の mean / p50 / p95 などを分けて確認できる。出力JSONLへはprompt本文とfixtureのキーワードを保存しない。
 
+### Jevあり / なしの比較結果
+
+同梱40ケースの固定fixtureで、導入効果と追加コストを同じ条件で確認した結果だよ。
+
+| 方式 | 正解率 | `none`精度 | 追加コスト |
+| --- | ---: | ---: | --- |
+| `none` | 10.0% | 100.0% | 外部通信なし |
+| `local_keyword` | 90.0% | 75.0% | 外部通信なし |
+| `jevx`（1回） | 100.0% | 100.0% | Jev p50/p95 407/673ms、平均 2,401/128 tokens |
+| `jevx`（5回平均） | 98.0% | 100.0% | Jev p50/p95 427/610ms、エラー率2.0% |
+
+5回測定ではローカル候補探索p95が2ms、全体p95が612msだった。今回のfixtureではJevの追加判断がlocal_keywordより良かった一方、Jevの応答時間・Gatewayエラー・Token使用量は常に発生するため、実運用では `stats` のp95とエラー率を一緒に見る。測定条件と「保証ではない」範囲は [`../docs/jevx-comfort-evaluation.md`](../docs/jevx-comfort-evaluation.md) にまとめているよ。
+
 ## セキュリティとデータの扱い
 
 - Jevへ送るのは、マスキングしたprompt、作業ディレクトリ、候補SkillのID・名前・説明。Skill本文、過去会話全文、Tool結果、APIキーは送らない。
@@ -487,8 +591,10 @@ cargo llvm-cov --locked --manifest-path jevx/Cargo.toml \
 ## 既知の限界
 
 - macOS向けのローカルCodex CLI運用を主対象にしている。
-- v1はShadow Modeで、Skill自動ロード・自動実行・Compaction自動介入はしない。
+- Skill選択のコアはShadow Modeで、Skill自動ロード・自動実行はしない。`hooks install` と `compact-assist` は明示的に登録した場合だけ動く試作機能。
 - APIキーありの `skills suggest` / `eval` / `eval-repeat` / UserPromptSubmit Hookは外部ネットワークへ送信する。
+- `hooks install` は設定を変更するため、dry-run・バックアップ・Codex側のHook Trust確認が必要。
+- `compact-assist` は会話本文の要約やCodex公式Compactionの代替ではなく、redactedなローカルmanifestとcheckpoint metadataを補助contextとして返すだけ。
 - `hooks compact-eval` は合成データ。実CodexのCompaction時間や品質を示すものではない。
 - `hooks conversation-eval` は、別途安全に整形したfixtureを評価するだけで、CodexやApp Serverを起動しない。
 - `postCompactionEstimatedBillableTokens` は請求額ではなく、同じ条件内の比較用Token proxy。
@@ -503,5 +609,8 @@ cargo llvm-cov --locked --manifest-path jevx/Cargo.toml \
 - [`../docs/jevx-architecture.md`](../docs/jevx-architecture.md): アーキテクチャと安全側判定
 - [`../docs/jevx-evaluation.md`](../docs/jevx-evaluation.md): 評価Runnerの仕様
 - [`../docs/jevx-codex-hooks-evaluation.md`](../docs/jevx-codex-hooks-evaluation.md): Hook shadow評価
+- [`../docs/jevx-comfort-evaluation.md`](../docs/jevx-comfort-evaluation.md): Jevあり/なし比較と導入判断
 - [`../docs/jevx-real-codex-compaction-evaluation-2026-09-21.md`](../docs/jevx-real-codex-compaction-evaluation-2026-09-21.md): 実Codex / 実会話型Compaction評価
 - [`../docs/jevx-compaction-depth-evaluation-2026-09-21.md`](../docs/jevx-compaction-depth-evaluation-2026-09-21.md): Hook直接検証とCompaction深掘り評価
+- [Codex Hooks公式ドキュメント](https://learn.chatgpt.com/docs/hooks)
+- [OpenAI Compaction公式ガイド](https://developers.openai.com/api/docs/guides/compaction)
