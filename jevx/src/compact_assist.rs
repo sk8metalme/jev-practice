@@ -114,9 +114,7 @@ fn checkpoint_from(
 }
 
 fn append_checkpoint(path: &Path, checkpoint: &CompactCheckpoint) -> Result<(), JevxError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    path.parent().map(fs::create_dir_all).transpose()?;
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     serde_json::to_writer(&mut file, checkpoint)?;
     file.write_all(b"\n")?;

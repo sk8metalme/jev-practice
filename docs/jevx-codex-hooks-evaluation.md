@@ -264,10 +264,11 @@ durationが0msなのは、固定文字列のredactionがmacOSのミリ秒時計�
 - APIキーありの5回実測で、Hook処理全体p95は578msだった。
 - prompt本文を保存せず、選択結果・遅延・usage・ハッシュだけを保存できる。
 - compaction相当fixtureで、必須事実保持とfixture秘密マーカー除去を5/5で確認した。
+- 実Codex CLIでもstartup/prompt Hookと、成功compact経路の`PreCompact` / `PostCompact` / `SessionStart(source=compact)`を確認した。詳細は[実Codex Hook / 実会話型compaction評価](jevx-real-codex-compaction-evaluation-2026-09-21.md)を参照する。
 
 ### まだ証明していないこと
 
-- 実Codex CLIのstartup/prompt Hookに加え、成功compact経路の`PreCompact` / `PostCompact` / `SessionStart(source=compact)`も実測済み。App Server経路の`contextCompaction`とは別イベント経路なので、両方を同じメトリクスへ混ぜない。
+- `hooks install`を実行した使い捨てCodex profileで、trust後の発火順・終了コード・複数回の冪等性をまとめて採取すること。手動設定による実Codex発火は確認済みだが、installer経路は別の導入確認として扱う。
 - Codex内部の要約結果が、長い会話の目的・制約・次アクションを保持すること。
 - 連続利用時のHook累積遅延、Gateway rate limit、API費用、失敗時の再試行戦略。
 - 実ユーザー入力の匿名化fixtureで同じ精度・レイテンシーになること。
@@ -280,3 +281,4 @@ durationが0msなのは、固定文字列のredactionがmacOSのミリ秒時計�
 - [評価Runnerの仕様](jevx-evaluation.md)
 - [前回の単回APIキーあり実測](jevx-live-evaluation-2026-09-21.md)
 - [Jevあり/なしの導入効果比較](jevx-comfort-evaluation.md)
+- [実Codex Hook / 実会話型compaction評価](jevx-real-codex-compaction-evaluation-2026-09-21.md)
