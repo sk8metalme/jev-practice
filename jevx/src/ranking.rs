@@ -8,6 +8,12 @@ use crate::types::{
     SuggestInput, SuggestionResult,
 };
 
+#[derive(Debug, Clone)]
+pub struct LocalRanking {
+    pub candidates: Vec<(i32, SkillRecord)>,
+    pub discovery_ms: u64,
+}
+
 pub async fn suggest_with_judge<J: Judge + ?Sized>(
     input: SuggestInput,
     skills: Vec<SkillRecord>,
@@ -57,19 +63,9 @@ pub async fn suggest_with_optional_judge<J: Judge + ?Sized>(
         });
     }
 
-    let mut candidates = skills
-        .iter()
-        .map(|skill| (local_score(prompt, skill), skill))
-        .collect::<Vec<_>>();
-    candidates.sort_by(|(left_score, left), (right_score, right)| {
-        right_score.cmp(left_score).then_with(|| {
-            left.name
-                .to_ascii_lowercase()
-                .cmp(&right.name.to_ascii_lowercase())
-        })
-    });
-    candidates.truncate(config.max_candidates);
-    let discovery_ms = elapsed_ms(started);
+    let ranking = rank_candidates(prompt, &skills, config);
+    let candidates = ranking.candidates;
+    let discovery_ms = ranking.discovery_ms;
 
     if candidates.is_empty() {
         return Ok(SuggestionResult {
@@ -137,7 +133,7 @@ pub async fn suggest_with_optional_judge<J: Judge + ?Sized>(
                 if probability >= config.min_probability && margin >= config.min_margin {
                     decision = CandidateDecision::Selected;
                     selected = Some(CandidateResult::from_skill(
-                        skill.1,
+                        &skill.1,
                         skill.0,
                         Some(probability),
                     ));
@@ -183,6 +179,26 @@ pub async fn suggest_with_optional_judge<J: Judge + ?Sized>(
         reason_code,
         mode: "shadow".to_owned(),
     })
+}
+
+pub fn rank_candidates(prompt: &str, skills: &[SkillRecord], config: &Config) -> LocalRanking {
+    let started = Instant::now();
+    let mut candidates = skills
+        .iter()
+        .map(|skill| (local_score(prompt, skill), skill.clone()))
+        .collect::<Vec<_>>();
+    candidates.sort_by(|(left_score, left), (right_score, right)| {
+        right_score.cmp(left_score).then_with(|| {
+            left.name
+                .to_ascii_lowercase()
+                .cmp(&right.name.to_ascii_lowercase())
+        })
+    });
+    candidates.truncate(config.max_candidates);
+    LocalRanking {
+        candidates,
+        discovery_ms: elapsed_ms(started),
+    }
 }
 
 pub fn local_score(query: &str, skill: &SkillRecord) -> i32 {

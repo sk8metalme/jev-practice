@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Config;
 use crate::error::JevxError;
-use crate::ranking::suggest_with_judge;
+use crate::ranking::{rank_candidates, suggest_with_judge};
 use crate::types::{CandidateDecision, Judge, SkillRecord, SuggestInput};
 
 const REPORT_SCHEMA_VERSION: u8 = 1;
@@ -30,6 +30,59 @@ pub struct EvaluationReport {
     pub case_count: usize,
     pub modes: BTreeMap<String, ModeSummary>,
     pub cases: Vec<EvaluationCaseResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RepeatEvaluationReport {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u8,
+    #[serde(rename = "runCount")]
+    pub run_count: usize,
+    #[serde(rename = "caseCount")]
+    pub case_count: usize,
+    pub modes: BTreeMap<String, RepeatModeSummary>,
+    pub runs: Vec<RepeatRunSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RepeatRunSummary {
+    pub run: usize,
+    pub modes: BTreeMap<String, ModeSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RepeatModeSummary {
+    pub status: String,
+    pub runs: usize,
+    #[serde(rename = "casesPerRun")]
+    pub cases_per_run: usize,
+    pub accuracy: DistributionSummary,
+    #[serde(rename = "nonePrecision")]
+    pub none_precision: DistributionSummary,
+    #[serde(rename = "candidateMissRate")]
+    pub candidate_miss_rate: DistributionSummary,
+    #[serde(rename = "errorRate")]
+    pub error_rate: DistributionSummary,
+    #[serde(rename = "discoveryMs")]
+    pub discovery_ms: DistributionSummary,
+    #[serde(rename = "jevResponseMs")]
+    pub jev_response_ms: DistributionSummary,
+    #[serde(rename = "totalMs")]
+    pub total_ms: DistributionSummary,
+    #[serde(rename = "inputTokens")]
+    pub input_tokens: DistributionSummary,
+    #[serde(rename = "outputTokens")]
+    pub output_tokens: DistributionSummary,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DistributionSummary {
+    pub mean: Option<f64>,
+    pub stddev: Option<f64>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub p50: Option<f64>,
+    pub p95: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,6 +112,10 @@ pub struct ModeSummary {
     pub total_ms_p50: Option<u64>,
     #[serde(rename = "totalMsP95")]
     pub total_ms_p95: Option<u64>,
+    #[serde(rename = "discoveryMsP50")]
+    pub discovery_ms_p50: Option<u64>,
+    #[serde(rename = "discoveryMsP95")]
+    pub discovery_ms_p95: Option<u64>,
     #[serde(rename = "averageInputTokens")]
     pub average_input_tokens: Option<f64>,
     #[serde(rename = "averageOutputTokens")]
@@ -74,14 +131,29 @@ pub struct EvaluationCaseResult {
     pub none_prediction: String,
     #[serde(rename = "localPrediction")]
     pub local_prediction: Option<String>,
+    #[serde(rename = "localRank")]
+    pub local_rank: LocalRankCaseResult,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jevx: Option<JevCaseResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalRankCaseResult {
+    pub prediction: Option<String>,
+    #[serde(rename = "discoveryMs")]
+    pub discovery_ms: u64,
+    #[serde(rename = "candidateCount")]
+    pub candidate_count: usize,
+    #[serde(rename = "candidateMiss")]
+    pub candidate_miss: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct JevCaseResult {
     pub decision: CandidateDecision,
     pub selected: Option<String>,
+    #[serde(rename = "discoveryMs", skip_serializing_if = "Option::is_none")]
+    pub discovery_ms: Option<u64>,
     #[serde(rename = "jevResponseMs", skip_serializing_if = "Option::is_none")]
     pub jev_response_ms: Option<u64>,
     #[serde(rename = "totalMs", skip_serializing_if = "Option::is_none")]
@@ -92,6 +164,8 @@ pub struct JevCaseResult {
     pub output_tokens: Option<u64>,
     #[serde(rename = "errorCode", skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
+    #[serde(rename = "candidateMiss")]
+    pub candidate_miss: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -103,6 +177,7 @@ struct Observation {
     total_ms: Option<u64>,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
+    discovery_ms: Option<u64>,
 }
 
 pub fn load_fixtures(path: &Path) -> Result<Vec<EvaluationFixture>, JevxError> {
@@ -162,12 +237,31 @@ pub async fn evaluate(
 ) -> EvaluationReport {
     let mut cases = Vec::with_capacity(fixtures.len());
     let mut local_observations = Vec::with_capacity(fixtures.len());
+    let mut local_rank_observations = Vec::with_capacity(fixtures.len());
     let mut jev_observations = Vec::with_capacity(fixtures.len());
 
     for fixture in fixtures {
         let local_prediction = local_keyword_prediction(&fixture.prompt, skills);
         local_observations.push(Observation {
             prediction: local_prediction.clone(),
+            ..Observation::default()
+        });
+
+        let local_ranking = rank_candidates(&fixture.prompt, skills, config);
+        let local_rank_prediction = local_ranking
+            .candidates
+            .first()
+            .and_then(|(score, skill)| (*score > 0).then(|| skill.id.clone()));
+        let local_rank_candidate_miss = !is_none_expected(&fixture.expected)
+            && !local_ranking
+                .candidates
+                .iter()
+                .any(|(_, skill)| skill.id.eq_ignore_ascii_case(&fixture.expected));
+        local_rank_observations.push(Observation {
+            prediction: local_rank_prediction.clone(),
+            candidate_miss: local_rank_candidate_miss,
+            discovery_ms: Some(local_ranking.discovery_ms),
+            total_ms: Some(local_ranking.discovery_ms),
             ..Observation::default()
         });
 
@@ -185,6 +279,12 @@ pub async fn evaluate(
             expected: fixture.expected.clone(),
             none_prediction: "none".to_owned(),
             local_prediction,
+            local_rank: LocalRankCaseResult {
+                prediction: local_rank_prediction,
+                discovery_ms: local_ranking.discovery_ms,
+                candidate_count: local_ranking.candidates.len(),
+                candidate_miss: local_rank_candidate_miss,
+            },
             jevx,
         });
     }
@@ -203,6 +303,10 @@ pub async fn evaluate(
         summarize(fixtures, &local_observations, "completed", false),
     );
     modes.insert(
+        "local_rank".to_owned(),
+        summarize(fixtures, &local_rank_observations, "completed", true),
+    );
+    modes.insert(
         "jevx".to_owned(),
         if judge.is_some() {
             summarize(fixtures, &jev_observations, "completed", true)
@@ -217,6 +321,166 @@ pub async fn evaluate(
         modes,
         cases,
     }
+}
+
+pub async fn evaluate_repeated(
+    fixtures: &[EvaluationFixture],
+    skills: &[SkillRecord],
+    config: &Config,
+    judge: Option<&dyn Judge>,
+    run_count: usize,
+) -> Result<RepeatEvaluationReport, JevxError> {
+    if run_count == 0 {
+        return Err(JevxError::InvalidInput(
+            "evaluation runs must be greater than zero".to_owned(),
+        ));
+    }
+
+    let mut reports = Vec::with_capacity(run_count);
+    for _ in 0..run_count {
+        reports.push(evaluate(fixtures, skills, config, judge).await);
+    }
+
+    let mut mode_names = BTreeSet::new();
+    for report in &reports {
+        mode_names.extend(report.modes.keys().cloned());
+    }
+    let modes = mode_names
+        .into_iter()
+        .map(|mode| {
+            let summary = repeat_mode_summary(&mode, &reports);
+            (mode, summary)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let runs = reports
+        .iter()
+        .enumerate()
+        .map(|(index, report)| RepeatRunSummary {
+            run: index + 1,
+            modes: report.modes.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    Ok(RepeatEvaluationReport {
+        schema_version: REPORT_SCHEMA_VERSION,
+        run_count,
+        case_count: fixtures.len(),
+        modes,
+        runs,
+    })
+}
+
+fn repeat_mode_summary(mode: &str, reports: &[EvaluationReport]) -> RepeatModeSummary {
+    let run_modes = reports
+        .iter()
+        .filter_map(|report| report.modes.get(mode))
+        .collect::<Vec<_>>();
+    let metric_values = reports
+        .iter()
+        .flat_map(|report| report.cases.iter())
+        .filter_map(|case| match mode {
+            "local_rank" => Some((
+                Some(case.local_rank.discovery_ms),
+                None,
+                Some(case.local_rank.discovery_ms),
+                None,
+                None,
+            )),
+            "jevx" => case.jevx.as_ref().map(|jevx| {
+                (
+                    jevx.discovery_ms,
+                    jevx.jev_response_ms,
+                    jevx.total_ms,
+                    jevx.input_tokens,
+                    jevx.output_tokens,
+                )
+            }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    RepeatModeSummary {
+        status: run_modes
+            .first()
+            .map(|summary| summary.status.clone())
+            .unwrap_or_else(|| "not_run".to_owned()),
+        runs: run_modes.len(),
+        cases_per_run: reports.first().map_or(0, |report| report.case_count),
+        accuracy: distribution(run_modes.iter().filter_map(|summary| summary.accuracy)),
+        none_precision: distribution(
+            run_modes
+                .iter()
+                .filter_map(|summary| summary.none_precision),
+        ),
+        candidate_miss_rate: distribution(
+            run_modes
+                .iter()
+                .filter_map(|summary| summary.candidate_miss_rate),
+        ),
+        error_rate: distribution(run_modes.iter().filter_map(|summary| summary.error_rate)),
+        discovery_ms: distribution(
+            metric_values
+                .iter()
+                .filter_map(|metrics| metrics.0.map(|value| value as f64)),
+        ),
+        jev_response_ms: distribution(
+            metric_values
+                .iter()
+                .filter_map(|metrics| metrics.1.map(|value| value as f64)),
+        ),
+        total_ms: distribution(
+            metric_values
+                .iter()
+                .filter_map(|metrics| metrics.2.map(|value| value as f64)),
+        ),
+        input_tokens: distribution(
+            metric_values
+                .iter()
+                .filter_map(|metrics| metrics.3.map(|value| value as f64)),
+        ),
+        output_tokens: distribution(
+            metric_values
+                .iter()
+                .filter_map(|metrics| metrics.4.map(|value| value as f64)),
+        ),
+    }
+}
+
+fn distribution(values: impl IntoIterator<Item = f64>) -> DistributionSummary {
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    if values.is_empty() {
+        return DistributionSummary {
+            mean: None,
+            stddev: None,
+            min: None,
+            max: None,
+            p50: None,
+            p95: None,
+        };
+    }
+    values.sort_by(f64::total_cmp);
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let variance = values
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / values.len() as f64;
+    DistributionSummary {
+        mean: Some(mean),
+        stddev: Some(variance.sqrt()),
+        min: values.first().copied(),
+        max: values.last().copied(),
+        p50: percentile_f64(&values, 50),
+        p95: percentile_f64(&values, 95),
+    }
+}
+
+fn percentile_f64(values: &[f64], percentile: usize) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let rank = (values.len() * percentile).div_ceil(100).saturating_sub(1);
+    values.get(rank).copied()
 }
 
 async fn evaluate_jev_case(
@@ -244,15 +508,18 @@ async fn evaluate_jev_case(
                 total_ms: Some(result.metrics.total_ms),
                 input_tokens: result.metrics.input_tokens,
                 output_tokens: result.metrics.output_tokens,
+                discovery_ms: Some(result.metrics.discovery_ms),
             };
             let case = JevCaseResult {
                 decision: result.decision,
                 selected,
+                discovery_ms: Some(result.metrics.discovery_ms),
                 jev_response_ms: Some(result.metrics.jev_response_ms),
                 total_ms: Some(result.metrics.total_ms),
                 input_tokens: result.metrics.input_tokens,
                 output_tokens: result.metrics.output_tokens,
                 error_code: None,
+                candidate_miss: observation.candidate_miss,
             };
             (case, observation)
         }
@@ -264,7 +531,9 @@ async fn evaluate_jev_case(
                 total_ms: None,
                 input_tokens: None,
                 output_tokens: None,
+                discovery_ms: None,
                 error_code: Some(error_code(&error).to_owned()),
+                candidate_miss: false,
             },
             Observation {
                 error: true,
@@ -349,6 +618,10 @@ fn summarize(
         .iter()
         .filter_map(|observation| observation.total_ms)
         .collect::<Vec<_>>();
+    let discovery_times = observations
+        .iter()
+        .filter_map(|observation| observation.discovery_ms)
+        .collect::<Vec<_>>();
     let input_tokens = observations
         .iter()
         .filter_map(|observation| observation.input_tokens)
@@ -380,6 +653,8 @@ fn summarize(
         jev_response_ms_p95: percentile(&response_times, 95),
         total_ms_p50: percentile(&total_times, 50),
         total_ms_p95: percentile(&total_times, 95),
+        discovery_ms_p50: percentile(&discovery_times, 50),
+        discovery_ms_p95: percentile(&discovery_times, 95),
         average_input_tokens: average(&input_tokens),
         average_output_tokens: average(&output_tokens),
     }
@@ -403,6 +678,8 @@ impl ModeSummary {
             jev_response_ms_p95: None,
             total_ms_p50: None,
             total_ms_p95: None,
+            discovery_ms_p50: None,
+            discovery_ms_p95: None,
             average_input_tokens: None,
             average_output_tokens: None,
         }
@@ -458,6 +735,12 @@ pub fn write_case_results(path: &Path, cases: &[EvaluationCaseResult]) -> Result
         serde_json::to_writer(&mut file, case)?;
         file.write_all(b"\n")?;
     }
+    Ok(())
+}
+
+pub fn write_repeat_report(path: &Path, report: &RepeatEvaluationReport) -> Result<(), JevxError> {
+    let content = serde_json::to_vec_pretty(report)?;
+    fs::write(path, content)?;
     Ok(())
 }
 
@@ -541,5 +824,16 @@ mod tests {
         };
         assert_eq!(metrics.jev_response_ms, 12);
         assert_eq!(metrics.total_ms, 15);
+    }
+
+    #[test]
+    fn repeat_distribution_handles_empty_values_and_rounds_percentiles() {
+        let empty = distribution(Vec::<f64>::new());
+        assert!(empty.mean.is_none());
+        assert!(percentile_f64(&[], 95).is_none());
+        let values = distribution([30.0, 10.0, 20.0]);
+        assert_eq!(values.p50, Some(20.0));
+        assert_eq!(values.p95, Some(30.0));
+        assert!(values.stddev.is_some());
     }
 }

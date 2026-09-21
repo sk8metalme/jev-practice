@@ -3,6 +3,7 @@ mod discovery;
 mod error;
 pub mod evaluation;
 mod gateway;
+pub mod hooks;
 mod ranking;
 mod redaction;
 mod telemetry;
@@ -12,7 +13,9 @@ pub use config::Config;
 pub use discovery::{SkillRoot, discover_skill_roots, discover_skills, parse_skill_file};
 pub use error::JevxError;
 pub use gateway::GatewayJudge;
-pub use ranking::{local_score, suggest_with_judge, suggest_with_optional_judge};
+pub use ranking::{
+    LocalRanking, local_score, rank_candidates, suggest_with_judge, suggest_with_optional_judge,
+};
 pub use redaction::redact;
 pub use telemetry::{Stats, TelemetryEvent, append_telemetry, read_stats};
 pub use types::{

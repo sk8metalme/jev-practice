@@ -3,7 +3,7 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use jevx::evaluation::{EvaluationFixture, evaluate, load_fixtures};
+use jevx::evaluation::{EvaluationFixture, evaluate, evaluate_repeated, load_fixtures};
 use jevx::{Config, JevxError, Judge, JudgeRequest, JudgeResponse, SkillRecord};
 use tempfile::tempdir;
 
@@ -106,6 +106,58 @@ async fn evaluation_reports_baselines_and_does_not_serialize_prompt() {
     assert!(!json.contains("secret-prompt"));
     assert!(!json.contains("secret-none"));
     assert!(!json.contains("keywords"));
+}
+
+#[tokio::test]
+async fn evaluation_reports_local_rank_metrics_and_repeat_distribution() {
+    let root = tempdir().expect("tempdir");
+    let fixtures = vec![EvaluationFixture {
+        id: "pdf-case".to_owned(),
+        kind: "synthetic".to_owned(),
+        prompt: "PDFを結合したい".to_owned(),
+        expected: "pdf".to_owned(),
+        keywords: vec!["PDF".to_owned()],
+    }];
+    let skills = vec![skill(root.path(), "pdf", "PDF pdf 結合 merge")];
+    let config = Config::for_test(root.path().join("data"));
+
+    let report = evaluate(&fixtures, &skills, &config, None).await;
+    let local_rank = &report.modes["local_rank"];
+    assert_eq!(local_rank.accuracy, Some(1.0));
+    assert!(local_rank.discovery_ms_p95.is_some());
+    assert_eq!(
+        report.cases[0].local_rank.prediction.as_deref(),
+        Some("pdf")
+    );
+    assert!(report.cases[0].local_rank.discovery_ms <= 100);
+
+    let repeated = evaluate_repeated(&fixtures, &skills, &config, None, 2)
+        .await
+        .expect("repeat evaluation");
+    assert_eq!(repeated.run_count, 2);
+    assert_eq!(repeated.modes["local_rank"].runs, 2);
+    assert_eq!(repeated.modes["local_rank"].accuracy.mean, Some(1.0));
+    let json = serde_json::to_string(&repeated).expect("repeat json");
+    assert!(!json.contains("PDFを結合したい"));
+    assert!(!json.contains("keywords"));
+
+    let judge = StubJudge {
+        response: JudgeResponse::selected("pdf", 0.95, 17, Some((31, 7))),
+        requests: Mutex::new(Vec::new()),
+    };
+    let repeated_jev = evaluate_repeated(&fixtures, &skills, &config, Some(&judge), 2)
+        .await
+        .expect("live repeat evaluation");
+    let jevx = &repeated_jev.modes["jevx"];
+    assert_eq!(jevx.accuracy.mean, Some(1.0));
+    assert_eq!(jevx.jev_response_ms.mean, Some(17.0));
+    assert_eq!(jevx.input_tokens.mean, Some(31.0));
+    assert!(jevx.discovery_ms.p95.is_some());
+    assert!(
+        evaluate_repeated(&fixtures, &skills, &config, None, 0)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
