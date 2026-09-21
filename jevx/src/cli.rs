@@ -4,7 +4,11 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 
-use jevx::evaluation::{EvaluationReport, evaluate, load_fixtures, write_case_results};
+use jevx::evaluation::{
+    EvaluationReport, evaluate, evaluate_repeated, load_fixtures, write_case_results,
+    write_repeat_report,
+};
+use jevx::hooks::{append_shadow_record, compact_evaluation, run_shadow, write_compaction_report};
 use jevx::{
     CandidateDecision, Config, GatewayJudge, JevxError, SkillRoot, SuggestInput, SuggestionResult,
     TelemetryEvent, append_telemetry, discover_skill_roots, read_stats, suggest_with_judge,
@@ -37,6 +41,11 @@ enum Command {
         json: bool,
     },
     Eval(EvalArgs),
+    EvalRepeat(EvalRepeatArgs),
+    Hooks {
+        #[command(subcommand)]
+        command: HooksCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -91,6 +100,52 @@ struct EvalArgs {
     output: Option<PathBuf>,
 }
 
+#[derive(Debug, Args)]
+struct EvalRepeatArgs {
+    #[arg(long, default_value = "5")]
+    runs: usize,
+    #[arg(long, default_value = "jevx/evals/skill-selection.jsonl")]
+    fixtures: PathBuf,
+    #[arg(long = "skill-dir", default_value = "jevx/evals/skills")]
+    skill_dirs: Vec<PathBuf>,
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Debug, Subcommand)]
+enum HooksCommand {
+    Shadow(HookShadowArgs),
+    CompactEval(CompactEvalArgs),
+}
+
+#[derive(Debug, Args)]
+struct HookShadowArgs {
+    #[arg(long)]
+    event: Option<String>,
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    #[arg(long = "skill-dir")]
+    skill_dirs: Vec<PathBuf>,
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct CompactEvalArgs {
+    #[arg(long, default_value = "5")]
+    runs: usize,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
 pub async fn run_with_cli(cli: Cli) -> i32 {
     match run_inner(cli).await {
         Ok(code) => code,
@@ -114,6 +169,8 @@ async fn run_inner_with_config(cli: Cli, config: Config) -> Result<i32, JevxErro
         Command::Stats { json } => run_stats_with_config(json, &config),
         Command::Doctor { json } => run_doctor_with_config(json, &config),
         Command::Eval(args) => run_eval_with_config(args, config).await,
+        Command::EvalRepeat(args) => run_eval_repeat_with_config(args, config).await,
+        Command::Hooks { command } => run_hooks_with_config(command, config).await,
     }
 }
 
@@ -220,6 +277,96 @@ async fn run_eval_with_config(mut args: EvalArgs, mut config: Config) -> Result<
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print_evaluation_human(&report);
+    }
+    Ok(0)
+}
+
+async fn run_eval_repeat_with_config(
+    mut args: EvalRepeatArgs,
+    mut config: Config,
+) -> Result<i32, JevxError> {
+    let cwd = args
+        .cwd
+        .take()
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let fixtures = load_fixtures(&args.fixtures)?;
+    let skills = discover_skill_roots(&skill_roots(&cwd, &args.skill_dirs))?;
+    config.telemetry_enabled = false;
+    let report = if args.dry_run {
+        evaluate_repeated(&fixtures, &skills, &config, None, args.runs).await?
+    } else {
+        let judge = GatewayJudge::from_config(&config)?;
+        evaluate_repeated(&fixtures, &skills, &config, Some(&judge), args.runs).await?
+    };
+    if let Some(output) = args.output {
+        write_repeat_report(&output, &report)?;
+    }
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_repeat_human(&report);
+    }
+    Ok(0)
+}
+
+async fn run_hooks_with_config(command: HooksCommand, config: Config) -> Result<i32, JevxError> {
+    match command {
+        HooksCommand::Shadow(args) => run_hook_shadow_with_config(args, config).await,
+        HooksCommand::CompactEval(args) => run_compact_eval(args),
+    }
+}
+
+async fn run_hook_shadow_with_config(
+    args: HookShadowArgs,
+    config: Config,
+) -> Result<i32, JevxError> {
+    run_hook_shadow_from_reader(args, config, &mut io::stdin()).await
+}
+
+async fn run_hook_shadow_from_reader<R: Read>(
+    args: HookShadowArgs,
+    config: Config,
+    reader: &mut R,
+) -> Result<i32, JevxError> {
+    let mut input = String::new();
+    reader.read_to_string(&mut input)?;
+    let cwd = args
+        .cwd
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let skills = discover_skill_roots(&skill_roots(&cwd, &args.skill_dirs))?;
+    let judge = GatewayJudge::from_config(&config).ok();
+    let result = run_shadow(
+        &input,
+        args.event.as_deref(),
+        &skills,
+        &config,
+        judge.as_ref().map(|judge| judge as &dyn jevx::Judge),
+    )
+    .await?;
+    if let Some(output) = args.output {
+        append_shadow_record(&output, &result.record)?;
+    }
+    println!("{}", serde_json::to_string(&result.response)?);
+    Ok(0)
+}
+
+fn run_compact_eval(args: CompactEvalArgs) -> Result<i32, JevxError> {
+    let report = compact_evaluation(args.runs)?;
+    if let Some(output) = args.output {
+        write_compaction_report(&output, &report)?;
+    }
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("jevx compaction evaluation");
+        println!("Runs: {}", report.run_count);
+        println!("Passed: {}", report.summary.passed);
+        println!("Retention: {}", format_ratio(report.summary.retention_rate));
+        println!("Secret leaks: {}", report.summary.secret_leaks);
+        println!("Error rate: {}", format_ratio(report.summary.error_rate));
+        if let Some(p95) = report.summary.duration_ms_p95 {
+            println!("Duration p95: {p95} ms");
+        }
     }
     Ok(0)
 }
@@ -398,6 +545,36 @@ fn print_evaluation_human(report: &EvaluationReport) {
                 summary.total_ms_p95.unwrap_or(total_ms)
             );
         }
+        if let Some(discovery_ms) = summary.discovery_ms_p50 {
+            println!(
+                "  Local discovery: p50={discovery_ms} ms p95={} ms",
+                summary.discovery_ms_p95.unwrap_or(discovery_ms)
+            );
+        }
+    }
+}
+
+fn print_repeat_human(report: &jevx::evaluation::RepeatEvaluationReport) {
+    println!("jevx repeated evaluation");
+    println!("Runs: {}", report.run_count);
+    println!("Cases per run: {}", report.case_count);
+    for (mode, summary) in &report.modes {
+        println!(
+            "{mode}: runs={} status={} accuracyMean={} errorRateMean={}",
+            summary.runs,
+            summary.status,
+            format_ratio(summary.accuracy.mean),
+            format_ratio(summary.error_rate.mean),
+        );
+        if let Some(p95) = summary.discovery_ms.p95 {
+            println!("  Local discovery p95: {p95:.0} ms");
+        }
+        if let Some(p95) = summary.jev_response_ms.p95 {
+            println!("  Jev response p95: {p95:.0} ms");
+        }
+        if let Some(p95) = summary.total_ms.p95 {
+            println!("  Total p95: {p95:.0} ms");
+        }
     }
 }
 
@@ -435,7 +612,10 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use jevx::evaluation::{EvaluationReport, ModeSummary};
+    use jevx::evaluation::{
+        DistributionSummary, EvaluationReport, ModeSummary, RepeatEvaluationReport,
+        RepeatModeSummary,
+    };
     use tempfile::tempdir;
 
     fn suggest_args() -> SuggestArgs {
@@ -681,6 +861,8 @@ mod tests {
                 jev_response_ms_p95: Some(18),
                 total_ms_p50: Some(15),
                 total_ms_p95: Some(22),
+                discovery_ms_p50: Some(9),
+                discovery_ms_p95: Some(11),
                 average_input_tokens: Some(8.0),
                 average_output_tokens: Some(2.0),
             },
@@ -693,6 +875,205 @@ mod tests {
         });
         assert_eq!(format_ratio(Some(0.5)), "0.500");
         assert_eq!(format_ratio(None), "n/a");
+    }
+
+    #[tokio::test]
+    async fn repeat_and_hook_commands_write_safe_reports() {
+        let root = tempdir().expect("tempdir");
+        let skill_dir = root.path().join("skills");
+        write_skill(&skill_dir, "pdf");
+        let fixture_path = root.path().join("fixtures.jsonl");
+        fs::write(
+            &fixture_path,
+            r#"{"id":"case-1","kind":"synthetic","prompt":"PDF","expected":"pdf"}"#,
+        )
+        .expect("fixture");
+        let repeat_output = root.path().join("repeat.json");
+        let repeat_args = EvalRepeatArgs {
+            runs: 2,
+            fixtures: fixture_path.clone(),
+            skill_dirs: vec![skill_dir.clone()],
+            cwd: Some(root.path().to_path_buf()),
+            dry_run: true,
+            json: true,
+            output: Some(repeat_output.clone()),
+        };
+        assert_eq!(
+            run_eval_repeat_with_config(repeat_args, Config::for_test(root.path().join("data")))
+                .await
+                .expect("repeat"),
+            0
+        );
+        let repeat_json = fs::read_to_string(repeat_output).expect("repeat report");
+        assert!(repeat_json.contains("local_rank"));
+        assert!(!repeat_json.contains("PDF"));
+
+        let human_repeat_args = EvalRepeatArgs {
+            runs: 1,
+            fixtures: fixture_path,
+            skill_dirs: vec![skill_dir],
+            cwd: Some(root.path().to_path_buf()),
+            dry_run: true,
+            json: false,
+            output: None,
+        };
+        assert_eq!(
+            run_eval_repeat_with_config(
+                human_repeat_args,
+                Config::for_test(root.path().join("data")),
+            )
+            .await
+            .expect("human repeat"),
+            0
+        );
+
+        let mut live_repeat_config = Config::for_test(root.path().join("data"));
+        live_repeat_config.endpoint = "http://127.0.0.1:1".to_owned();
+        assert_eq!(
+            run_eval_repeat_with_config(
+                EvalRepeatArgs {
+                    runs: 1,
+                    fixtures: root.path().join("fixtures.jsonl"),
+                    skill_dirs: vec![root.path().join("skills")],
+                    cwd: Some(root.path().to_path_buf()),
+                    dry_run: false,
+                    json: true,
+                    output: None,
+                },
+                live_repeat_config,
+            )
+            .await
+            .expect("live repeat with provider errors"),
+            0
+        );
+
+        let hook_output = root.path().join("hooks.jsonl");
+        let hook_args = HookShadowArgs {
+            event: Some("PreCompact".to_owned()),
+            cwd: Some(root.path().to_path_buf()),
+            skill_dirs: vec![],
+            output: Some(hook_output.clone()),
+        };
+        let mut hook_input =
+            Cursor::new(br#"{"hook_event_name":"PreCompact","trigger":"manual"}"#.to_vec());
+        assert_eq!(
+            run_hook_shadow_from_reader(
+                hook_args,
+                Config::for_test(root.path().join("data")),
+                &mut hook_input,
+            )
+            .await
+            .expect("hook"),
+            0
+        );
+        assert!(
+            fs::read_to_string(hook_output)
+                .expect("hook output")
+                .contains("PreCompact")
+        );
+
+        let compact_output = root.path().join("compact.json");
+        assert_eq!(
+            run_compact_eval(CompactEvalArgs {
+                runs: 2,
+                json: true,
+                output: Some(compact_output.clone()),
+            })
+            .expect("compact json"),
+            0
+        );
+        assert!(
+            fs::read_to_string(compact_output)
+                .expect("compact report")
+                .contains("secretLeaks")
+        );
+        assert_eq!(
+            run_compact_eval(CompactEvalArgs {
+                runs: 1,
+                json: false,
+                output: None,
+            })
+            .expect("compact human"),
+            0
+        );
+
+        let command_repeat = Cli {
+            command: Command::EvalRepeat(EvalRepeatArgs {
+                runs: 1,
+                fixtures: root.path().join("missing-fixture.jsonl"),
+                skill_dirs: vec![],
+                cwd: None,
+                dry_run: true,
+                json: true,
+                output: None,
+            }),
+        };
+        assert!(
+            run_inner_with_config(command_repeat, Config::for_test(root.path().join("data")))
+                .await
+                .is_err()
+        );
+
+        let command_hooks = Cli {
+            command: Command::Hooks {
+                command: HooksCommand::CompactEval(CompactEvalArgs {
+                    runs: 1,
+                    json: true,
+                    output: None,
+                }),
+            },
+        };
+        assert_eq!(
+            run_inner_with_config(command_hooks, Config::for_test(root.path().join("data")))
+                .await
+                .expect("hooks command"),
+            0
+        );
+
+        let _ = run_hooks_with_config(
+            HooksCommand::Shadow(HookShadowArgs {
+                event: Some("PreCompact".to_owned()),
+                cwd: Some(root.path().to_path_buf()),
+                skill_dirs: vec![],
+                output: None,
+            }),
+            Config::for_test(root.path().join("data")),
+        )
+        .await;
+
+        let p95 = DistributionSummary {
+            mean: Some(1.0),
+            stddev: Some(0.0),
+            min: Some(1.0),
+            max: Some(1.0),
+            p50: Some(1.0),
+            p95: Some(1.0),
+        };
+        let mut jevx_modes = BTreeMap::new();
+        jevx_modes.insert(
+            "jevx".to_owned(),
+            RepeatModeSummary {
+                status: "completed".to_owned(),
+                runs: 1,
+                cases_per_run: 1,
+                accuracy: p95.clone(),
+                none_precision: p95.clone(),
+                candidate_miss_rate: p95.clone(),
+                error_rate: p95.clone(),
+                discovery_ms: p95.clone(),
+                jev_response_ms: p95.clone(),
+                total_ms: p95.clone(),
+                input_tokens: p95.clone(),
+                output_tokens: p95,
+            },
+        );
+        print_repeat_human(&RepeatEvaluationReport {
+            schema_version: 1,
+            run_count: 1,
+            case_count: 1,
+            modes: jevx_modes,
+            runs: Vec::new(),
+        });
     }
 
     #[test]
