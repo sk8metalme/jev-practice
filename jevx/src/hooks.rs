@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
@@ -11,6 +10,7 @@ use crate::Config;
 use crate::error::JevxError;
 use crate::ranking::suggest_with_judge;
 use crate::redaction::{redact, sha256_hex};
+use crate::storage::append_json_line;
 use crate::types::{CandidateDecision, Judge, SkillRecord, SuggestInput};
 
 const HOOK_SCHEMA_VERSION: u8 = 1;
@@ -461,13 +461,7 @@ fn shadow_result(record: HookShadowRecord) -> HookShadowResult {
 }
 
 pub fn append_shadow_record(path: &Path, record: &HookShadowRecord) -> Result<(), JevxError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    serde_json::to_writer(&mut file, record)?;
-    file.write_all(b"\n")?;
-    Ok(())
+    append_json_line(path, record)
 }
 
 pub fn load_hook_records(path: &Path) -> Result<Vec<HookShadowRecord>, JevxError> {

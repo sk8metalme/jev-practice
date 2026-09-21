@@ -296,7 +296,7 @@ App Serverを使った品質評価と、CLI Hookを使ったjev応答速度測�
 
 ## 参考
 
-- [Codex Hooks公式ドキュメント](https://developers.openai.com/codex/hooks)
+- [Codex Hooks公式ドキュメント](https://learn.chatgpt.com/docs/hooks)
 - [Codex App Server公式ドキュメント](https://developers.openai.com/codex/app-server)
 - [OpenAI Agents APIのusage・token observability](https://developers.openai.com/api/docs/guides/agents-api/observability)
 - [jevx Codex Hook shadow / compaction評価](jevx-codex-hooks-evaluation.md)

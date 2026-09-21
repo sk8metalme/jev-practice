@@ -3,12 +3,14 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use jevx::compact_assist::run_compact_assist;
 use jevx::evaluation::{
     EvaluationReport, evaluate, evaluate_repeated, load_fixtures, write_case_results,
     write_repeat_report,
 };
+use jevx::hook_config::{HookInstallOptions, HookScope, install_hooks};
 use jevx::hooks::{
     analyze_hook_correlations, append_shadow_record, compact_evaluation,
     evaluate_conversation_compaction, load_conversation_cases, load_hook_records, run_shadow,
@@ -40,6 +42,8 @@ enum Command {
     Stats {
         #[arg(long)]
         json: bool,
+        #[arg(long)]
+        input: Option<PathBuf>,
     },
     Doctor {
         #[arg(long)]
@@ -126,6 +130,8 @@ struct EvalRepeatArgs {
 #[derive(Debug, Subcommand)]
 enum HooksCommand {
     Shadow(HookShadowArgs),
+    Install(HookInstallArgs),
+    CompactAssist(CompactAssistArgs),
     CompactEval(CompactEvalArgs),
     ConversationEval(ConversationEvalArgs),
     Correlate(CorrelationArgs),
@@ -141,6 +147,34 @@ struct HookShadowArgs {
     skill_dirs: Vec<PathBuf>,
     #[arg(long)]
     output: Option<PathBuf>,
+    #[arg(long = "jevx-managed", hide = true)]
+    _jevx_managed: bool,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum HookScopeArg {
+    User,
+    Project,
+}
+
+#[derive(Debug, Args)]
+struct HookInstallArgs {
+    #[arg(long, value_enum, default_value = "user")]
+    scope: HookScopeArg,
+    #[arg(long, default_value = ".")]
+    repo: PathBuf,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct CompactAssistArgs {
+    #[arg(long)]
+    state_dir: Option<PathBuf>,
+    #[arg(long = "jevx-managed", hide = true)]
+    _jevx_managed: bool,
 }
 
 #[derive(Debug, Args)]
@@ -193,7 +227,7 @@ async fn run_inner_with_config(cli: Cli, config: Config) -> Result<i32, JevxErro
             SkillsCommand::Suggest(args) => run_suggest_with_config(args, config).await,
             SkillsCommand::List(args) => run_list(args),
         },
-        Command::Stats { json } => run_stats_with_config(json, &config),
+        Command::Stats { json, input } => run_stats_with_config(json, input, &config),
         Command::Doctor { json } => run_doctor_with_config(json, &config),
         Command::Eval(args) => run_eval_with_config(args, config).await,
         Command::EvalRepeat(args) => run_eval_repeat_with_config(args, config).await,
@@ -339,6 +373,8 @@ async fn run_eval_repeat_with_config(
 async fn run_hooks_with_config(command: HooksCommand, config: Config) -> Result<i32, JevxError> {
     match command {
         HooksCommand::Shadow(args) => run_hook_shadow_with_config(args, config).await,
+        HooksCommand::Install(args) => run_hook_install(args, &config),
+        HooksCommand::CompactAssist(args) => run_compact_assist_with_config(args, &config).await,
         HooksCommand::CompactEval(args) => run_compact_eval(args),
         HooksCommand::ConversationEval(args) => run_conversation_eval(args),
         HooksCommand::Correlate(args) => run_hook_correlation(args),
@@ -397,6 +433,103 @@ fn run_compact_eval(args: CompactEvalArgs) -> Result<i32, JevxError> {
             println!("Duration p95: {p95} ms");
         }
     }
+    Ok(0)
+}
+
+fn hook_scope(scope: HookScopeArg) -> HookScope {
+    match scope {
+        HookScopeArg::User => HookScope::User,
+        HookScopeArg::Project => HookScope::Project,
+    }
+}
+
+fn resolve_hook_paths(
+    scope: HookScope,
+    home: Option<PathBuf>,
+    codex_home: Option<PathBuf>,
+) -> Result<(PathBuf, Option<PathBuf>), JevxError> {
+    if scope == HookScope::User && home.is_none() && codex_home.is_none() {
+        return Err(JevxError::InvalidInput(
+            "HOME or CODEX_HOME is required for user hook installation".to_owned(),
+        ));
+    }
+    Ok((home.unwrap_or_else(|| PathBuf::from(".")), codex_home))
+}
+
+fn run_hook_install(args: HookInstallArgs, config: &Config) -> Result<i32, JevxError> {
+    let home = env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let codex_home = env::var_os("CODEX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let data_home = config
+        .telemetry_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let scope = hook_scope(args.scope);
+    let (home, codex_home) = resolve_hook_paths(scope, home, codex_home)?;
+    let report = install_hooks(&HookInstallOptions {
+        scope,
+        repo: args.repo,
+        home,
+        codex_home,
+        executable: env::current_exe()?,
+        records_path: data_home.join("hooks.jsonl"),
+        state_dir: data_home.join("compaction"),
+        dry_run: args.dry_run,
+    })?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "{} {}",
+            if report.dry_run {
+                "Would update"
+            } else {
+                "Updated"
+            },
+            report.path.display()
+        );
+        println!("Changed: {}", report.changed);
+        println!("Hook records: {}", report.records_path.display());
+        println!("Compaction state: {}", report.state_dir.display());
+        if let Some(backup) = report.backup_path {
+            println!("Backup: {}", backup.display());
+        }
+        println!("Review and trust the hooks with /hooks in Codex before use.");
+    }
+    Ok(0)
+}
+
+async fn run_compact_assist_with_config(
+    args: CompactAssistArgs,
+    config: &Config,
+) -> Result<i32, JevxError> {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input)?;
+    let mut reader = input.as_bytes();
+    run_compact_assist_from_reader(args, config, &mut reader).await
+}
+
+async fn run_compact_assist_from_reader<R: Read>(
+    args: CompactAssistArgs,
+    config: &Config,
+    reader: &mut R,
+) -> Result<i32, JevxError> {
+    let mut input = String::new();
+    reader.read_to_string(&mut input)?;
+    let data_home = config
+        .telemetry_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let state_dir = args
+        .state_dir
+        .unwrap_or_else(|| data_home.join("compaction"));
+    let result = run_compact_assist(&input, config, &state_dir).await?;
+    println!("{}", serde_json::to_string(&result.response)?);
     Ok(0)
 }
 
@@ -466,19 +599,17 @@ fn run_hook_correlation(args: CorrelationArgs) -> Result<i32, JevxError> {
     Ok(0)
 }
 
-fn run_stats_with_config(json: bool, config: &Config) -> Result<i32, JevxError> {
-    let stats = read_stats(&config.telemetry_path)?;
+fn run_stats_with_config(
+    json: bool,
+    input: Option<PathBuf>,
+    config: &Config,
+) -> Result<i32, JevxError> {
+    let path = input.unwrap_or_else(|| config.telemetry_path.clone());
+    let stats = read_stats(&path)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&stats)?);
     } else {
-        println!("events: {}", stats.events);
-        println!("selected: {}", stats.selected);
-        println!("none: {}", stats.none);
-        println!("errors: {}", stats.errors);
-        println!(
-            "average Jev response: {:.1} ms",
-            stats.average_jev_response_ms
-        );
+        print!("{}", stats_human_output(&stats));
     }
     Ok(0)
 }
@@ -679,6 +810,39 @@ fn format_ratio(value: Option<f64>) -> String {
         .unwrap_or_else(|| "n/a".to_owned())
 }
 
+fn format_optional_u64(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "n/a".to_owned())
+}
+
+fn format_optional_f64(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{value:.1}"))
+        .unwrap_or_else(|| "n/a".to_owned())
+}
+
+fn stats_human_output(stats: &jevx::Stats) -> String {
+    format!(
+        "events: {}\nselected: {}\nnone: {}\nerrors: {}\nselected rate: {}\nnone rate: {}\nerror rate: {}\naverage Jev response: {:.1} ms\nJev response p50/p95: {}/{} ms\nTotal p50/p95: {}/{} ms\naverage input/output tokens: {}/{}\nusage events: {}\n",
+        stats.events,
+        stats.selected,
+        stats.none,
+        stats.errors,
+        format_ratio(stats.selected_rate),
+        format_ratio(stats.none_rate),
+        format_ratio(stats.error_rate),
+        stats.average_jev_response_ms,
+        format_optional_u64(stats.jev_response_ms_p50),
+        format_optional_u64(stats.jev_response_ms_p95),
+        format_optional_u64(stats.total_ms_p50),
+        format_optional_u64(stats.total_ms_p95),
+        format_optional_f64(stats.average_input_tokens),
+        format_optional_f64(stats.average_output_tokens),
+        stats.usage_events,
+    )
+}
+
 fn error_code(error: &JevxError) -> &'static str {
     match error {
         JevxError::InvalidInput(_) => "invalid_input",
@@ -703,7 +867,8 @@ fn error_exit_code(error: &JevxError) -> i32 {
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
-    use std::io::Cursor;
+    use std::io::{Cursor, Read, Write};
+    use std::net::TcpListener;
     use std::time::Duration;
 
     use super::*;
@@ -724,6 +889,25 @@ mod tests {
             skill_dirs: Vec::new(),
             no_telemetry: false,
         }
+    }
+
+    #[test]
+    fn stats_human_output_includes_token_averages_and_home_requirements() {
+        let stats = jevx::Stats {
+            average_input_tokens: Some(110.0),
+            average_output_tokens: Some(22.5),
+            usage_events: 2,
+            ..jevx::Stats::default()
+        };
+        let output = stats_human_output(&stats);
+        assert!(output.contains("average input/output tokens: 110.0/22.5"));
+        assert!(resolve_hook_paths(HookScope::User, None, None).is_err());
+        assert_eq!(
+            resolve_hook_paths(HookScope::Project, None, None)
+                .expect("project paths")
+                .0,
+            PathBuf::from(".")
+        );
     }
 
     fn write_skill(root: &Path, name: &str) {
@@ -763,7 +947,10 @@ mod tests {
         assert_eq!(run_inner(list_human).await.expect("list"), 0);
         assert_eq!(
             run_with_cli(Cli {
-                command: Command::Stats { json: true },
+                command: Command::Stats {
+                    json: true,
+                    input: None,
+                },
             })
             .await,
             0
@@ -787,9 +974,9 @@ mod tests {
             2
         );
 
-        let stats_json = run_stats_with_config(true, &config).expect("stats");
+        let stats_json = run_stats_with_config(true, None, &config).expect("stats");
         assert_eq!(stats_json, 0);
-        let stats_human = run_stats_with_config(false, &config).expect("stats");
+        let stats_human = run_stats_with_config(false, None, &config).expect("stats");
         assert_eq!(stats_human, 0);
         let doctor_json = run_doctor_with_config(true, &config).expect("doctor");
         assert_eq!(doctor_json, 0);
@@ -798,7 +985,10 @@ mod tests {
         assert_eq!(
             run_inner_with_config(
                 Cli {
-                    command: Command::Stats { json: true },
+                    command: Command::Stats {
+                        json: true,
+                        input: None,
+                    },
                 },
                 config.clone(),
             )
@@ -1048,6 +1238,7 @@ mod tests {
             cwd: Some(root.path().to_path_buf()),
             skill_dirs: vec![],
             output: Some(hook_output.clone()),
+            _jevx_managed: false,
         };
         let mut hook_input =
             Cursor::new(br#"{"hook_event_name":"PreCompact","trigger":"manual"}"#.to_vec());
@@ -1228,6 +1419,16 @@ mod tests {
                 cwd: Some(root.path().to_path_buf()),
                 skill_dirs: vec![],
                 output: None,
+                _jevx_managed: false,
+            }),
+            Config::for_test(root.path().join("data")),
+        )
+        .await;
+
+        let _ = run_hooks_with_config(
+            HooksCommand::CompactAssist(CompactAssistArgs {
+                state_dir: Some(root.path().join("stdin-compaction")),
+                _jevx_managed: false,
             }),
             Config::for_test(root.path().join("data")),
         )
@@ -1266,6 +1467,126 @@ mod tests {
             modes: jevx_modes,
             runs: Vec::new(),
         });
+    }
+
+    #[tokio::test]
+    async fn gateway_success_and_new_hook_command_paths_are_exercised() {
+        let root = tempdir().expect("tempdir");
+        let skill_dir = root.path().join("skills");
+        write_skill(&skill_dir, "pdf");
+
+        let server = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let endpoint = format!("http://{}", server.local_addr().expect("address"));
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().expect("accept");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).expect("request");
+            let body = r#"{"answers":{"skill":{"choice":"pdf","probabilities":{"pdf":0.95,"none":0.05}}},"usage":{"inputTokens":12,"outputTokens":3}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("response");
+        });
+
+        let mut gateway_config = Config::for_test(root.path().join("gateway-data"));
+        gateway_config.endpoint = endpoint;
+        let suggest = SuggestArgs {
+            prompt: Some("PDFを確認したい".to_owned()),
+            stdin: false,
+            input_json: false,
+            json: true,
+            cwd: Some(root.path().to_path_buf()),
+            explicit_skill: None,
+            skill_dirs: vec![skill_dir],
+            no_telemetry: true,
+        };
+        assert_eq!(
+            run_suggest_with_config(suggest, gateway_config)
+                .await
+                .expect("gateway"),
+            0
+        );
+        handle.join().expect("server");
+
+        assert_eq!(hook_scope(HookScopeArg::User), HookScope::User);
+        assert_eq!(hook_scope(HookScopeArg::Project), HookScope::Project);
+
+        let data_config = Config::for_test(root.path().join("data"));
+        assert_eq!(
+            run_inner_with_config(
+                Cli {
+                    command: Command::Hooks {
+                        command: HooksCommand::Install(HookInstallArgs {
+                            scope: HookScopeArg::Project,
+                            repo: root.path().to_path_buf(),
+                            dry_run: false,
+                            json: false,
+                        }),
+                    },
+                },
+                data_config.clone(),
+            )
+            .await
+            .expect("install"),
+            0
+        );
+        assert!(root.path().join(".codex/hooks.json").exists());
+        assert_eq!(
+            run_hook_install(
+                HookInstallArgs {
+                    scope: HookScopeArg::Project,
+                    repo: root.path().to_path_buf(),
+                    dry_run: true,
+                    json: false,
+                },
+                &data_config,
+            )
+            .expect("dry run"),
+            0
+        );
+        assert_eq!(
+            run_hook_install(
+                HookInstallArgs {
+                    scope: HookScopeArg::Project,
+                    repo: root.path().to_path_buf(),
+                    dry_run: true,
+                    json: true,
+                },
+                &data_config,
+            )
+            .expect("json dry run"),
+            0
+        );
+
+        let stats_input = root.path().join("stats.jsonl");
+        fs::write(
+        &stats_input,
+            r#"{"schemaVersion":1,"promptSha256":"hash","promptChars":3,"decision":"selected","selectedSkill":"pdf","metrics":{"discoveryMs":1,"jevResponseMs":4,"totalMs":5,"candidateCount":1,"inputTokens":2,"outputTokens":1}}"#,
+        )
+        .expect("stats input");
+        assert_eq!(
+            run_stats_with_config(true, Some(stats_input), &data_config).expect("stats input"),
+            0
+        );
+
+        let mut compact_input = Cursor::new(
+            br#"{"hook_event_name":"PreCompact","trigger":"manual","cwd":"/tmp"}"#.to_vec(),
+        );
+        assert_eq!(
+            run_compact_assist_from_reader(
+                CompactAssistArgs {
+                    state_dir: Some(root.path().join("reader-compaction")),
+                    _jevx_managed: false,
+                },
+                &data_config,
+                &mut compact_input,
+            )
+            .await
+            .expect("compact assist"),
+            0
+        );
     }
 
     #[test]

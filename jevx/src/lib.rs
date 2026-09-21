@@ -1,11 +1,14 @@
+pub mod compact_assist;
 mod config;
 mod discovery;
 mod error;
 pub mod evaluation;
 mod gateway;
+pub mod hook_config;
 pub mod hooks;
 mod ranking;
 mod redaction;
+mod storage;
 mod telemetry;
 mod types;
 

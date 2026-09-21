@@ -630,9 +630,25 @@ fn discovery_skips_hidden_and_target_directories_and_missing_roots() {
 
 #[test]
 fn redaction_handles_multiple_secret_shapes() {
-    let value = "api_key=abc secret=xyz password=pwd Bearer abc sk-test tsk-test";
+    let value = "api_key=abc secret=xyz password=pwd Bearer abc sk-test tsk-test API_KEY: separated-api password: separated-password Authorization: Bearer separated-bearer password = separated-space \"token\":\"json-secret\" Authorization:Bearer embedded-bearer Authorization=Basic embedded-basic";
     let redacted = jevx::redact(value);
-    assert_eq!(redacted.matches("<redacted>").count(), 6);
+    for secret in [
+        "abc",
+        "xyz",
+        "pwd",
+        "separated-api",
+        "separated-password",
+        "separated-bearer",
+        "separated-space",
+        "json-secret",
+        "embedded-bearer",
+        "embedded-basic",
+        "sk-test",
+        "tsk-test",
+    ] {
+        assert!(!redacted.contains(secret), "secret leaked: {secret}");
+    }
+    assert!(redacted.matches("<redacted>").count() >= 8);
 }
 
 #[tokio::test]
