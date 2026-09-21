@@ -11,6 +11,8 @@
 - UserPromptSubmitのJev応答は2件で、`jevResponseMs`はp50 550ms、p95 889msだった。
 - App Serverの`thread/compact/start`は、`gpt-5.6-sol`と`gpt-5.6-terra`の各3ケース、合計6ケースすべて完了した。
 - compact後の後続ターンで、合計30個の必須事実を30個保持した。後続回答のデコイ漏えいは0件、エラーは0件だった。
+- 追加のresilience評価では各ケースを8ターンに拡張し、ツール履歴12件（失敗6件）、interrupt 6件、復旧turn 18件を観測した。復旧完了率は100%だった。
+- 追加評価のpost-compaction cache hit率は全体p50 94.22% / p95 98.41%、uncached inputは397 / 1,509 tokens、billable proxyは577 / 1,677 tokens（各p50 / p95）だった。billable proxyは請求額ではない。
 - App ServerのcompactイベントとCodex CLI Hookは別経路であり、App Server側のcompact実行だけではCLI Hook recordは追加されなかった。
 
 ## 測定条件
@@ -124,7 +126,7 @@ Hook出力は次の契約を返した。
 
 ### 会話シナリオ
 
-各ケースを次の順序で実行した。
+基礎評価では各ケースを次の順序で実行した。
 
 1. Codexへ目的・受け入れ条件・制約・次アクション・デコイを含む初回入力を送る。
 2. thread/compact/startで明示的にcompactする。
@@ -133,7 +135,47 @@ Hook出力は次の契約を返した。
 
 評価器は入力の requiredFacts と後続回答を比較する。Codexが goal=value を goal: value に整形する自然な表記ゆれは同一事実として扱う。デコイは完全一致で検出し、評価レポートには文字列自体を保存しない。
 
-### 再開後のケース別結果
+### 追加: ツール履歴・失敗復旧・token usage評価
+
+2026-09-21の再開測定では、上記の基礎評価に加えて、実会話に近い復旧シーケンスを2モデル×3ケースで実行した。各ケースの順序は次のとおり。
+
+1. 5つの必須事実を含む初回turnを送る。
+2. `thread/compact/start`を実行し、`contextCompaction`の`item/started`と`item/completed`を待つ。
+3. `turn/start.toolOutput`で失敗ツール結果を1件注入する。
+4. 再試行turn、interruptしたturn、interrupt後の復旧turnを実行する。
+5. 成功ツール結果と最終復旧turnを追加し、後続回答で必須事実と復旧状態を確認する。
+
+失敗・成功のtool outputは評価用の固定文字列であり、App Serverからshell、MCP、ファイル操作を実行したわけではない。この制約により、ツール履歴の「復旧制御」とtoken usageを安全に確認しつつ、実ツール副作用を避けている。
+
+#### ケース別結果
+
+| モデル | ケース | turns | contextChars | tool履歴 / 失敗 | interrupt / 復旧turn | compact時間 | post cache hit | uncached / billable proxy | 事実保持 | leak |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| gpt-5.6-sol | aurora-compaction | 8 | 2,030 | 2 / 1 | 1 / 3 | 10,037ms | 98.08% | 306 / 427 | 5/5 | 0 |
+| gpt-5.6-sol | bug-triage | 8 | 2,011 | 2 / 1 | 1 / 3 | 5,814ms | 94.22% | 926 / 1,081 | 5/5 | 0 |
+| gpt-5.6-sol | release-plan | 8 | 2,020 | 2 / 1 | 1 / 3 | 9,204ms | 98.41% | 252 / 465 | 5/5 | 0 |
+| gpt-5.6-terra | aurora-compaction | 8 | 2,030 | 2 / 1 | 1 / 3 | 10,873ms | 93.50% | 1,050 / 1,184 | 5/5 | 0 |
+| gpt-5.6-terra | bug-triage | 8 | 2,011 | 2 / 1 | 1 / 3 | 17,275ms | 90.92% | 1,509 / 1,677 | 5/5 | 0 |
+| gpt-5.6-terra | release-plan | 8 | 2,020 | 2 / 1 | 1 / 3 | 21,003ms | 97.60% | 397 / 577 | 5/5 | 0 |
+
+#### 追加評価の集計
+
+| 指標 | gpt-5.6-sol | gpt-5.6-terra | 全体 |
+| --- | ---: | ---: | ---: |
+| compact完了 | 3/3 | 3/3 | 6/6 |
+| 必須事実保持 | 15/15 | 15/15 | 30/30 |
+| 復旧完了 | 3/3 | 3/3 | 6/6 |
+| ツール履歴 / 失敗 | 6 / 3 | 6 / 3 | 12 / 6 |
+| interrupted turns | 3 | 3 | 6 |
+| recovery turns | 9 | 9 | 18 |
+| compact時間 p50 / p95 | 9,204 / 10,037ms | 17,275 / 21,003ms | — |
+| post cache hit p50 / p95 | 98.08% / 98.41% | 93.50% / 97.60% | 94.22% / 98.41% |
+| uncached input p50 / p95 | 306 / 926 | 1,050 / 1,509 | 397 / 1,509 |
+| billable proxy p50 / p95 | 465 / 1,081 | 1,184 / 1,677 | 577 / 1,677 |
+
+usage snapshotはApp Serverの`thread/tokenUsage/updated`から取得した。`post cache hit`は`cachedInputTokens / inputTokens`、`uncached input`は`inputTokens - cachedInputTokens`、`billable proxy`は`uncached input + outputTokens`である。OpenAIのusage説明ではcached tokensはinput tokensに含まれ、reasoning tokensはoutput tokensに含まれるため、reasoningを別に加算していない。これらは比較用のtoken指標で、ChatGPT認証の実測からUSD請求額を推定したものではない。
+
+### 先行の基礎評価: ケース別結果
 
 各モデルで3ケースを実行した。各ケースは6ターン、約19,100文字の合成会話で、compact後に5つの必須事実を列挙させた。
 
@@ -147,7 +189,7 @@ Hook出力は次の契約を返した。
 | gpt-5.6-terra | release-plan | 6 | 19,105 | 5 | 5 | yes | 0 | 14,175ms | yes |
 | **合計** | **6ケース** | **—** | **114,680** | **30** | **30** | **6/6** | **0** | **—** | **6/6** |
 
-### 集計結果
+### 先行の基礎評価: 集計結果
 
 jevx hooks conversation-eval のレポートは次のとおり。
 
@@ -239,14 +281,16 @@ App Serverを使った品質評価と、CLI Hookを使ったjev応答速度測�
 5. Hook trustを明示的に確認するか、一時検証だけbypassする。
 6. SessionStart / UserPromptSubmit / PreCompact / PostCompactの安全なrecordを確認する。
 7. App Serverで初回ターン→compact→後続ターンを複数モデル・3ケース以上実行する。
-8. 生会話をGitへ追加せず、conversation-evalで集計する。
-9. 実測終了後に認証ファイル・rollout・Hook JSONL・一時評価入力を削除する。
-10. Hook経路とApp Server経路のイベントを分けて結論を書く。
+8. 失敗ツール・interrupt・復旧を含む場合は、toolOutputを合成fixtureとして明記する。
+9. 生会話をGitへ追加せず、conversation-evalで集計する。
+10. 実測終了後に認証ファイル・rollout・Hook JSONL・一時評価入力を削除する。
+11. Hook経路とApp Server経路のイベントを分けて結論を書く。
 
 ## 7. 残課題
 
 - 同一ケースを複数回で測り、モデル別のcompaction時間・保持率・Jev遅延の分散を出す。
-- 長いツール実行履歴、失敗・中断、制約変更を含む匿名化fixtureを追加する。
+- 実ツールを実行して得た長い出力、MCP、ファイル編集を含む匿名化fixtureを追加する。
+- 10,000文字級の長文コンテキストで、今回のcache・復旧特性が再現するかを確認する。
 - App Server経路でJevをcompact前後へ接続する場合は、CLI Hookとは別の統合ポイントと追加遅延を設計・実測する。
 - Gateway rate limit、API費用、認証期限切れ、Jev失敗時に会話を止めない動作を長時間実行で確認する。
 
@@ -254,5 +298,6 @@ App Serverを使った品質評価と、CLI Hookを使ったjev応答速度測�
 
 - [Codex Hooks公式ドキュメント](https://developers.openai.com/codex/hooks)
 - [Codex App Server公式ドキュメント](https://developers.openai.com/codex/app-server)
+- [OpenAI Agents APIのusage・token observability](https://developers.openai.com/api/docs/guides/agents-api/observability)
 - [jevx Codex Hook shadow / compaction評価](jevx-codex-hooks-evaluation.md)
 - [jevx評価Runner仕様](jevx-evaluation.md)

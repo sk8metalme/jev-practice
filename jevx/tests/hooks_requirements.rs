@@ -214,6 +214,15 @@ fn conversation_case(id: &str, response: &str) -> ConversationCompactionCase {
         input_chars: 240,
         conversation_turns: 8,
         context_chars: 12_400,
+        failure_recovery_required: false,
+        tool_history_items: 0,
+        tool_failure_count: 0,
+        interrupted_turns: 0,
+        recovery_turns: 0,
+        recovery_completed: false,
+        pre_compaction_usage: None,
+        compaction_usage: None,
+        post_compaction_usage: None,
         observed_events: vec!["contextCompaction".to_owned(), "turn/completed".to_owned()],
     }
 }
@@ -271,6 +280,71 @@ fn conversation_compaction_evaluation_reports_incomplete_and_lost_facts() {
         lost_report.runs[0].error_code.as_deref(),
         Some("required_fact_lost")
     );
+
+    let mut recovery = conversation_case("recovery-incomplete", "goal=keep-context\nnext=verify");
+    recovery.failure_recovery_required = true;
+    recovery.tool_history_items = 1;
+    recovery.tool_failure_count = 1;
+    recovery.recovery_turns = 1;
+    recovery.conversation_turns = 1;
+    let recovery_report =
+        evaluate_conversation_compaction(&[recovery]).expect("recovery evaluation");
+    assert_eq!(recovery_report.summary.passed, 0);
+    assert_eq!(
+        recovery_report.runs[0].error_code.as_deref(),
+        Some("recovery_incomplete")
+    );
+}
+
+#[test]
+fn conversation_evaluation_records_tool_recovery_and_token_cache_metrics() {
+    let root = tempdir().expect("tempdir");
+    let input = root.path().join("resilience.jsonl");
+    fs::write(
+        &input,
+        r#"{"caseId":"resilience-case","model":"gpt-5.6-sol","requiredFacts":["goal=keep-context","next=verify"],"followUpText":"goal=keep-context\nnext=verify\ndecoy_marker=redacted","secretMarkers":["DECOY_DO_NOT_OUTPUT"],"failureRecoveryRequired":true,"toolHistoryItems":3,"toolFailureCount":1,"interruptedTurns":1,"recoveryTurns":2,"recoveryCompleted":true,"preCompactionUsage":{"inputTokens":1000,"cachedInputTokens":400,"cacheWriteInputTokens":50,"outputTokens":80,"reasoningOutputTokens":20,"totalTokens":1100},"compactionUsage":{"inputTokens":200,"cachedInputTokens":100,"cacheWriteInputTokens":0,"outputTokens":40,"reasoningOutputTokens":10,"totalTokens":250},"postCompactionUsage":{"inputTokens":800,"cachedInputTokens":600,"cacheWriteInputTokens":0,"outputTokens":100,"reasoningOutputTokens":20,"totalTokens":920},"compactionCompleted":true,"compactionDurationMs":120,"inputChars":12400,"conversationTurns":10,"contextChars":12400,"observedEvents":["functionCallOutput","turn/interrupted","contextCompaction","turn/completed"]}"#,
+    )
+    .expect("write resilience fixture");
+
+    let cases = load_conversation_cases(&input).expect("load resilience fixture");
+    let report = evaluate_conversation_compaction(&cases).expect("resilience evaluation");
+    let run = &report.runs[0];
+    assert_eq!(run.tool_history_items, 3);
+    assert_eq!(run.tool_failure_count, 1);
+    assert_eq!(run.interrupted_turns, 1);
+    assert_eq!(run.recovery_turns, 2);
+    assert!(run.recovery_completed);
+    assert_eq!(run.post_compaction_cache_hit_rate, Some(0.75));
+    assert_eq!(run.post_compaction_uncached_input_tokens, Some(200));
+    assert_eq!(run.post_compaction_estimated_billable_tokens, Some(300));
+    assert_eq!(report.summary.recovery_completion_rate, Some(1.0));
+    assert_eq!(
+        report.summary.post_compaction_cache_hit_rate_p50,
+        Some(0.75)
+    );
+    assert_eq!(report.summary.total_input_tokens, 800);
+    assert_eq!(report.summary.total_cached_input_tokens, 600);
+    assert_eq!(report.summary.total_cache_write_input_tokens, 0);
+    assert_eq!(report.summary.total_output_tokens, 100);
+    assert_eq!(report.summary.total_tokens, 920);
+
+    let json = serde_json::to_string(&report).expect("resilience report json");
+    assert!(!json.contains("DECOY_DO_NOT_OUTPUT"));
+    assert!(!json.contains("goal=keep-context"));
+}
+
+#[test]
+fn conversation_evaluation_rejects_invalid_token_cache_metadata() {
+    let root = tempdir().expect("tempdir");
+    let input = root.path().join("invalid-usage.jsonl");
+    fs::write(
+        &input,
+        r#"{"caseId":"invalid-usage","requiredFacts":["goal=keep-context"],"followUpText":"goal=keep-context","secretMarkers":["DECOY"],"postCompactionUsage":{"inputTokens":10,"cachedInputTokens":11,"outputTokens":1,"totalTokens":12},"compactionCompleted":true,"compactionDurationMs":1,"inputChars":1,"observedEvents":["contextCompaction"]}"#,
+    )
+    .expect("write invalid usage fixture");
+
+    let error = load_conversation_cases(&input).expect_err("invalid usage must fail");
+    assert!(error.to_string().contains("cachedInputTokens"));
 }
 
 #[test]
@@ -376,6 +450,26 @@ fn conversation_fixture_validation_covers_empty_and_boundaries() {
         assert!(evaluate_conversation_compaction(&[case]).is_err());
     };
     invalid_event(conversation_case("invalid-event", "goal=keep-context"));
+
+    let invalid_tool_counts = |mut case: ConversationCompactionCase| {
+        case.tool_history_items = 0;
+        case.tool_failure_count = 1;
+        assert!(evaluate_conversation_compaction(&[case]).is_err());
+    };
+    invalid_tool_counts(conversation_case(
+        "invalid-tool-counts",
+        "goal=keep-context",
+    ));
+
+    let invalid_recovery_counts = |mut case: ConversationCompactionCase| {
+        case.conversation_turns = 1;
+        case.recovery_turns = 2;
+        assert!(evaluate_conversation_compaction(&[case]).is_err());
+    };
+    invalid_recovery_counts(conversation_case(
+        "invalid-recovery-counts",
+        "goal=keep-context",
+    ));
 
     let no_equals_fact = ConversationCompactionCase {
         required_facts: vec!["plain fact".to_owned()],

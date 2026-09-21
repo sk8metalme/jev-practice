@@ -418,6 +418,29 @@ fn run_conversation_eval(args: ConversationEvalArgs) -> Result<i32, JevxError> {
             "Compaction completion: {}",
             format_ratio(report.summary.compaction_completion_rate)
         );
+        println!(
+            "Recovery completion: {}",
+            format_ratio(report.summary.recovery_completion_rate)
+        );
+        println!(
+            "Tool history: {} items ({} failures), interrupted turns: {}, recovery turns: {}",
+            report.summary.tool_history_items,
+            report.summary.tool_failure_count,
+            report.summary.interrupted_turns,
+            report.summary.recovery_turns
+        );
+        println!(
+            "Usage: {} measured runs, {} total tokens, {} cached input tokens",
+            report.summary.usage_measured_runs,
+            report.summary.total_tokens,
+            report.summary.total_cached_input_tokens
+        );
+        if let Some(cache_rate) = report.summary.post_compaction_cache_hit_rate_p95 {
+            println!("Post-compaction cache hit p95: {:.1}%", cache_rate * 100.0);
+        }
+        if let Some(tokens) = report.summary.post_compaction_estimated_billable_tokens_p95 {
+            println!("Post-compaction estimated billable tokens p95: {tokens}");
+        }
         println!("Error rate: {}", format_ratio(report.summary.error_rate));
         if let Some(p95) = report.summary.duration_ms_p95 {
             println!("Compaction p95: {p95} ms");
@@ -1101,7 +1124,7 @@ mod tests {
         let conversation_input = root.path().join("conversation.jsonl");
         fs::write(
             &conversation_input,
-            r#"{"caseId":"cli-case","requiredFacts":["goal=keep","next=verify"],"followUpText":"goal=keep\nnext=verify\ndecoy_marker=redacted","secretMarkers":["CLI_SECRET_FIXTURE"],"compactionCompleted":true,"compactionDurationMs":12,"inputChars":40,"observedEvents":["contextCompaction","turn/completed"]}"#,
+            r#"{"caseId":"cli-case","model":"gpt-5.6-sol","requiredFacts":["goal=keep","next=verify"],"followUpText":"goal=keep\nnext=verify\ndecoy_marker=redacted","secretMarkers":["CLI_SECRET_FIXTURE"],"failureRecoveryRequired":true,"toolHistoryItems":2,"toolFailureCount":1,"interruptedTurns":1,"recoveryTurns":1,"recoveryCompleted":true,"preCompactionUsage":{"inputTokens":10,"cachedInputTokens":4,"outputTokens":1,"totalTokens":11},"compactionUsage":{"inputTokens":6,"cachedInputTokens":2,"outputTokens":1,"totalTokens":7},"postCompactionUsage":{"inputTokens":4,"cachedInputTokens":2,"outputTokens":1,"totalTokens":5},"compactionCompleted":true,"compactionDurationMs":12,"inputChars":40,"conversationTurns":4,"observedEvents":["contextCompaction","functionCallOutput","turn/interrupted","turn/completed"]}"#,
         )
         .expect("conversation fixture");
         let conversation_output = root.path().join("conversation.json");

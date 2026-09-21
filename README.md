@@ -324,7 +324,9 @@ printf '%s\n' '{"hook_event_name":"UserPromptSubmit","prompt":"PDFを結合し�
       --skill-dir jevx/evals/skills --output /tmp/jevx-hooks.jsonl
 ```
 
-実Codexのcompact後回答を、生の会話本文なしで評価する場合は一時JSONLを作り、`hooks conversation-eval`へ渡すよ。必須事実の保持率、デコイ漏えい、compact完了率、compact p50/p95をまとめて表示できる。
+実Codexのcompact後回答を、生の会話本文なしで評価する場合は一時JSONLを作り、`hooks conversation-eval`へ渡すよ。必須事実の保持率、デコイ漏えい、compact完了率、compact p50/p95に加えて、ツール履歴・失敗・interrupt後の復旧率と、compact後のtoken usage/cache利用率をまとめて表示できる。
+
+`postCompactionCacheHitRate`は`cachedInputTokens / inputTokens`、`postCompactionUncachedInputTokens`は`inputTokens - cachedInputTokens`、`postCompactionEstimatedBillableTokens`は`uncached input + output`の比較用proxy。これは請求額ではなく、モデル単価・契約・実際の請求処理を含まない安全な相対指標だよ。
 
 ~~~bash
 cargo run --locked --manifest-path jevx/Cargo.toml -- hooks conversation-eval --input /tmp/jevx-conversation-cases.jsonl --json --output /tmp/jevx-conversation-report.json
