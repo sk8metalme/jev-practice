@@ -66,6 +66,8 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
   --output /tmp/jevx-eval-results.jsonl
 ```
 
+APIキーありで同梱40ケースを実際に測定した結果は、[jevx APIキーあり実測レポート](jevx-live-evaluation-2026-09-21.md)に記録しているよ。そこでは、全体・ケース種別ごとの正解率、`none`精度、candidate miss、Jev/totalのp50・p95、平均token、品質ゲート判定を確認できる。
+
 標準出力のレポートは次のような構造になる。
 
 ```json
