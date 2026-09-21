@@ -8,7 +8,7 @@ use crate::types::{
     SuggestInput, SuggestionResult,
 };
 
-pub async fn suggest_with_judge<J: Judge>(
+pub async fn suggest_with_judge<J: Judge + ?Sized>(
     input: SuggestInput,
     skills: Vec<SkillRecord>,
     config: &Config,
@@ -17,7 +17,7 @@ pub async fn suggest_with_judge<J: Judge>(
     suggest_with_optional_judge(input, skills, config, Some(judge)).await
 }
 
-pub async fn suggest_with_optional_judge<J: Judge>(
+pub async fn suggest_with_optional_judge<J: Judge + ?Sized>(
     input: SuggestInput,
     skills: Vec<SkillRecord>,
     config: &Config,

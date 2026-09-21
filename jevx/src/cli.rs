@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 
+use jevx::evaluation::{EvaluationReport, evaluate, load_fixtures, write_case_results};
 use jevx::{
     CandidateDecision, Config, GatewayJudge, JevxError, SkillRoot, SuggestInput, SuggestionResult,
     TelemetryEvent, append_telemetry, discover_skill_roots, read_stats, suggest_with_judge,
@@ -35,6 +36,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    Eval(EvalArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -73,6 +75,22 @@ struct ListArgs {
     skill_dirs: Vec<PathBuf>,
 }
 
+#[derive(Debug, Args)]
+struct EvalArgs {
+    #[arg(long, default_value = "jevx/evals/skill-selection.jsonl")]
+    fixtures: PathBuf,
+    #[arg(long = "skill-dir", default_value = "jevx/evals/skills")]
+    skill_dirs: Vec<PathBuf>,
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
 pub async fn run_with_cli(cli: Cli) -> i32 {
     match run_inner(cli).await {
         Ok(code) => code,
@@ -95,6 +113,7 @@ async fn run_inner_with_config(cli: Cli, config: Config) -> Result<i32, JevxErro
         },
         Command::Stats { json } => run_stats_with_config(json, &config),
         Command::Doctor { json } => run_doctor_with_config(json, &config),
+        Command::Eval(args) => run_eval_with_config(args, config).await,
     }
 }
 
@@ -175,6 +194,32 @@ fn run_list(args: ListArgs) -> Result<i32, JevxError> {
             println!("{}\t{}\t{}", skill.name, skill.source, skill.path.display());
             println!("  {}", skill.description);
         }
+    }
+    Ok(0)
+}
+
+async fn run_eval_with_config(mut args: EvalArgs, mut config: Config) -> Result<i32, JevxError> {
+    let cwd = args
+        .cwd
+        .take()
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let fixtures = load_fixtures(&args.fixtures)?;
+    let skills = discover_skill_roots(&skill_roots(&cwd, &args.skill_dirs))?;
+    config.telemetry_enabled = false;
+
+    let report = if args.dry_run {
+        evaluate(&fixtures, &skills, &config, None).await
+    } else {
+        let judge = GatewayJudge::from_config(&config)?;
+        evaluate(&fixtures, &skills, &config, Some(&judge)).await
+    };
+    if let Some(output) = args.output {
+        write_case_results(&output, &report.cases)?;
+    }
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_evaluation_human(&report);
     }
     Ok(0)
 }
@@ -329,6 +374,39 @@ fn print_human(result: &SuggestionResult) {
     println!("Mode: {}", result.mode);
 }
 
+fn print_evaluation_human(report: &EvaluationReport) {
+    println!("jevx evaluation");
+    println!("Cases: {}", report.case_count);
+    for (mode, summary) in &report.modes {
+        println!(
+            "{mode}: status={} cases={} accuracy={} nonePrecision={} errorRate={}",
+            summary.status,
+            summary.cases,
+            format_ratio(summary.accuracy),
+            format_ratio(summary.none_precision),
+            format_ratio(summary.error_rate),
+        );
+        if let Some(response_ms) = summary.jev_response_ms_p50 {
+            println!(
+                "  Jev response: p50={response_ms} ms p95={} ms",
+                summary.jev_response_ms_p95.unwrap_or(response_ms)
+            );
+        }
+        if let Some(total_ms) = summary.total_ms_p50 {
+            println!(
+                "  Total: p50={total_ms} ms p95={} ms",
+                summary.total_ms_p95.unwrap_or(total_ms)
+            );
+        }
+    }
+}
+
+fn format_ratio(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{value:.3}"))
+        .unwrap_or_else(|| "n/a".to_owned())
+}
+
 fn error_code(error: &JevxError) -> &'static str {
     match error {
         JevxError::InvalidInput(_) => "invalid_input",
@@ -351,10 +429,13 @@ fn error_exit_code(error: &JevxError) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     use std::io::Cursor;
+    use std::time::Duration;
 
     use super::*;
+    use jevx::evaluation::{EvaluationReport, ModeSummary};
     use tempfile::tempdir;
 
     fn suggest_args() -> SuggestArgs {
@@ -528,6 +609,90 @@ mod tests {
                 .expect("json error without telemetry"),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn eval_covers_live_error_output_file_and_human_metrics() {
+        let root = tempdir().expect("tempdir");
+        let skill_dir = root.path().join("skills");
+        write_skill(&skill_dir, "pdf");
+        let fixture_path = root.path().join("fixtures.jsonl");
+        fs::write(
+            &fixture_path,
+            r#"{"id":"case-1","kind":"synthetic","prompt":"PDFを確認したい","expected":"pdf","keywords":["PDF"]}"#,
+        )
+        .expect("fixture");
+        let output_path = root.path().join("results.jsonl");
+        let mut config = Config::for_test(root.path().join("data"));
+        config.endpoint = "http://127.0.0.1:1".to_owned();
+        config.timeout = Duration::from_millis(10);
+        let live_args = EvalArgs {
+            fixtures: fixture_path.clone(),
+            skill_dirs: vec![skill_dir.clone()],
+            cwd: Some(root.path().to_path_buf()),
+            dry_run: false,
+            json: false,
+            output: Some(output_path.clone()),
+        };
+        assert_eq!(
+            run_eval_with_config(live_args, config.clone())
+                .await
+                .expect("live evaluation"),
+            0
+        );
+        assert!(output_path.exists());
+        assert!(
+            !fs::read_to_string(&output_path)
+                .expect("results")
+                .contains("PDFを確認したい")
+        );
+
+        let dry_human_args = EvalArgs {
+            fixtures: fixture_path,
+            skill_dirs: vec![skill_dir],
+            cwd: Some(root.path().to_path_buf()),
+            dry_run: true,
+            json: false,
+            output: None,
+        };
+        assert_eq!(
+            run_eval_with_config(dry_human_args, config)
+                .await
+                .expect("dry evaluation"),
+            0
+        );
+
+        let mut modes = BTreeMap::new();
+        modes.insert(
+            "metrics".to_owned(),
+            ModeSummary {
+                status: "completed".to_owned(),
+                cases: 1,
+                correct: 1,
+                accuracy: Some(1.0),
+                expected_none: 0,
+                none_correct: 0,
+                none_precision: None,
+                candidate_misses: 0,
+                candidate_miss_rate: Some(0.0),
+                errors: 0,
+                error_rate: Some(0.0),
+                jev_response_ms_p50: Some(12),
+                jev_response_ms_p95: Some(18),
+                total_ms_p50: Some(15),
+                total_ms_p95: Some(22),
+                average_input_tokens: Some(8.0),
+                average_output_tokens: Some(2.0),
+            },
+        );
+        print_evaluation_human(&EvaluationReport {
+            schema_version: 1,
+            case_count: 1,
+            modes,
+            cases: Vec::new(),
+        });
+        assert_eq!(format_ratio(Some(0.5)), "0.500");
+        assert_eq!(format_ratio(None), "n/a");
     }
 
     #[test]

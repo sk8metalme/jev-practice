@@ -1,6 +1,7 @@
 mod config;
 mod discovery;
 mod error;
+pub mod evaluation;
 mod gateway;
 mod ranking;
 mod redaction;

@@ -260,4 +260,38 @@ Mode: shadow
 cargo run --locked --manifest-path jevx/Cargo.toml -- stats --json
 ```
 
-設計と評価ケースは [`docs/jevx-requirements.md`](docs/jevx-requirements.md)、[`docs/jevx-architecture.md`](docs/jevx-architecture.md)、[`docs/jevx-evaluation.md`](docs/jevx-evaluation.md) にまとめているよ。
+設計と評価ケースは [`docs/jevx-requirements.md`](docs/jevx-requirements.md)、[`docs/jevx-architecture.md`](docs/jevx-architecture.md)、[`docs/jevx-evaluation.md`](docs/jevx-evaluation.md)、[`jevx/evals/README.md`](jevx/evals/README.md) にまとめているよ。
+
+### 40ケース評価Runner
+
+Jevの導入効果を、固定ケースでベースラインと比較できるよ。APIキーなしのdry-runでは、`none`・ローカルキーワード・Jevの3モードを比較し、Jevモードは`not_run`と表示する。
+
+```bash
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  eval --dry-run --json
+```
+
+Jevを実測するときはAPIキーを設定して`--dry-run`を外す。`--output`にはケースID・種別・期待ラベル・ベースライン判定・Jev判定・`jevResponseMs`・`totalMs`・usage・エラーコードをJSONLで保存し、prompt本文とfixtureの`keywords`は保存しない。
+
+```bash
+export AI_GATEWAY_API_KEY="<your-ai-gateway-api-key>"
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  eval \
+  --fixtures jevx/evals/skill-selection.jsonl \
+  --skill-dir jevx/evals/skills \
+  --json \
+  --output /tmp/jevx-eval-results.jsonl
+```
+
+dry-runの出力例:
+
+```json
+{
+  "caseCount": 40,
+  "modes": {
+    "none": { "status": "completed", "accuracy": 0.1, "nonePrecision": 1.0 },
+    "local_keyword": { "status": "completed", "accuracy": 0.9, "nonePrecision": 0.75 },
+    "jevx": { "status": "not_run", "accuracy": null }
+  }
+}
+```

@@ -47,14 +47,62 @@ jq -e -s 'length == 40 and all(.[]; .id and .prompt and .expected)' \
   jevx/evals/skill-selection.jsonl >/dev/null
 ```
 
-実環境の測定では、評価用Skillディレクトリを別途用意し、ケースごとに次のJSON入力を`jevx skills suggest --input-json --json`へ渡す。出力を保存するときも、プロンプト本文を結果ファイルやTelemetryへ再保存しない。
+評価Runnerでベースラインを先に再現する。APIキーなしで実行でき、Jevモードは意図的に`not_run`になる。
 
 ```bash
-printf '%s\n' '{"prompt":"PDFを結合したい","cwd":"/tmp/jevx-eval"}' \
-  | jevx skills suggest --input-json --json --no-telemetry
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  eval --dry-run --json
 ```
 
-収集したJSONから`decision`、`selected.id`、`metrics`、`error.code`だけを抽出し、p50/p95は同じマシン・同じ候補数・同じタイムアウトで比較する。初回起動やコンパイル時間は日常利用の処理時間に混ぜない。
+Jevを含めた実測は`--dry-run`を外す。評価用Skillカタログは、通常のユーザーSkillと混ざらないよう`jevx/evals/skills`を明示する。
+
+```bash
+export AI_GATEWAY_API_KEY="<your-ai-gateway-api-key>"
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  eval \
+  --fixtures jevx/evals/skill-selection.jsonl \
+  --skill-dir jevx/evals/skills \
+  --json \
+  --output /tmp/jevx-eval-results.jsonl
+```
+
+標準出力のレポートは次のような構造になる。
+
+```json
+{
+  "schemaVersion": 1,
+  "caseCount": 40,
+  "modes": {
+    "none": {
+      "status": "completed",
+      "cases": 40,
+      "accuracy": 0.1,
+      "nonePrecision": 1.0
+    },
+    "local_keyword": {
+      "status": "completed",
+      "cases": 40,
+      "accuracy": 0.9,
+      "nonePrecision": 0.75
+    },
+    "jevx": {
+      "status": "completed",
+      "accuracy": 0.0,
+      "nonePrecision": 0.0,
+      "candidateMissRate": 0.0,
+      "errorRate": 0.0,
+      "jevResponseMsP50": 124,
+      "jevResponseMsP95": 188,
+      "totalMsP50": 141,
+      "totalMsP95": 207,
+      "averageInputTokens": 82.0,
+      "averageOutputTokens": 12.0
+    }
+  }
+}
+```
+
+上記のJev数値と正解率はレスポンス例であり、実測値ではない。実際の評価では、同じマシン・同じ候補数・同じタイムアウトで複数回測定し、初回起動やコンパイル時間を日常利用の処理時間に混ぜない。`--output`へ出すJSONLにはケースID・種別・期待ラベル・ベースライン判定・Jev判定・遅延・usage・エラーコードが入り、prompt本文とfixtureの`keywords`は保存されない。
 
 ## 判定ゲート
 

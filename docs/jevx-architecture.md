@@ -30,6 +30,7 @@ v1の出力は提案だけで、Skill本文のロード、実行、Hookによる
 | `ranking` | ローカル候補順位、Jev結果の閾値判定、計測 | `Judge` trait |
 | `gateway` | Vercel AI GatewayへのHTTPリクエストとレスポンス変換 | reqwest |
 | `telemetry` | JSONL追記とローカル集計 | filesystem |
+| `evaluation` | fixture読み込み、ベースライン比較、Jev実測、p50/p95集計 | `Judge` trait、filesystem |
 | `cli` | 入力形式、出力形式、終了コード | clap |
 
 中心の`ranking`は`Judge` traitへ依存するオニオン型の内側に置き、テストではネットワークを使わないStub Judgeへ差し替えられるようにしているよ。HTTP境界のレスポンス形状はローカルTCPテストで検証する。
@@ -88,4 +89,4 @@ Jevの呼び出しは候補ごとに繰り返さず、候補を1つのChoice質�
 
 ## 後続拡張
 
-v1で境界を固定したうえで、次は別タスクとしてHook shadow連携、Compaction補助、コンテキスト探索キャッシュ、Tool Result削減、評価Runnerを追加する。Skillの自動ロード・実行は、精度・誤作動・権限境界の評価が終わるまで有効化しない。
+v1で境界を固定したうえで、次は別タスクとしてHook shadow連携、Compaction補助、コンテキスト探索キャッシュ、Tool Result削減を追加する。Skillの自動ロード・実行は、精度・誤作動・権限境界の評価が終わるまで有効化しない。
