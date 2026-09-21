@@ -227,7 +227,7 @@ durationが0msなのは、固定文字列のredactionがmacOSのミリ秒時計�
 
 ### まだ証明していないこと
 
-- 実Codex CLIのstartup/prompt Hookは実測済み。ただしcompactを伴うCLI経路の`PreCompact` / `PostCompact` / `SessionStart(source=compact)`は未確認で、App Server経路では今回Hook記録に出なかった。
+- 実Codex CLIのstartup/prompt Hookに加え、成功compact経路の`PreCompact` / `PostCompact` / `SessionStart(source=compact)`も実測済み。App Server経路では`contextCompaction`を確認できるが、今回のHook記録にはCLI Hookイベントが追加されなかったため、両経路は別メトリクスとして扱う。
 - Codex内部の要約結果が、長い会話の目的・制約・次アクションを保持すること。
 - 連続利用時のHook累積遅延、Gateway rate limit、API費用、失敗時の再試行戦略。
 - 実ユーザー入力の匿名化fixtureで同じ精度・レイテンシーになること。

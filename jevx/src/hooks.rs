@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -28,7 +29,7 @@ pub struct HookResponse {
     pub suppress_output: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookShadowRecord {
     #[serde(rename = "schemaVersion")]
     pub schema_version: u8,
@@ -39,6 +40,17 @@ pub struct HookShadowRecord {
     pub trigger: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    #[serde(rename = "sessionIdSha256", skip_serializing_if = "Option::is_none")]
+    pub session_id_sha256: Option<String>,
+    #[serde(rename = "turnIdSha256", skip_serializing_if = "Option::is_none")]
+    pub turn_id_sha256: Option<String>,
+    #[serde(rename = "modelSha256", skip_serializing_if = "Option::is_none")]
+    pub model_sha256: Option<String>,
+    #[serde(
+        rename = "correlationIdSha256",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub correlation_id_sha256: Option<String>,
     #[serde(rename = "promptSha256", skip_serializing_if = "Option::is_none")]
     pub prompt_sha256: Option<String>,
     #[serde(rename = "promptChars", skip_serializing_if = "Option::is_none")]
@@ -70,6 +82,97 @@ pub struct HookShadowResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct HookCorrelationReport {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u8,
+    pub mode: String,
+    #[serde(rename = "recordCount")]
+    pub record_count: usize,
+    #[serde(rename = "duplicateGroupCount")]
+    pub duplicate_group_count: usize,
+    #[serde(rename = "duplicateRecordCount")]
+    pub duplicate_record_count: usize,
+    #[serde(rename = "eventCounts")]
+    pub event_counts: BTreeMap<String, usize>,
+    pub groups: Vec<HookCorrelationGroup>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HookCorrelationGroup {
+    #[serde(
+        rename = "correlationIdSha256",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub correlation_id_sha256: Option<String>,
+    #[serde(rename = "sessionIdSha256", skip_serializing_if = "Option::is_none")]
+    pub session_id_sha256: Option<String>,
+    #[serde(rename = "turnIdSha256", skip_serializing_if = "Option::is_none")]
+    pub turn_id_sha256: Option<String>,
+    #[serde(rename = "modelSha256", skip_serializing_if = "Option::is_none")]
+    pub model_sha256: Option<String>,
+    #[serde(rename = "hookEventName")]
+    pub hook_event_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsageSnapshot {
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub cached_input_tokens: u64,
+    #[serde(default)]
+    pub cache_write_input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub reasoning_output_tokens: u64,
+    #[serde(default)]
+    pub total_tokens: u64,
+}
+
+impl TokenUsageSnapshot {
+    fn validate(&self, context: &str) -> Result<(), JevxError> {
+        if self.cached_input_tokens > self.input_tokens {
+            return Err(JevxError::InvalidInput(format!(
+                "{context}: cachedInputTokens must not exceed inputTokens"
+            )));
+        }
+        Ok(())
+    }
+
+    fn cache_hit_rate(&self) -> Option<f64> {
+        (self.input_tokens > 0).then(|| self.cached_input_tokens as f64 / self.input_tokens as f64)
+    }
+
+    fn uncached_input_tokens(&self) -> u64 {
+        self.input_tokens.saturating_sub(self.cached_input_tokens)
+    }
+
+    fn estimated_billable_tokens(&self) -> u64 {
+        self.uncached_input_tokens()
+            .saturating_add(self.output_tokens)
+    }
+}
+
+#[derive(Debug, Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct CorrelationKey {
+    correlation_id_sha256: Option<String>,
+    session_id_sha256: Option<String>,
+    turn_id_sha256: Option<String>,
+    model_sha256: Option<String>,
+    hook_event_name: String,
+    trigger: Option<String>,
+    source: Option<String>,
+    unkeyed_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct CompactionEvaluationReport {
     #[serde(rename = "schemaVersion")]
     pub schema_version: u8,
@@ -86,6 +189,8 @@ pub struct CompactionRun {
     pub run: usize,
     #[serde(rename = "caseId", skip_serializing_if = "Option::is_none")]
     pub case_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     #[serde(rename = "eventCount")]
     pub event_count: usize,
     #[serde(rename = "observedEvents", skip_serializing_if = "Vec::is_empty")]
@@ -100,10 +205,50 @@ pub struct CompactionRun {
     pub secret_leaks: usize,
     #[serde(rename = "inputChars")]
     pub input_chars: usize,
+    #[serde(rename = "conversationTurns")]
+    pub conversation_turns: usize,
+    #[serde(rename = "contextChars")]
+    pub context_chars: usize,
     #[serde(rename = "outputChars")]
     pub output_chars: usize,
     #[serde(rename = "durationMs")]
     pub duration_ms: u64,
+    #[serde(rename = "failureRecoveryRequired")]
+    pub failure_recovery_required: bool,
+    #[serde(rename = "toolHistoryItems")]
+    pub tool_history_items: usize,
+    #[serde(rename = "toolFailureCount")]
+    pub tool_failure_count: usize,
+    #[serde(rename = "interruptedTurns")]
+    pub interrupted_turns: usize,
+    #[serde(rename = "recoveryTurns")]
+    pub recovery_turns: usize,
+    #[serde(rename = "recoveryCompleted")]
+    pub recovery_completed: bool,
+    #[serde(rename = "preCompactionUsage", skip_serializing_if = "Option::is_none")]
+    pub pre_compaction_usage: Option<TokenUsageSnapshot>,
+    #[serde(rename = "compactionUsage", skip_serializing_if = "Option::is_none")]
+    pub compaction_usage: Option<TokenUsageSnapshot>,
+    #[serde(
+        rename = "postCompactionUsage",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub post_compaction_usage: Option<TokenUsageSnapshot>,
+    #[serde(
+        rename = "postCompactionCacheHitRate",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub post_compaction_cache_hit_rate: Option<f64>,
+    #[serde(
+        rename = "postCompactionUncachedInputTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub post_compaction_uncached_input_tokens: Option<u64>,
+    #[serde(
+        rename = "postCompactionEstimatedBillableTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub post_compaction_estimated_billable_tokens: Option<u64>,
     #[serde(rename = "errorCode", skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
 }
@@ -127,6 +272,40 @@ pub struct CompactionSummary {
     pub output_chars_p50: Option<u64>,
     #[serde(rename = "outputCharsP95")]
     pub output_chars_p95: Option<u64>,
+    #[serde(rename = "recoveryCompletionRate")]
+    pub recovery_completion_rate: Option<f64>,
+    #[serde(rename = "toolHistoryItems")]
+    pub tool_history_items: usize,
+    #[serde(rename = "toolFailureCount")]
+    pub tool_failure_count: usize,
+    #[serde(rename = "interruptedTurns")]
+    pub interrupted_turns: usize,
+    #[serde(rename = "recoveryTurns")]
+    pub recovery_turns: usize,
+    #[serde(rename = "usageMeasuredRuns")]
+    pub usage_measured_runs: usize,
+    #[serde(rename = "totalInputTokens")]
+    pub total_input_tokens: u64,
+    #[serde(rename = "totalCachedInputTokens")]
+    pub total_cached_input_tokens: u64,
+    #[serde(rename = "totalCacheWriteInputTokens")]
+    pub total_cache_write_input_tokens: u64,
+    #[serde(rename = "totalOutputTokens")]
+    pub total_output_tokens: u64,
+    #[serde(rename = "totalTokens")]
+    pub total_tokens: u64,
+    #[serde(rename = "postCompactionCacheHitRateP50")]
+    pub post_compaction_cache_hit_rate_p50: Option<f64>,
+    #[serde(rename = "postCompactionCacheHitRateP95")]
+    pub post_compaction_cache_hit_rate_p95: Option<f64>,
+    #[serde(rename = "postCompactionUncachedInputTokensP50")]
+    pub post_compaction_uncached_input_tokens_p50: Option<u64>,
+    #[serde(rename = "postCompactionUncachedInputTokensP95")]
+    pub post_compaction_uncached_input_tokens_p95: Option<u64>,
+    #[serde(rename = "postCompactionEstimatedBillableTokensP50")]
+    pub post_compaction_estimated_billable_tokens_p50: Option<u64>,
+    #[serde(rename = "postCompactionEstimatedBillableTokensP95")]
+    pub post_compaction_estimated_billable_tokens_p95: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,9 +315,33 @@ pub struct ConversationCompactionCase {
     pub required_facts: Vec<String>,
     pub follow_up_text: String,
     pub secret_markers: Vec<String>,
+    #[serde(default)]
+    pub model: Option<String>,
     pub compaction_completed: bool,
     pub compaction_duration_ms: u64,
     pub input_chars: usize,
+    #[serde(default)]
+    pub conversation_turns: usize,
+    #[serde(default)]
+    pub context_chars: usize,
+    #[serde(default)]
+    pub failure_recovery_required: bool,
+    #[serde(default)]
+    pub tool_history_items: usize,
+    #[serde(default)]
+    pub tool_failure_count: usize,
+    #[serde(default)]
+    pub interrupted_turns: usize,
+    #[serde(default)]
+    pub recovery_turns: usize,
+    #[serde(default)]
+    pub recovery_completed: bool,
+    #[serde(default)]
+    pub pre_compaction_usage: Option<TokenUsageSnapshot>,
+    #[serde(default)]
+    pub compaction_usage: Option<TokenUsageSnapshot>,
+    #[serde(default)]
+    pub post_compaction_usage: Option<TokenUsageSnapshot>,
     pub observed_events: Vec<String>,
 }
 
@@ -173,6 +376,17 @@ pub async fn run_shadow(
     }
 
     let prompt = payload.get("prompt").and_then(Value::as_str);
+    let session_id = payload.get("session_id").and_then(Value::as_str);
+    let turn_id = payload.get("turn_id").and_then(Value::as_str);
+    let model = payload.get("model").and_then(Value::as_str);
+    let correlation_id_sha256 = match (session_id, turn_id) {
+        (Some(session_id), Some(turn_id)) => {
+            let value = format!("{session_id}:{turn_id}");
+            Some(sha256_hex(&value))
+        }
+        (Some(session_id), None) => Some(sha256_hex(session_id)),
+        _ => None,
+    };
     let mut record = HookShadowRecord {
         schema_version: HOOK_SCHEMA_VERSION,
         mode: "shadow".to_owned(),
@@ -185,6 +399,10 @@ pub async fn run_shadow(
             .get("source")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        session_id_sha256: session_id.map(sha256_hex),
+        turn_id_sha256: turn_id.map(sha256_hex),
+        model_sha256: model.map(sha256_hex),
+        correlation_id_sha256,
         prompt_sha256: prompt.map(sha256_hex),
         prompt_chars: prompt.map(|value| value.chars().count()),
         decision: None,
@@ -250,6 +468,103 @@ pub fn append_shadow_record(path: &Path, record: &HookShadowRecord) -> Result<()
     serde_json::to_writer(&mut file, record)?;
     file.write_all(b"\n")?;
     Ok(())
+}
+
+pub fn load_hook_records(path: &Path) -> Result<Vec<HookShadowRecord>, JevxError> {
+    let content = fs::read_to_string(path)?;
+    let mut records = Vec::new();
+    for (line_number, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let record = serde_json::from_str::<HookShadowRecord>(line).map_err(|_| {
+            JevxError::InvalidInput(format!("invalid hook record at line {}", line_number + 1))
+        })?;
+        validate_hook_record(&record, &format!("line {}", line_number + 1))?;
+        records.push(record);
+    }
+    if records.is_empty() {
+        return Err(JevxError::InvalidInput(
+            "hook records must contain at least one record".to_owned(),
+        ));
+    }
+    Ok(records)
+}
+
+pub fn analyze_hook_correlations(
+    records: &[HookShadowRecord],
+) -> Result<HookCorrelationReport, JevxError> {
+    if records.is_empty() {
+        return Err(JevxError::InvalidInput(
+            "hook records must contain at least one record".to_owned(),
+        ));
+    }
+
+    let mut event_counts = BTreeMap::new();
+    let mut groups = BTreeMap::<CorrelationKey, usize>::new();
+    for (index, record) in records.iter().enumerate() {
+        validate_hook_record(record, "hook record")?;
+        *event_counts
+            .entry(record.hook_event_name.clone())
+            .or_insert(0) += 1;
+        let correlation_id_sha256 = record.correlation_id_sha256.clone();
+        let session_id_sha256 = record.session_id_sha256.clone();
+        let turn_id_sha256 = record.turn_id_sha256.clone();
+        let model_sha256 = record.model_sha256.clone();
+        let has_identity = correlation_id_sha256.is_some()
+            || session_id_sha256.is_some()
+            || turn_id_sha256.is_some();
+        let key = CorrelationKey {
+            correlation_id_sha256,
+            session_id_sha256,
+            turn_id_sha256,
+            model_sha256,
+            hook_event_name: record.hook_event_name.clone(),
+            trigger: record.trigger.clone(),
+            source: record.source.clone(),
+            unkeyed_index: (!has_identity).then_some(index),
+        };
+        *groups.entry(key).or_insert(0) += 1;
+    }
+
+    let mut groups = groups
+        .into_iter()
+        .map(|(key, count)| HookCorrelationGroup {
+            correlation_id_sha256: key.correlation_id_sha256,
+            session_id_sha256: key.session_id_sha256,
+            turn_id_sha256: key.turn_id_sha256,
+            model_sha256: key.model_sha256,
+            hook_event_name: key.hook_event_name,
+            trigger: key.trigger,
+            source: key.source,
+            count,
+        })
+        .collect::<Vec<_>>();
+    groups.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.hook_event_name.cmp(&right.hook_event_name))
+            .then_with(|| left.trigger.cmp(&right.trigger))
+            .then_with(|| left.source.cmp(&right.source))
+    });
+    let duplicate_group_count = groups.iter().filter(|group| group.count > 1).count();
+    let duplicate_record_count = groups
+        .iter()
+        .filter(|group| group.count > 1)
+        .map(|group| group.count - 1)
+        .sum();
+
+    Ok(HookCorrelationReport {
+        schema_version: HOOK_SCHEMA_VERSION,
+        mode: "live".to_owned(),
+        record_count: records.len(),
+        duplicate_group_count,
+        duplicate_record_count,
+        event_counts,
+        groups,
+    })
 }
 
 pub fn write_compaction_report(
@@ -354,6 +669,15 @@ fn validate_conversation_case(
         )));
     }
     if case
+        .model
+        .as_deref()
+        .is_some_and(|model| !safe_identifier(model, 128))
+    {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: model must be a short ASCII identifier"
+        )));
+    }
+    if case
         .secret_markers
         .iter()
         .any(|marker| marker.is_empty() || marker.chars().count() > 512)
@@ -372,6 +696,35 @@ fn validate_conversation_case(
             "{context}: inputChars is too large"
         )));
     }
+    if case.conversation_turns > 1_024 {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: conversationTurns is too large"
+        )));
+    }
+    if case.context_chars > 10_000_000 {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: contextChars is too large"
+        )));
+    }
+    if case.tool_failure_count > case.tool_history_items {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: toolFailureCount must not exceed toolHistoryItems"
+        )));
+    }
+    if case.recovery_turns > case.conversation_turns {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: recoveryTurns must not exceed conversationTurns"
+        )));
+    }
+    for (label, usage) in [
+        ("preCompactionUsage", case.pre_compaction_usage.as_ref()),
+        ("compactionUsage", case.compaction_usage.as_ref()),
+        ("postCompactionUsage", case.post_compaction_usage.as_ref()),
+    ] {
+        if let Some(usage) = usage {
+            usage.validate(&format!("{context}: {label}"))?;
+        }
+    }
     if case.observed_events.is_empty() || case.observed_events.len() > 32 {
         return Err(JevxError::InvalidInput(format!(
             "{context}: observedEvents must contain 1..32 items"
@@ -384,6 +737,53 @@ fn validate_conversation_case(
     {
         return Err(JevxError::InvalidInput(format!(
             "{context}: observedEvents contains an invalid item"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_hook_record(record: &HookShadowRecord, context: &str) -> Result<(), JevxError> {
+    if record.schema_version != HOOK_SCHEMA_VERSION {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: unsupported hook record schema"
+        )));
+    }
+    if !matches!(
+        record.hook_event_name.as_str(),
+        "SessionStart" | "PreCompact" | "PostCompact" | "UserPromptSubmit"
+    ) {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: unsupported hook event"
+        )));
+    }
+    if !safe_identifier(&record.mode, 32)
+        || record
+            .trigger
+            .as_deref()
+            .is_some_and(|value| !safe_identifier(value, 32))
+        || record
+            .source
+            .as_deref()
+            .is_some_and(|value| !safe_identifier(value, 64))
+        || record
+            .session_id_sha256
+            .as_deref()
+            .is_some_and(|value| !safe_identifier(value, 128))
+        || record
+            .turn_id_sha256
+            .as_deref()
+            .is_some_and(|value| !safe_identifier(value, 128))
+        || record
+            .model_sha256
+            .as_deref()
+            .is_some_and(|value| !safe_identifier(value, 128))
+        || record
+            .correlation_id_sha256
+            .as_deref()
+            .is_some_and(|value| !safe_identifier(value, 128))
+    {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: hook record contains an unsafe identifier"
         )));
     }
     Ok(())
@@ -410,14 +810,29 @@ fn conversation_once(run: usize, case: &ConversationCompactionCase) -> Compactio
         .count();
     let error_code = if !case.compaction_completed {
         Some("compaction_incomplete".to_owned())
+    } else if case.failure_recovery_required && !case.recovery_completed {
+        Some("recovery_incomplete".to_owned())
     } else if retained_required_facts != case.required_facts.len() {
         Some("required_fact_lost".to_owned())
     } else {
         None
     };
+    let post_compaction_cache_hit_rate = case
+        .post_compaction_usage
+        .as_ref()
+        .and_then(TokenUsageSnapshot::cache_hit_rate);
+    let post_compaction_uncached_input_tokens = case
+        .post_compaction_usage
+        .as_ref()
+        .map(TokenUsageSnapshot::uncached_input_tokens);
+    let post_compaction_estimated_billable_tokens = case
+        .post_compaction_usage
+        .as_ref()
+        .map(TokenUsageSnapshot::estimated_billable_tokens);
     CompactionRun {
         run,
         case_id: Some(case.case_id.clone()),
+        model: case.model.clone(),
         event_count: case.observed_events.len(),
         observed_events: case.observed_events.clone(),
         compaction_completed: case.compaction_completed,
@@ -425,8 +840,22 @@ fn conversation_once(run: usize, case: &ConversationCompactionCase) -> Compactio
         retained_required_facts,
         secret_leaks,
         input_chars: case.input_chars,
+        conversation_turns: case.conversation_turns,
+        context_chars: case.context_chars,
         output_chars: case.follow_up_text.chars().count(),
         duration_ms: case.compaction_duration_ms,
+        failure_recovery_required: case.failure_recovery_required,
+        tool_history_items: case.tool_history_items,
+        tool_failure_count: case.tool_failure_count,
+        interrupted_turns: case.interrupted_turns,
+        recovery_turns: case.recovery_turns,
+        recovery_completed: case.recovery_completed,
+        pre_compaction_usage: case.pre_compaction_usage.clone(),
+        compaction_usage: case.compaction_usage.clone(),
+        post_compaction_usage: case.post_compaction_usage.clone(),
+        post_compaction_cache_hit_rate,
+        post_compaction_uncached_input_tokens,
+        post_compaction_estimated_billable_tokens,
         error_code,
     }
 }
@@ -465,25 +894,94 @@ fn build_compaction_report(
         .iter()
         .map(|run| run.output_chars as u64)
         .collect::<Vec<_>>();
+    let recovery_required_runs = runs
+        .iter()
+        .filter(|run| run.failure_recovery_required)
+        .count();
+    let recovery_completed_runs = runs
+        .iter()
+        .filter(|run| run.failure_recovery_required && run.recovery_completed)
+        .count();
+    let post_compaction_usage = runs
+        .iter()
+        .filter_map(|run| run.post_compaction_usage.as_ref())
+        .collect::<Vec<_>>();
+    let post_compaction_cache_hit_rates = runs
+        .iter()
+        .filter_map(|run| run.post_compaction_cache_hit_rate)
+        .collect::<Vec<_>>();
+    let post_compaction_uncached_input_tokens = runs
+        .iter()
+        .filter_map(|run| run.post_compaction_uncached_input_tokens)
+        .collect::<Vec<_>>();
+    let post_compaction_estimated_billable_tokens = runs
+        .iter()
+        .filter_map(|run| run.post_compaction_estimated_billable_tokens)
+        .collect::<Vec<_>>();
     let secret_leaks = runs.iter().map(|run| run.secret_leaks).sum();
     let completed_runs = runs.iter().filter(|run| run.compaction_completed).count();
+    let summary = CompactionSummary {
+        passed,
+        retention_rate: ratio(retained_facts, required_facts),
+        secret_leaks,
+        error_rate: ratio(run_count.saturating_sub(passed), run_count),
+        compaction_completion_rate: ratio(completed_runs, run_count),
+        duration_ms_p50: percentile(&durations, 50),
+        duration_ms_p95: percentile(&durations, 95),
+        output_chars_p50: percentile(&output_chars, 50),
+        output_chars_p95: percentile(&output_chars, 95),
+        recovery_completion_rate: ratio(recovery_completed_runs, recovery_required_runs),
+        tool_history_items: runs.iter().map(|run| run.tool_history_items).sum(),
+        tool_failure_count: runs.iter().map(|run| run.tool_failure_count).sum(),
+        interrupted_turns: runs.iter().map(|run| run.interrupted_turns).sum(),
+        recovery_turns: runs.iter().map(|run| run.recovery_turns).sum(),
+        usage_measured_runs: post_compaction_usage.len(),
+        total_input_tokens: post_compaction_usage
+            .iter()
+            .map(|usage| usage.input_tokens)
+            .sum(),
+        total_cached_input_tokens: post_compaction_usage
+            .iter()
+            .map(|usage| usage.cached_input_tokens)
+            .sum(),
+        total_cache_write_input_tokens: post_compaction_usage
+            .iter()
+            .map(|usage| usage.cache_write_input_tokens)
+            .sum(),
+        total_output_tokens: post_compaction_usage
+            .iter()
+            .map(|usage| usage.output_tokens)
+            .sum(),
+        total_tokens: post_compaction_usage
+            .iter()
+            .map(|usage| usage.total_tokens)
+            .sum(),
+        post_compaction_cache_hit_rate_p50: percentile_f64(&post_compaction_cache_hit_rates, 50),
+        post_compaction_cache_hit_rate_p95: percentile_f64(&post_compaction_cache_hit_rates, 95),
+        post_compaction_uncached_input_tokens_p50: percentile(
+            &post_compaction_uncached_input_tokens,
+            50,
+        ),
+        post_compaction_uncached_input_tokens_p95: percentile(
+            &post_compaction_uncached_input_tokens,
+            95,
+        ),
+        post_compaction_estimated_billable_tokens_p50: percentile(
+            &post_compaction_estimated_billable_tokens,
+            50,
+        ),
+        post_compaction_estimated_billable_tokens_p95: percentile(
+            &post_compaction_estimated_billable_tokens,
+            95,
+        ),
+    };
     CompactionEvaluationReport {
         schema_version: HOOK_SCHEMA_VERSION,
         mode: mode.to_owned(),
         scenario: scenario.to_owned(),
         run_count,
         runs,
-        summary: CompactionSummary {
-            passed,
-            retention_rate: ratio(retained_facts, required_facts),
-            secret_leaks,
-            error_rate: ratio(run_count.saturating_sub(passed), run_count),
-            compaction_completion_rate: ratio(completed_runs, run_count),
-            duration_ms_p50: percentile(&durations, 50),
-            duration_ms_p95: percentile(&durations, 95),
-            output_chars_p50: percentile(&output_chars, 50),
-            output_chars_p95: percentile(&output_chars, 95),
-        },
+        summary,
     }
 }
 
@@ -504,6 +1002,7 @@ fn compact_once(run: usize) -> CompactionRun {
     CompactionRun {
         run,
         case_id: None,
+        model: None,
         event_count: 3,
         observed_events: Vec::new(),
         compaction_completed: true,
@@ -511,8 +1010,22 @@ fn compact_once(run: usize) -> CompactionRun {
         retained_required_facts,
         secret_leaks,
         input_chars: input.chars().count(),
+        conversation_turns: 0,
+        context_chars: input.chars().count(),
         output_chars: compacted.chars().count(),
         duration_ms: elapsed_ms(started),
+        failure_recovery_required: false,
+        tool_history_items: 0,
+        tool_failure_count: 0,
+        interrupted_turns: 0,
+        recovery_turns: 0,
+        recovery_completed: false,
+        pre_compaction_usage: None,
+        compaction_usage: None,
+        post_compaction_usage: None,
+        post_compaction_cache_hit_rate: None,
+        post_compaction_uncached_input_tokens: None,
+        post_compaction_estimated_billable_tokens: None,
         error_code,
     }
 }
@@ -539,6 +1052,16 @@ fn percentile(values: &[u64], percentile: usize) -> Option<u64> {
     }
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
+    let rank = (sorted.len() * percentile).div_ceil(100).saturating_sub(1);
+    sorted.get(rank).copied()
+}
+
+fn percentile_f64(values: &[f64], percentile: usize) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
     let rank = (sorted.len() * percentile).div_ceil(100).saturating_sub(1);
     sorted.get(rank).copied()
 }
