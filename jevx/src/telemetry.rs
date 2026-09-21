@@ -81,7 +81,7 @@ pub fn read_stats(path: &Path) -> Result<Stats, JevxError> {
     }
     let file = fs::File::open(path)?;
     let mut stats = Stats::default();
-    let mut total_response_ms = 0_u64;
+    let mut total_response_ms = 0.0_f64;
     let mut response_times = Vec::new();
     let mut total_times = Vec::new();
     let mut input_tokens = Vec::new();
@@ -99,7 +99,7 @@ pub fn read_stats(path: &Path) -> Result<Stats, JevxError> {
             CandidateDecision::None | CandidateDecision::NoCandidates => stats.none += 1,
             CandidateDecision::Error => stats.errors += 1,
         }
-        total_response_ms += event.metrics.jev_response_ms;
+        total_response_ms += event.metrics.jev_response_ms as f64;
         if event.metrics.jev_response_ms > 0 {
             response_times.push(event.metrics.jev_response_ms);
         }
@@ -115,7 +115,7 @@ pub fn read_stats(path: &Path) -> Result<Stats, JevxError> {
         }
     }
     if stats.events > 0 {
-        stats.average_jev_response_ms = total_response_ms as f64 / stats.events as f64;
+        stats.average_jev_response_ms = total_response_ms / stats.events as f64;
         stats.selected_rate = Some(stats.selected as f64 / stats.events as f64);
         stats.none_rate = Some(stats.none as f64 / stats.events as f64);
         stats.error_rate = Some(stats.errors as f64 / stats.events as f64);

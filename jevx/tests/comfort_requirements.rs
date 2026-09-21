@@ -255,6 +255,7 @@ fn telemetry_token_averages_do_not_overflow_before_conversion() {
                 &CandidateDecision::Selected,
                 None,
                 &Metrics {
+                    jev_response_ms: u64::MAX,
                     input_tokens: Some(u64::MAX),
                     output_tokens: Some(u64::MAX),
                     ..Metrics::default()
@@ -265,6 +266,7 @@ fn telemetry_token_averages_do_not_overflow_before_conversion() {
     }
 
     let stats = read_stats(&path).expect("stats");
+    assert_eq!(stats.average_jev_response_ms, u64::MAX as f64);
     assert_eq!(stats.average_input_tokens, Some(u64::MAX as f64));
     assert_eq!(stats.average_output_tokens, Some(u64::MAX as f64));
 }
