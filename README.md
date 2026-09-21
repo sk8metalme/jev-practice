@@ -295,3 +295,29 @@ dry-runの出力例:
   }
 }
 ```
+
+### 複数回実測とCodex Hook shadow
+
+APIキーありで同じ40ケースを複数回測定する場合は`eval-repeat`を使う。実測レポートにはrunごとの分散、Jev/totalのp50・p95、token、ローカル探索p95、エラー率を記録しているよ。
+
+```bash
+export AI_GATEWAY_API_KEY="<your-ai-gateway-api-key>"
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  eval-repeat --runs 5 \
+  --fixtures jevx/evals/skill-selection.jsonl \
+  --skill-dir jevx/evals/skills \
+  --json --output /tmp/jevx-repeat.json
+```
+
+- [複数回・APIキーあり実測レポート](docs/jevx-variance-evaluation-2026-09-21.md)
+- [Codex Hook shadow / compaction評価](docs/jevx-codex-hooks-evaluation.md)
+- [評価Runnerの仕様](docs/jevx-evaluation.md)
+
+Hookを接続する前のshadow確認は、Codex相当のJSONをstdinへ渡して実行できる。stdoutは`{"continue":true,"suppressOutput":true}`だけを返し、会話を書き換えない。
+
+```bash
+printf '%s\n' '{"hook_event_name":"UserPromptSubmit","prompt":"PDFを結合したい","cwd":"/tmp/sample-repo"}' \
+  | cargo run --locked --manifest-path jevx/Cargo.toml -- \
+      hooks shadow --event UserPromptSubmit \
+      --skill-dir jevx/evals/skills --output /tmp/jevx-hooks.jsonl
+```

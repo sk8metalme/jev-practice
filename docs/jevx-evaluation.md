@@ -68,6 +68,20 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 APIキーありで同梱40ケースを実際に測定した結果は、[jevx APIキーあり実測レポート](jevx-live-evaluation-2026-09-21.md)に記録しているよ。そこでは、全体・ケース種別ごとの正解率、`none`精度、candidate miss、Jev/totalのp50・p95、平均token、品質ゲート判定を確認できる。
 
+同じ条件で複数回測定する場合は`eval-repeat`を使う。run単位の品質分散と、全ケースの`discoveryMs`・`jevResponseMs`・`totalMs`・token分布をまとめて出力する。
+
+```bash
+cargo run --locked --manifest-path jevx/Cargo.toml -- \
+  eval-repeat \
+  --runs 5 \
+  --fixtures jevx/evals/skill-selection.jsonl \
+  --skill-dir jevx/evals/skills \
+  --json \
+  --output /tmp/jevx-repeat.json
+```
+
+APIキーありで5回測定した結果は[複数回・APIキーあり実測レポート](jevx-variance-evaluation-2026-09-21.md)に記録している。Jevxは5回×40ケースで正解率平均98.0%、Jev p50/p95 427/610ms、total p50/p95 429/612ms、ローカル探索p95 2msだった。Codex Hookのshadow測定とcompaction相当fixtureの結果は[Codex Hook shadow / compaction評価](jevx-codex-hooks-evaluation.md)に分けている。
+
 標準出力のレポートは次のような構造になる。
 
 ```json
@@ -87,24 +101,36 @@ APIキーありで同梱40ケースを実際に測定した結果は、[jevx API
       "accuracy": 0.9,
       "nonePrecision": 0.75
     },
+    "local_rank": {
+      "status": "completed",
+      "cases": 40,
+      "accuracy": 0.175,
+      "candidateMissRate": 0.0,
+      "discoveryMsP50": 2,
+      "discoveryMsP95": 3,
+      "totalMsP50": 2,
+      "totalMsP95": 2
+    },
     "jevx": {
       "status": "completed",
-      "accuracy": 0.0,
-      "nonePrecision": 0.0,
+      "accuracy": 0.95,
+      "nonePrecision": 1.0,
       "candidateMissRate": 0.0,
-      "errorRate": 0.0,
-      "jevResponseMsP50": 124,
-      "jevResponseMsP95": 188,
-      "totalMsP50": 141,
-      "totalMsP95": 207,
-      "averageInputTokens": 82.0,
-      "averageOutputTokens": 12.0
+      "errorRate": 0.05,
+      "discoveryMsP50": 1,
+      "discoveryMsP95": 2,
+      "jevResponseMsP50": 429,
+      "jevResponseMsP95": 643,
+      "totalMsP50": 430,
+      "totalMsP95": 644,
+      "averageInputTokens": 2401.0,
+      "averageOutputTokens": 127.7
     }
   }
 }
 ```
 
-上記のJev数値と正解率はレスポンス例であり、実測値ではない。実際の評価では、同じマシン・同じ候補数・同じタイムアウトで複数回測定し、初回起動やコンパイル時間を日常利用の処理時間に混ぜない。`--output`へ出すJSONLにはケースID・種別・期待ラベル・ベースライン判定・Jev判定・遅延・usage・エラーコードが入り、prompt本文とfixtureの`keywords`は保存されない。
+上記は`eval` 1回分の構造例（2026-09-21のrun 1相当）だよ。5回分のrun-level分散を含む実測値は[複数回・APIキーあり実測レポート](jevx-variance-evaluation-2026-09-21.md)に分けている。別環境ではProvider・ネットワーク・モデルの状態で変動するため、同じマシン・同じ候補数・同じタイムアウトで複数回測定し、初回起動やコンパイル時間を日常利用の処理時間に混ぜない。`--output`へ出すJSONLにはケースID・種別・期待ラベル・ベースライン判定・Jev判定・遅延・usage・エラーコードが入り、prompt本文とfixtureの`keywords`は保存されない。
 
 ## 判定ゲート
 
