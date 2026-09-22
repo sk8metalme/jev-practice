@@ -37,18 +37,37 @@ Codex Hookを使う場合は、利用者が明示的に `hooks install` を実�
 
 ## 実装済み機能の利用者向け説明
 
-実装対応表の「実装済み」は、次の4領域です。いずれも、利用者が出力と設定を確認しながら使うための観測・補助機能であり、Skillや会話を勝手に操作する機能ではありません。
+ここでは「何ができるか」だけでなく、「自分の作業のどこが楽になるか」「どこから先は自分で確認するか」を機能ごとに説明します。jevxはSkillや会話を勝手に操作する機能ではなく、利用者が判断するための提案・観測・評価の道具です。
 
-| 機能 | できること | 代表コマンド | 利用時の境界 |
-| --- | --- | --- | --- |
-| Skill探索・ローカル順位付け・Jev判定 | project/user Skillを探し、候補と`none`をJev Choiceで判定する | `jevx skills list` / `jevx skills suggest` | `selected`でもSkill本文を自動ロード・実行しない |
-| Telemetry・stats・doctor | 設定状態、判定数、`none`率、遅延、Token集計を確認する | `jevx doctor --json` / `jevx stats --json` | prompt本文、APIキー、Jevのprobabilityはローカル記録へ保存しない |
-| Hook shadow・install・compact-assist | Hook発火を観測し、明示導入したHookでcompact前後のcheckpointを補助する | `jevx hooks shadow` / `jevx hooks install` / `jevx hooks compact-assist` | 設定変更はopt-inで、Codex側のHook Trustが必要。公式Compactionを置き換えない |
-| Skill選択・Compaction・会話評価Runner | 固定fixtureや安全なJSONLで精度、分散、保持事実、秘密値漏えい、重複を測る | `eval` / `eval-repeat` / `hooks compact-eval` / `hooks conversation-eval` / `hooks correlate` | Codex/App Serverを起動せず、会話全文のLLM要約もしない |
+<figure>
+<img src="diagrams/jevx-overview.svg" alt="利用者の依頼をローカルでSkill候補へ絞り、必要な場合だけJevへ判定を依頼し、安全なTelemetryだけを保存するjevxの全体像">
+<figcaption>図1：jevxは「候補を提案する場所」と「利用者が実行を決める場所」を分けます。<a href="diagrams/jevx-overview.html">図をブラウザで開く</a></figcaption>
+</figure>
 
-### Telemetry・stats・doctor
+### 1. Skill探索・ローカル順位付け・Jev判定
 
-`jevx doctor` は、APIキーが設定されているか、Gateway endpoint、Telemetryの保存先・有効状態、macOS向け設定を確認します。APIキーの値そのものは表示しません。`jevx stats` は既定の `~/.jevx/events.jsonl`、または `--input` で指定したJSONLから、判定数、選択率、`none`率、エラー率、Jev/全体の遅延、Token集計を計算します。
+**こんなときに**：Skillが増えて、依頼ごとにどれを使うか探す時間が気になるとき。
+
+**利用者にとってのメリット**：project/user領域のSkillを一覧で確認し、依頼に合いそうな候補を同じ基準で比較できます。Jevを使う場合も、確信度が低いときは`none`へ倒れるため、「無理に選ばない」判断を測定できます。
+
+**使い方**：まず候補カタログを確認し、その後に依頼文を提案へ渡します。
+
+```bash
+jevx skills list --json
+jevx skills suggest --prompt "PDFを結合して内容を確認したい" --json
+```
+
+**結果の読み方**：`selected`は「使ってよい」という実行許可ではなく、jevxが提案した結果です。`none`は正常な未推薦、`error`はAPIキー不足やtimeoutなどで判定が完了していない状態です。
+
+**境界**：`selected`になってもSkill本文の自動ロード・実行、権限付与、過去会話の書き換えは行いません。最終的なSkill利用は利用者または上位のエージェントが決めます。
+
+### 2. Telemetry・stats・doctor
+
+**こんなときに**：導入前後で、設定が正しいか、遅延やToken使用量に見合う効果があるか確認したいとき。
+
+**利用者にとってのメリット**：`doctor`で始める前の設定状態を確認し、`stats`で判定数・選択率・`none`率・エラー率・遅延・Token集計を見られます。数値を同じ形式で残せるため、感覚ではなく実測で導入判断やトラブル切り分けができます。
+
+`doctor`はAPIキーの設定有無、Gateway endpoint、Telemetryの保存先・有効状態などを確認します。APIキーの値そのものは表示せず、実行環境がmacOSであることやmacOS固有設定の検証を保証するコマンドではありません。`stats`は既定の`~/.jevx/events.jsonl`、または`--input`で指定したJSONLを集計します。
 
 ```bash
 jevx doctor --json
@@ -56,40 +75,112 @@ jevx stats --json
 jevx stats --input /tmp/jevx-events.jsonl --json
 ```
 
-`--no-telemetry` はローカルJSONLへの追記だけを止めます。Jev/Gatewayへの外部送信も避けたい場合は、APIキーなしの `eval --dry-run`、Skill一覧、診断コマンドを使ってください。
+**境界**：Telemetryにはprompt本文、APIキー、Jevの`probability`を保存しません。`--no-telemetry`はローカルJSONLへの追記を止めるだけで、Gatewayへの外部送信停止ではありません。外部送信も避ける場合は、APIキーなしの`eval --dry-run`、Skill一覧、診断コマンドを使います。
 
-### HookとCompaction補助
+### 3. Hook shadow
 
-Hookを使う場合は、まず変更内容をdry-runで確認し、問題がなければ明示的に導入します。user scopeは `$CODEX_HOME/hooks.json`（未設定なら `~/.codex/hooks.json`）、project scopeは `<repo>/.codex/hooks.json` を更新します。既存の設定は保持され、既存ファイルがある場合は初回変更時にbackupが作られます。
+**こんなときに**：Codexの設定を変えずに、Hookがどのイベントで発火し、どんな安全な記録を残すか確かめたいとき。
+
+**利用者にとってのメリット**：本番設定へ導入する前に、`UserPromptSubmit`やCompaction関連イベントの発火と出力を観測できます。生のpromptやsession IDをログへ残さず、hash・文字数・安全なラベル・遅延などだけで運用確認できます。
+
+```bash
+jevx hooks shadow --event UserPromptSubmit --output /tmp/jevx-hooks.jsonl
+```
+
+受け付けるknown eventは`SessionStart`、`PreCompact`、`PostCompact`、`UserPromptSubmit`です。未知event、event不一致、壊れたJSONはエラーになります。
+
+**境界**：`hooks shadow`はCodexの設定を変更せず、Skill本文や追加の会話contextを返しません。
+
+### 4. Hook install
+
+**こんなときに**：shadowで動きを確認できたので、既存Hookを壊さずにjevxをCodexへ接続したいとき。
+
+**利用者にとってのメリット**：手作業で設定ファイルを全置換せず、既存設定を保持したままjevxのHookを明示的に追加できます。最初にdry-runで差分を見て、backupとTrustを確認してから導入できるため、戻し方を把握した段階で段階導入できます。
 
 ```bash
 jevx hooks install --scope user --dry-run --json
 jevx hooks install --scope user --json
 ```
 
-導入されるイベントの役割は次のとおりです。
+user scopeは`$CODEX_HOME/hooks.json`（未設定なら`~/.codex/hooks.json`）、project scopeは`<repo>/.codex/hooks.json`を更新します。既存ファイルがある場合は初回変更時にbackupが作られます。
 
-| Codex event | jevxの役割 |
-| --- | --- |
-| `UserPromptSubmit` | Skill候補の探索とJev判定をShadow Modeで記録する。Skill本文や追加の会話contextは返さない |
-| `PreCompact` / `PostCompact` | session・turnなどのhashとredacted contextのmetadataをcheckpointへ記録する |
-| `SessionStart(source=compact)` | 最新checkpointとredacted manifestを追加contextとして返す。contextがなければその旨を返し、Codex処理は止めない |
+**境界**：設定変更はopt-inです。導入後はCodex側でHookの内容をreview/trustする必要があり、ファイルを書けたこととHookが発火することは別に確認します。
 
-`hooks shadow` が受け付けるknown eventは `SessionStart`、`PreCompact`、`PostCompact`、`UserPromptSubmit` です。未知event、event不一致、壊れたJSONは固定の継続応答を返さずエラーになります。Hook recordにはprompt、session/turn ID、cwd、model、manifest本文をそのまま保存せず、hash・文字数・安全な識別ラベルだけを残します。
+### 5. compact-assist
 
-`compact-assist` はLLM要約器ではありません。会話全文の復元、公式Compactionの再実装、Tool Resultの削除、現在のリポジトリ状態の保証は行わず、決定的なcheckpoint metadataとredacted contextだけを補助します。Hookの発火確認、backup、Trustを含む運用手順は[Codex CLI compaction実運用runbook](../operators/jevx-compaction-operations.md)を参照してください。
+**こんなときに**：Compaction前後で、次に必要な作業や安全なcheckpointが失われていないか確認したいとき。
 
-### 評価Runner
+**利用者にとってのメリット**：`PreCompact`と`PostCompact`のcheckpointを残し、`SessionStart(source=compact)`で最新のredacted metadataを補助contextとして返せます。長いセッションの切り替わりで「どの作業を続けるか」を再確認しやすくなります。
 
-評価Runnerは、固定fixtureや管理されたJSONLを使って、Skill選択・Compaction・会話評価の品質と安全性を確認するための機能です。通常のCodexセッションやApp Serverを起動するものではありません。
+<figure>
+<img src="diagrams/jevx-hook-compaction.svg" alt="Codex CLIからjevx Hookへイベントが渡り、ローカルstateへcheckpointを保存し、compact後にredacted contextを返す時系列">
+<figcaption>図2：Hookはイベントを観測し、ローカルcheckpointを介してcompact後の補助情報を返します。<a href="diagrams/jevx-hook-compaction.html">図をブラウザで開く</a></figcaption>
+</figure>
 
-| コマンド | 目的 | 外部通信と出力 |
-| --- | --- | --- |
-| `eval --dry-run --json` | `none`、ローカルキーワード、ローカル順位付けのbaselineを確認する | Gatewayへ送らず、Jevモードは`not_run`。case出力へprompt本文・keywords・Jev response本文を保存しない |
-| `eval-repeat --runs 5 --dry-run --json` | 同じfixtureを繰り返し、run間の精度・遅延・Token分布を確認する | `--output`はrun/mode集計で、case本文を保存しない。APIキーありで実行するとJevも測定する |
-| `hooks compact-eval --runs 5 --json` | 固定Compaction fixtureで保持事実、秘密値漏えい、完了率、復旧、Tokenを確認する | Codex内部の要約モデルやApp Serverは呼び出さない |
-| `hooks conversation-eval --input <file> --json` | 管理された会話評価JSONLから保持率、漏えい、遅延、復旧を集計する | レポートへfollow-up本文やsecret marker本文を再出力しない。入力JSONLは測定後に破棄する |
-| `hooks correlate --input <file> --json` | Hook recordのイベント数と重複を確認する | 生のpromptやIDではなく、保存済みhashと安全なmetadataを集計する |
+```bash
+jevx hooks compact-assist --state-dir /tmp/jevx-compaction
+```
+
+**境界**：LLM要約器ではなく、会話全文の復元、公式Compactionの再実装、Tool Resultの削除、現在のリポジトリ状態の保証は行いません。返すのは決定的なcheckpoint metadataとredacted contextです。詳しい発火確認・backup・Trust手順は[Codex CLI compaction実運用runbook](../operators/jevx-compaction-operations.md)を参照してください。
+
+### 6. `eval` / `eval-repeat`
+
+**こんなときに**：Skill選択を導入する前に、既存のローカル方式とJev方式の品質・速度・ばらつきを同じfixtureで比べたいとき。
+
+**利用者にとってのメリット**：固定fixtureを使うため、条件を揃えてbaselineを再現できます。`eval-repeat`なら1回の良い結果だけでなく、run間の精度・遅延・Token分布・エラー率を見て、導入時の揺れも判断できます。
+
+```bash
+jevx eval --dry-run --json
+jevx eval-repeat --runs 5 --dry-run --json
+```
+
+`--dry-run`ではGatewayへ送らず、Jevモードは`not_run`です。Jev自体を測る場合は、APIキーを環境変数へ設定し、`--dry-run`を外して実行します。出力レポートにはprompt本文やfixtureのkeywordsを保存しません。
+
+**境界**：固定fixtureの結果は実ユーザー全般の品質保証ではありません。外部通信とToken使用量を許容できる条件か、`stats`と併せて確認してください。
+
+### 7. `hooks compact-eval`
+
+**こんなときに**：Compaction補助の安全性契約を、APIキーや実Codexなしで繰り返し確認したいとき。
+
+**利用者にとってのメリット**：合成fixtureで、保持したい事実が残るか、秘密値のfixture markerが漏れないかなどを導入前に確認できます。実会話を保存せずに、評価器と集計ロジックの回帰を検査できます。
+
+```bash
+jevx hooks compact-eval --runs 5 --json
+```
+
+**境界**：これは固定fixtureの契約・安全性評価です。固定fixtureでは復旧関連値が常に未要求・未完了で、Token usageも`None`として生成されるため、実運用の復旧性能やToken使用量を測定するコマンドではありません。Codex内部の要約モデルやApp Serverも呼び出しません。
+
+### 8. `hooks conversation-eval`
+
+**こんなときに**：実測した会話を匿名化・整形したJSONLから、保持率・漏えい・遅延・復旧を集計したいとき。
+
+**利用者にとってのメリット**：生の会話をリポジトリへ置かず、必要な評価項目だけを残した入力から、比較可能なレポートを作れます。follow-up本文やsecret marker本文はレポートへ再出力されません。
+
+```bash
+jevx hooks conversation-eval \
+  --input /tmp/jevx-conversation-cases.jsonl \
+  --json \
+  --output /tmp/jevx-conversation-report.json
+```
+
+**境界**：コマンドは入力JSONLを自動削除しません。会話やsecret markerを含む一時ファイルは、測定結果を確認した後に利用者が手動で破棄してください。
+
+### 9. `hooks correlate`
+
+**こんなときに**：Hook recordを複数回採取した後、イベント数や重複発火が想定どおりか確認したいとき。
+
+**利用者にとってのメリット**：生のpromptやIDを再表示せず、保存済みhashと安全なmetadataだけで重複・イベント分布を確認できます。Hook導入後の「二重登録されていないか」「想定イベントが来ているか」の切り分けに使えます。
+
+```bash
+jevx hooks correlate --input /tmp/jevx-hooks.jsonl --json
+```
+
+**境界**：出力はrecord数、event counts、重複集計などの安全な集計に限定され、会話全文や生IDを復元する機能ではありません。
+
+<figure>
+<img src="diagrams/jevx-evaluation.svg" alt="安全なfixtureまたはJSONLをローカル評価と任意のJev評価へ渡し、集計レポートを利用者が導入判断に使う評価Runnerの流れ">
+<figcaption>図3：評価Runnerは通常のCodexセッションを起動せず、測定結果を利用者の導入判断へ渡します。<a href="diagrams/jevx-evaluation.html">図をブラウザで開く</a></figcaption>
+</figure>
 
 Skill選択の評価計画と、入力・出力スキーマの詳細は[jevx評価計画](../developers/jevx-evaluation.md)にまとめています。外部サービスを使う実測は、APIキーを環境変数だけで設定し、合成・匿名化fixtureに限定してください。
 
