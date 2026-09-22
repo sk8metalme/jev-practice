@@ -630,12 +630,14 @@ fn discovery_skips_hidden_and_target_directories_and_missing_roots() {
 
 #[test]
 fn redaction_handles_multiple_secret_shapes() {
-    let value = "api_key=abc secret=xyz password=pwd Bearer abc sk-test tsk-test explain basic auth API_KEY: separated-api password: separated-password Authorization: Bearer separated-bearer Authorization: Basic separated-basic password = separated-space \"token\":\"json-secret\" Authorization:Bearer embedded-bearer Authorization=Basic embedded-basic";
+    let value = "api_key=abc secret=xyz password=pwd Bearer abc token: Bearer separated-token-bearer password Bearer separated-password-bearer sk-test tsk-test explain basic auth API_KEY: separated-api password: separated-password Authorization: Bearer separated-bearer Authorization: Basic separated-basic password = separated-space \"token\":\"json-secret\" Authorization:Bearer embedded-bearer Authorization=Basic embedded-basic";
     let redacted = jevx::redact(value);
     for secret in [
         "abc",
         "xyz",
         "pwd",
+        "separated-token-bearer",
+        "separated-password-bearer",
         "separated-api",
         "separated-password",
         "separated-bearer",

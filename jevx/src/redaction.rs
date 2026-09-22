@@ -9,7 +9,8 @@ pub fn redact(value: &str) -> String {
 
     for token in value.split_whitespace() {
         if redact_next {
-            if redact_authorization_scheme && is_auth_scheme_word(token) {
+            if is_bearer_word(token) || (redact_authorization_scheme && is_auth_scheme_word(token))
+            {
                 output.push("<redacted>".to_owned());
                 continue;
             }
