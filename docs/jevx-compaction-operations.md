@@ -123,6 +123,28 @@ dry-runでは `CODEX_HOME/hooks.json`、backup、Hook stateを作らない。JSO
 
 dry-runのJSONに秘密値や生の入力が含まれていないことも確認する。空のprofileでは既存の`hooks.json`がないため、実installを初めて実行してもbackupが作られない。backupを確認する場合は、上のように安全な既存設定を先に用意し、既存設定がある場合だけ初回installで`hooks.json.jevx.bak`が作られることを確認する。
 
+### 常用user hooksはrelease配置から登録する
+
+`cargo run`や`target/debug/jevx`から常用の`hooks.json`を登録すると、Hook commandがworktreeの絶対パスに固定される。fixtureとdry-run以外では、`cargo install --root`を使う`setup.sh`でreleaseバイナリを配置し、その絶対パスから登録する。
+
+~~~bash
+(
+  set -eu
+  jevx_install_root="${JEVX_INSTALL_ROOT:-$HOME/.local}"
+  JEVX_INSTALL_ROOT="$jevx_install_root" sh jevx/scripts/setup.sh --scope user --hooks
+  jevx_bin="$jevx_install_root/bin/jevx"
+  test -x "$jevx_bin"
+  "$jevx_bin" --version
+
+  jevx_commands=$(jq -r '.hooks | to_entries[] | .value[]? | .hooks[]? | select(.command? | contains("jevx")) | .command' "$HOME/.codex/hooks.json")
+  printf '%s\n' "$jevx_commands"
+  ! printf '%s\n' "$jevx_commands" | grep -q '/target/'
+  printf '%s\n' "$jevx_commands" | grep -F "$jevx_bin" >/dev/null
+)
+~~~
+
+Hook commandは絶対パスなので、`$HOME/.local/bin`を`PATH`へ追加しなくてもCodexから実行できる。初回の定義変更後は`/hooks`で内容をreviewしてtrustする。
+
 ## 3. Codex CLIでmanual compactをsmoke testする
 
 実Codexを使う測定は、認証済みの外部サービスへ合成入力を送るため、必要な許可がある場合だけ行う。開始前に次を確認する。
@@ -143,8 +165,15 @@ dry-runのJSONに秘密値や生の入力が含まれていないことも確認
   export CODEX_HOME="$codex_profile"
   export JEVX_HOME="$codex_profile/jevx-data"
 
-  cargo run --locked --manifest-path jevx/Cargo.toml -- \
-    hooks install --scope user --repo "$PWD" --json
+  # 常用設定と同じreleaseバイナリを使い、worktreeのtargetへ依存させない。
+  jevx_install_root="${JEVX_INSTALL_ROOT:-$HOME/.local}"
+  jevx_bin="$jevx_install_root/bin/jevx"
+  test -x "$jevx_bin"
+  case "$jevx_bin" in
+    */target/*) echo 'release binary is required for Codex hooks' >&2; exit 1 ;;
+  esac
+
+  "$jevx_bin" hooks install --scope user --repo "$PWD" --json
 
   codex --version
   test -n "$CODEX_HOME"
@@ -193,6 +222,19 @@ Hookをtrustするためだけに `--dangerously-bypass-hook-trust` を常用し
 - `SessionStart(source=compact)` の追加contextに秘密値・生ID・生manifestがない。
 - Hook recordにprompt本文・生session/turn/model IDがない。
 - `hooks correlate` の重複recordが0件である。
+
+### 2026-09-22 実セッション再検証
+
+release配置とcontext guard修正後、実際のCodex CLIで合成依頼→`/compact`→後続依頼を再実行した。
+
+- 環境: `codex-cli 0.155.1`、`jevx 0.1.0`、`$HOME/.local/bin/jevx`。Codexはread-only、承認要求なしで起動した。
+- 最初の依頼は`SMOKE_READY`、`/compact`は`Context compacted`、後続依頼は`COMPACT_CONTINUED`を返した。
+- 最終セッションの前後で、`PreCompact` / `PostCompact` / `SessionStart(source=compact)` は各2→3、compact系checkpointは6→9へ増加した。
+- `UserPromptSubmit`も実依頼2回分が記録され、Hookの`Running hooks`表示を確認した。
+- `hooks correlate`は`duplicateGroupCount=0`、`duplicateRecordCount=0`。recordとcheckpointに生prompt・生session IDはなかった。
+- 以前の実測で出た`invalid PreCompact hook JSON output`と`invalid stop hook JSON output`は、共有`context_guard.py`がCodex向けJSONではなく警告文をstdoutへ出していたことが原因だった。dotfiles側の[修正PR #36](https://github.com/sk8metalme/dotfiles/pull/36)で、Codexの`model`入力を検出した`PostToolUse` / `PreCompact` / `Stop`だけ`continue: true`と`systemMessage`を含むJSONへ切り替え、Claude向けの既存出力は維持した。
+
+Codexは同じイベントに設定された複数Hookをすべて実行するため、jevx以外のHookを追加・変更した場合も、stdoutがイベントのJSON契約を満たすかを`/hooks`と合成入力で再確認すること。
 
 ### 記録上の限界
 
