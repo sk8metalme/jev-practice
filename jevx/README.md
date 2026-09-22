@@ -32,6 +32,90 @@ Skill 選択のコアは **Shadow Mode**。依頼に合いそうな Skill を提
 
 `hooks install` は設定ファイルを変更するため、既定では何も実行しない。`--dry-run`で内容を確認してから明示的に実行し、CodexのHook Trustを確認して使う。`compact-assist`も会話を要約するLLMではなく、redactedなローカルmanifestとハッシュを復元する決定的な試作だよ。
 
+## Jevを使う設計理念
+
+複数の実装事例を比較すると、Jevを特別な処理の代わりにするのではなく、**決定的なローカルコードと意味判定の境界を狭く保つ**ことが品質・安全性・運用性を作っていた。jevxでは次の原則を共通の設計契約として扱うよ。
+
+### 実装事例から抽出したパターン
+
+| 観察した設計パターン | 取り入れる観点 | そのまま移植しないもの |
+| --- | --- | --- |
+| 意味的なレビュー | matcherで対象を絞り、意味的な一文のpredicate・fixture・accepted baseline・warning-firstで運用する | parser / type checkerで確定できる欠陥のJev化、いきなりCIをblockingする運用 |
+| 状態分割と予算管理 | stateをwindow化し、overlap・予算・cache・replay・costを明示する | 決定的なsyntax highlightingをJevへ置き換えること |
+| 変更影響のScore評価 | `Score`で影響度を表し、uncertain / missing / dynamicを安全側で選び、runnerのexit codeを保持する | framework固有のrunner差分をjevxの共通契約へ混ぜること |
+| typed policyとreplay | typed answer、atomic predicate、policy gate、transcript / replay、`defer`を一級の結果にする | Jevの確信度を権限やauto-allowへ直結させること |
+
+ここでの比較結果は、jevxの全機能を一度に増やす指示ではなく、共通基盤を先に整えてから小さな縦機能を評価するための設計材料だよ。
+
+### 1. Jevは意味判定、コードは決定的な仕事
+
+- 構文解析、差分抽出、対象列挙、テスト発見、window分割、redaction、コマンド実行はローカルコードで行う。
+- Jevには「この候補が依頼の文脈に合うか」「この変更がこの対象へどの程度影響するか」のように、コードだけでは書きにくい意味的・文脈的な問いを渡す。
+- 決定的なparserや型検査で確定できる問題をJevへ移さない。Jevを使う必然性を、縦機能ごとに説明できる状態にする。
+
+### 2. Jevの回答は推薦であり、最終決定ではない
+
+Jevの回答は自由文ではなく、用途に合ったtyped answerとして扱う。現在のSkill選択は`Choice`を使うが、将来の機能では次の型を使い分ける設計候補がある。
+
+| answer type | 向いている問い | 最終判断 |
+| --- | --- | --- |
+| `Choice` | 候補Skillから最も合うもの、または`none` | コード側の確信度・margin gate |
+| ordered `Score` | 変更が各テストへ与える影響の大きさ | コード側のcutoff・unsure判定 |
+| atomic predicate / `Noul` | 条件の成立、policyの構成要素 | コード側の保守的なcomposition |
+
+Jevの確信度は「与えられたstateのもとでの判定の確からしさ」であり、操作が成功することや権限を与えてよいことの証明ではない。`selected`になってもSkillの自動ロード・実行や権限付与へ直結させない。
+
+### 3. Decision Contractで問い・結果・安全側挙動を束ねる
+
+今後の縦機能は、個別のJev呼び出しを増やすのではなく、次の概念的なDecision Contractへ寄せる。これは段階的に実装する設計候補であり、現時点で新しいCLIコマンドが追加されたことを意味しない。
+
+```text
+State Builder → redaction / window plan → typed Jev answer
+            → code-side threshold / margin / policy gate
+            → accepted / none / unknown / defer / degraded
+            → safe receipt + replayable evaluation
+```
+
+receiptには、少なくとも次の安全なメタデータを持たせる。prompt本文・Skill本文・Tool結果・APIキー・生のセッション識別子は含めない。
+
+- contract / question / policyのバージョン
+- state digest、候補数、window数、omitted / redactionの理由
+- 構造化されたanswer、code-side decision、threshold、margin、fallback、reason
+- calls、retry、latency、input / output tokens、相対的なcost、replay ID
+
+この形式にすると、同じfixtureとrecorded answerでJevなしにcode-side decisionを再生でき、質問や閾値を変更したときの差分もレビューできる。
+
+### 4. 不確実性・状態不足・障害は一級の結果にする
+
+`unknown`、`defer`、`degraded`、`no answer`、`timeout`、`outage`を、成功や自動allowへ変換しない。特に権限Hookや破壊的操作は、必要なら`ask`または`defer`へ流し、fail-closedの挙動を優先する。
+
+状態をtoken / byte / 候補数の上限で分割するときは、window、overlap、omitted項目、redaction理由、予算超過を可視化する。大きな入力を黙って切り捨てたまま、高い確信度だけを信頼しない。
+
+### 5. 評価・再現性・コストを機能の一部にする
+
+新しいJev利用は、dry-run、fixture、accepted baseline、replay、必要に応じたcacheを用意してから運用へ進める。少なくとも次を同じ入力・候補・ネットワーク条件で比較する。
+
+- Top-1 accuracy、`none` precision、candidate miss、uncertain / fallback率
+- 誤って危険側へ進まない率、誤検出率、反復時のanswer / confidence variance
+- Jev p50 / p95、全体p50 / p95、token、相対cost、retry、error rate
+
+Jevありの単発精度だけで導入を決めず、Jevなしのbaseline、遅延、費用、失敗時の挙動を一緒に見る。既存評価の実行方法は [Skill選択の評価Runner](#skill選択の評価runner) を参照してね。
+
+### 実装知見からのjevxバックログ
+
+次の順番は、共通基盤を先にしてから縦機能を増やす提案だよ。未実装の項目は設計候補であり、機能の存在を表さない。
+
+| 優先度 | 候補 | 目的 | 受け入れの観点 |
+| --- | --- | --- | --- |
+| P0 | Decision Contract & Recorder | `Choice` / `Score` / predicate、code-side gate、fallback、receipt、replayを共通化 | recorded answerで同じdecisionを再現し、timeout / outageが自動allowにならない |
+| P1 | Skill Calibration Packs | Skillごとの代表例、none、境界例、期待answer、閾値、反復分散を評価 | 新Skillをpackなしで本番相当評価へ進めず、miss / none / p95を比較できる |
+| P1 | State Window Planner | token / byte / 候補予算、window、overlap、omitted、degradedを管理 | 同じ入力・予算・版で同じwindowを生成し、候補漏れと遅延を測れる |
+| P2 | Diff Impact / Semantic Review | 変更影響のScoreや意味的矛盾をShadow Modeで提示 | uncertain / missingを安全側で選択し、CI blockingは評価後に判断する |
+| P2 | Policy Hook Gate | atomic predicateと`defer`を権限Hookへ適用する研究 | 脅威モデル・監査ログ・fail-closed検証が済むまで自動allowしない |
+| P2 | Jev Lab / DSL | transcript、replay、cost、answer、decisionを比較する開発者体験 | 共通契約の重複が実証されてからDSL導入を判断する |
+
+新機能の設計レビューでは、「Jevでなければ解きにくいか」「最終allow / executeをJevが直接決めていないか」「unknown / timeout / outageはどこへ流れるか」「同じdecisionを再現できるか」「秘密情報が境界外へ出ていないか」を必ず確認する。
+
 ## クイックスタート
 
 ### 必要なもの
