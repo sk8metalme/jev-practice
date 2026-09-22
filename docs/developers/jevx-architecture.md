@@ -27,7 +27,7 @@ Skill選択の通常出力は提案だけで、Skill本文のロード、実行�
 Codex Hook（明示的にinstall）
     │
     ├─ UserPromptSubmit
-    │    └─ hooks shadow ─ 候補探索 + Jev判定 + continue固定応答
+    │    └─ hooks shadow ─ 候補探索 + Jevのchoice判定 + known eventのcontinue固定応答
     ├─ PreCompact / PostCompact
     │    └─ compact-assist ─ metadata + redacted context hashを記録
     └─ SessionStart(source=compact)
@@ -44,7 +44,7 @@ Codex Hook（明示的にinstall）
 | `telemetry` | JSONL追記、判定率、p50/p95、Token集計 | filesystem |
 | `evaluation` | fixture読み込み、ベースライン比較、Jev実測、p50/p95集計 | `Judge` trait、filesystem |
 | `hooks` | Codex Hook入力の検証、shadow record、相関集計 | filesystem |
-| `hook_config` | user/project hooks.jsonの安全なmerge、backup、冪等化 | filesystem |
+| `hook_config` | user/project hooks.jsonの既存設定を保持するmerge、backup、冪等化 | filesystem |
 | `compact_assist` | checkpoint、redaction、compact後の補助context | filesystem |
 | `cli` | 入力形式、出力形式、終了コード、標準入力 | clap |
 
@@ -67,14 +67,14 @@ Codex Hook（明示的にinstall）
 ```text
 Codex Hook JSON
     │
-    ├─ run_shadow: event契約とsafe recordを検証
+    ├─ run_shadow: event契約を検証し、Hook recordを追記
     ├─ .jevx/compact-context.mdを読む（任意）
     ├─ redact → 4,000文字制限 → SHA-256
     ├─ hook-records.jsonl / checkpoints.jsonlへmetadataのみ追記
     └─ SessionStart(source=compact)なら additionalContext
 ```
 
-checkpointへ保存するのはevent名、safeなtrigger/source、各種SHA-256、文字数、context有無だけ。redacted本文はcheckpointへ保存せず、compact後のHook応答を組み立てるプロセス内でだけ使う。contextがない場合は「metadata not found」を返すが、Codexを停止しない。
+checkpointへ保存するのはevent名、`trigger`/`source`のcheckpoint値、各種SHA-256、文字数、context有無だけ。Hook recordの`trigger`、`source`、`selectedSkill`はwrite時に入力文字列をrawでシリアライズする。`compact-assist`の`safe_label`は長さと許可文字を絞るだけで、入力のtrust boundaryを作るものではない。correlate/load時は`trigger`と`source`など一部フィールドだけを`safe_identifier`で形式検証し、`selectedSkill`はrawのままこのvalidatorの対象外である。prompt本文を保存しないことやIDをSHA-256化することとは別の制約である。redacted本文はcheckpointへ保存せず、compact後のHook応答を組み立てるプロセス内でだけ使う。contextがない場合は「metadata not found」を返すが、Codexを停止しない。
 
 ## Skill探索の優先順位
 
@@ -84,17 +84,30 @@ checkpointへ保存するのはevent名、safeなtrigger/source、各種SHA-256�
 4. `$CODEX_HOME/skills` または `~/.codex/skills`
 5. `--skill-dir` で指定した追加ディレクトリ
 
-同じSkill名が複数に存在するときは、優先順位の小さいルートを採用する。SkillファイルはYAML Frontmatterに非空の`name`と`description`があるものだけを候補にする。
+同じSkill名が複数に存在するときは、優先順位の小さいルートを採用する。SkillファイルはYAML Frontmatterに非空の`name`と`description`があるものだけを候補にする。`eval --skill-dir` はこの既定rootsを置き換えず追加するため、再現性が必要な評価では一時 `HOME`、`CODEX_HOME`、空のproject rootを用意して既定rootsを隔離する。
 
 ## Jevへ渡すデータ
 
-渡すデータは、マスキング済みの依頼文、作業ディレクトリ、候補SkillのID・名前・説明だけ。次のデータはv1で渡さない。
+渡すデータは、認識済みパターンをredactした依頼文、rawの作業ディレクトリ、候補SkillのID・名前、redactした説明だけ。`cwd` とSkill ID/nameはrawで、promptとdescriptionのredactionは限定的なsecret patternに過ぎない。次のデータはv1で渡さない。
 
 - Skill本文
 - 過去の会話全文
 - Tool結果やファイル内容
 - APIキー
 - 生のTelemetry本文
+
+| データ | Gatewayへ送るか | 保存境界 |
+| --- | --- | --- |
+| prompt | 送る（redact後） | Telemetryには本文を保存せずSHA-256・文字数だけ |
+| `cwd` | 送る（raw） | Telemetry/Hook recordでは生値を保存しない |
+| Skill ID / name | 送る（raw） | 候補識別に使用 |
+| Skill description | 送る（redact後） | Skill本文は送らない |
+| 会話全文 / Tool結果 / Skill本文 / APIキー | 送らない | v1の対象外 |
+| probability | Gateway応答にはあり得るが送信対象ではない | Telemetry schemaへ保存しない |
+
+Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` のようにキーとBasicの間に空白がない認識済み形式に限定される。`Authorization: Basic <value>`（コロンの後に空白あり）は現行redaction.rsでは値が保護されないため、送信前に手動で匿名化すること。未知のPIIや任意の `Basic` 文言まで除去するDLPではない。`--no-telemetry` はローカル記録を止めるだけで、Jev/Gatewayへの外部送信停止ではない。
+
+Hook metadataのwrite前hash/allowlist、`selectedSkill`を含むrawフィールドの入力境界、信頼済みfixture metadataとの分離は未実装のhardeningであり、別フォローアップで扱う。
 
 Jev未設定時はローカル推測へフォールバックせず、`missing_api_key`を返す。これは「Jevの有用性を測る」目的で、ローカルだけの結果をJev結果と混同しないためだよ。
 
@@ -129,7 +142,7 @@ Jevの呼び出しは候補ごとに繰り返さず、候補を1つのChoice質�
 | タイムアウト | `timeout` | 3 |
 | ファイル・YAMLエラー | `io_error` / `yaml_error` | 2 |
 
-既知Hook eventでJevが失敗しても、shadow/compact-assistはsafe recordと`continue: true`を優先する。不明eventや壊れた設定は入力契約違反としてエラーにする。
+既知Hook event（`SessionStart`、`PreCompact`、`PostCompact`、`UserPromptSubmit`）を受理した場合だけ、shadowは `{"continue":true,"suppressOutput":true}` の固定応答を返す。既知eventでJevが失敗しても現行recordと`continue: true`を優先する。不明event、event不一致、壊れた設定は固定応答を返さず入力契約違反としてエラーにする。
 
 ## 今後の境界
 
