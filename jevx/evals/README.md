@@ -5,7 +5,7 @@
 - `synthetic`: 30件の合成ケース
 - `anonymized-template`: 10件の匿名化形式テンプレートケース
 
-ケースは正解ラベルを含むので、Jevへ送信する入力からは`expected`と`keywords`を除外する。出力保存時もprompt本文を再保存せず、ID・判定・遅延・usageだけを残してね。
+ケースは正解ラベルを含むので、Jev requestからはfixtureの`id`・`kind`・`expected`・`keywords`を除外する。`prompt`はredact後、raw `cwd`と候補Skill metadataはrequestへ送る。`keywords` はfixture作成者の注釈・期待根拠として読み込まれるが、現行 `local_keyword` の計算には使われず、Skill ID/name/descriptionから作られるローカル一致とは別物である。単回`eval --output`のcase JSONLには`id`・`kind`・`expected`・判定・metrics・error codeを保存するが、prompt本文・keywords・Jev response本文は保存しない。
 
 JSONLの検証:
 
@@ -16,18 +16,27 @@ jq -e -s 'length == 40 and all(.[]; .id and .prompt and .expected)' \
 
 ## 評価Runner
 
-リポジトリのルートから、APIキーなしでベースラインを再現できる。
+リポジトリのルートから、APIキーなしでCurrent / Latest baselineを再現できる。jevxの現行Rust CLIとCLI helpに合わせたcanonical commandは次のとおり。
 
 ```bash
-cargo run --locked --manifest-path jevx/Cargo.toml -- \
+JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- \
   eval --dry-run --json
 ```
 
-`--dry-run`では次の3モードを同じ40ケースで比較する。
+2026-09-22時点のCurrent baselineは commit `ed0b93c023251400bcbbe2de8cdedd5451f08761`、fixture SHA-256 `a450a48fac7b49b544002f8c539b961fef0352951cde950f692768b4ea0748fb`、`rustc/cargo 1.98.1`、macOS 26.6.2（build 25G83）、APIキーなし、外部Gateway呼び出しなし。値は実行日時、OS、catalog rootsに依存するため、完全な隔離条件は [評価計画](../../docs/developers/jevx-evaluation.md) のCurrent baseline表を参照する。
+
+2026-09-21付のAPIキーあり単回・複数回の表はHistorical snapshotで、現行baselineではない。歴史値を引用するときは各レポートの実行日・API key設定有無・commit状態を併記する。
+
+`--dry-run`では次の4モードを同じ40ケースで比較する。
 
 - `none`: 常にSkillを選ばない
 - `local_keyword`: Skillの`name`と`description`に対するローカル一致
+- `local_rank`: 現行ローカルランキングでTop-1を返す（外部送信なし）
 - `jevx`: `status: not_run`。Jevのネットワーク呼び出しを行わない
+
+レポートの `nonePrecision` は互換JSONキーで、意味は `noneCorrect / expectedNone` の recall（`expected: none` を正しく `none` とした割合）です。通常のprecisionとして解釈しないでください。
+
+再現時は注意が必要です。`--skill-dir` は project `.agents/skills` / `.codex/skills`、`$HOME/.agents/skills`、`$CODEX_HOME/skills` を置き換えず追加します。したがって、fixtureだけのcatalogを再現するには一時HOME・CODEX_HOME・空の `--cwd` project rootを用意し、`--fixtures` と `--skill-dir` に絶対パスを渡してください。詳細な隔離コマンドと現行baselineのcommit、fixture SHA-256、Rust/Cargo、macOS、実行条件は [評価計画](../../docs/developers/jevx-evaluation.md) を正本とします。
 
 実測するときは`--dry-run`を外し、APIキーと評価用Skillカタログを指定する。
 
@@ -41,7 +50,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
   --output /tmp/jevx-eval-results.jsonl
 ```
 
-標準出力のレポートにはモード別の正解率、`none`精度、候補取りこぼし率、エラー率、Jev応答時間・全体時間のp50/p95、token平均が含まれる。`--output`のJSONLはケースID・種別・期待ラベル・ベースライン判定・Jev判定・遅延・usage・エラーコードを保存し、`prompt`と`keywords`は保存しない。
+標準出力のレポートにはモード別の正解率、`none` recall（互換キー `nonePrecision`）、候補取りこぼし率、エラー率、Jev応答時間・全体時間のp50/p95、token平均が含まれる。単回`eval --output`のcase JSONLは`id`・`kind`・`expected`・判定・metrics・error codeを保存し、`prompt`・`keywords`・Jev response本文は保存しない。Telemetry schemaにもGatewayのprobabilityを保存しない。
 
 同一条件で分散を確認するには`eval-repeat`を使う。以下はAPIキーありで5回、合計200ケースを測定する例。
 
@@ -54,4 +63,4 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
   --json --output /tmp/jevx-repeat.json
 ```
 
-`eval-repeat`の集計はrun単位の品質（accuracy・error rateなど）と、全ケースの遅延・token分布（mean / stddev / min / max / p50 / p95）を分けて保持する。実測値は[`docs/research/evaluations/jevx-variance-evaluation-2026-09-21.md`](../../docs/research/evaluations/jevx-variance-evaluation-2026-09-21.md)を参照してね。
+`eval-repeat --output`はcase JSONLではなく、run/mode集計（runごとのmode summaryを含む）と、`local_rank` / `jevx` が計測するケースの遅延・token分布（mean / stddev / min / max / p50 / p95）をJSONで保持する。prompt・keywords・response本文・case JSONLは保存しない。実測値は[`docs/research/evaluations/jevx-variance-evaluation-2026-09-21.md`](../../docs/research/evaluations/jevx-variance-evaluation-2026-09-21.md)を参照してね。

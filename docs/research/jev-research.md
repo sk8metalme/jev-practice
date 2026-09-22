@@ -1,23 +1,25 @@
 # Jev活用アイデア徹底調査レポート
 
 > 対象読者: 調査・導入判断・評価担当
-> 文書の状態: 歴史的な調査レポート
+> 文書の状態: 歴史的な調査レポート・未実装候補
 
 > 調査日: 2026-09-20
 >
-> 目的: 公開情報をもとにJevの実際の使われ方と未充足の実装機会を整理し、このリポジトリで次にローカル実装する候補を選べるようにする。
+> 目的: 公開情報をもとにJevの実際の使われ方と未充足の実装機会を整理し、このリポジトリで次にローカル実装する候補を選べるようにする。候補は調査時点の提案で、未実装・ロードマップ未確定である。
+
+この調査でいう「旧Node.js Webアプリ」「Jev Triage」は、ルート `src/` に残る過去のWebアプリを指す。現行のサポート対象と仕様の正本は `jevx/` のRust CLIであり、以下の記述は候補検討時点の歴史的な前提として扱う。
 
 ## 先に結論
 
 JevはLLMの代替というより、**コードが制御するワークフロー内の判断部品**として使うと価値が出やすい。入力stateを小さく分け、Jevには一つずつの判断を複数問まとめて依頼し、結果の組み合わせ・閾値・副作用は通常のコードが担当する。
 
-このリポジトリで次に作る候補は、次の順がおすすめ。
+このリポジトリで次に作る候補は、2026-09-20時点では次の順がおすすめだった。これは未実装候補の比較であり、現行ロードマップではない。
 
 | 順位 | 候補 | 推す理由 |
 | --- | --- | --- |
 | 1 | **Confidence-Gated Agent Tool Router** | Jevの「選ぶ・危険度を測る・不確実なら止める」を最小のローカルデモで検証でき、実際の副作用をシミュレーションに閉じ込められる。 |
 | 2 | **Citation / Response Verifier** | 生成LLMとJevを組み合わせるCascadeを可視化でき、正解データと「根拠があるか」を分離して評価しやすい。 |
-| 3 | **Bug / Support Triage Board** | 既存のJev Triageをそのまま拡張でき、問い合わせ・緊急度・人手確認・レスポンス時間を再利用できる。 |
+| 3 | **Bug / Support Triage Board** | 旧Jev Triage実装を拡張でき、問い合わせ・緊急度・人手確認・レスポンス時間を再利用できる。 |
 | 4 | **CSV / Document Quality Auditor** | 大量データを1行ずつ意味判定するJevの経済性を検証でき、数値・日付の厳密処理をコードへ分離しやすい。 |
 | 5 | **PR / CI Review Gate** | 開発者向け価値が高く、公開実例も多い。ただしコードレビュー領域は競合が多く、最終判断は既存のCIと人に残す必要がある。 |
 
@@ -59,7 +61,7 @@ Jevはstateとtyped questionsを受け取り、自由文ではなく型付きの
 | `Score` | 順序のある評価軸に置く | `score`、`legend`、レベルごとの`probabilities`、`confidence` |
 | `Noul` | ある命題が真である確率を得る | `noul`（0〜1） |
 
-TypeSafe SDKでは`Noul`、Vercel AI Gatewayの評価APIでは同じ概念のyes/no判定を`boolean`として扱う例がある。このリポジトリの現行実装もGateway形式の`boolean`を使っているため、本文ではSDKの概念を`Noul / boolean`と併記する。
+TypeSafe直接APIでは`Noul`、旧Node.js Webアプリの歴史的なGateway契約ではyes/no判定を`boolean`として扱う例がある。一方、このリポジトリの現行 `jevx` Rust CLIは候補 + `none` の `choice` をGatewayへ送る。本文の候補案で `Noul / boolean` と併記する箇所は、現行jevxのAPI契約ではなく、調査上の型の比較として読む。
 
 複数の質問は同じstateに対して独立に評価され、1リクエスト内で並列処理される。質問同士の組み合わせ、重み、閾値、実際の処理はコード側で定義するのが基本になる。
 
@@ -91,7 +93,7 @@ Jevに計算させるのではなく、コードで計算した結果をJevの�
 
 TypeSafeのローンチ記事は、Jevの入力価格を`$0.042 / 1M input tokens`、出力を無料、エンドツーエンドを70〜500msとして説明している。Vercelのモデルページは入力価格を約`$0.04 / 1M tokens`と表示している。これはプロバイダ・時点・経路で変わり得るため、本レポートでは「低コスト・低遅延という公式主張」として扱い、実アプリでは`usage`と実測値を記録する。
 
-現在のアプリの`responseMs`は、GatewayへのHTTP往復とJSON応答の読み取りを含むアプリ側の経過時間。Jevのプロバイダ処理時間そのものではない。候補同士を比較する場合は、同じ地域・入力サイズ・質問数・Gateway経路でp50/p95を取る。
+旧Jev Triage実装の`responseMs`は、GatewayへのHTTP往復とJSON応答の読み取りを含むアプリ側の経過時間。Jevのプロバイダ処理時間そのものではない。候補同士を比較する場合は、同じ地域・入力サイズ・質問数・Gateway経路でp50/p95を取る。
 
 confidenceは「正しさの保証」ではなく、行動を変えるための補助信号。低confidenceは人へ、高confidenceでも破壊的な処理にはより高い閾値や確認を要求する。閾値は候補ごとのラベル付きデータで決める。
 
@@ -153,7 +155,7 @@ TypeSafe公式はDoomやWikiracingを、コミュニティはMario、Pac-Man、T
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | **Confidence-Gated Agent Tool Router** | 次の許可済みツール、危険度、要確認 | request、現在ノード、許可候補、ルール | 中 | A/B: [公式Intent Routing](https://docs.typesafe.ai/patterns/intent-routing)、[tool router](https://github.com/TypeSafeAI/typesafe-playground/blob/main/docs/tool-router.md)、[pi-warden](https://github.com/DevMortimer/pi-warden) | 選択結果を実行コマンドに直結しない |
 | 2 | **Citation / Response Verifier** | 根拠が支持・部分支持・不支持か | 質問、抜粋、ドラフト回答、出典 | 中 | A/B: [公式Use Case Map](https://docs.typesafe.ai/concepts/use-case-map)、[OpenRouter Cascade](https://openrouter.ai/docs/cookbook/evaluate-and-optimize/jev-verified-cascade) | 支持判定は真実性の証明ではない |
-| 3 | **Bug / Support Triage Board** | 種別、緊急度、再現性、顧客影響、担当 | ticket、account、product、既知障害 | 低 | A/B: [Workflow Evals](https://evals.typesafe.ai/)、[既存アプリ](../../README.md)、[Jev Examples](https://github.com/rajivkuriakose/typesafe-jev-examples) | P0・返金・PIIは人手確認 |
+| 3 | **Bug / Support Triage Board** | 種別、緊急度、再現性、顧客影響、担当 | ticket、account、product、既知障害 | 低 | A/B: [Workflow Evals](https://evals.typesafe.ai/)、[旧Jev Triage実装](../../src/)、[Jev Examples](https://github.com/rajivkuriakose/typesafe-jev-examples) | P0・返金・PIIは人手確認 |
 | 4 | **CSV / Document Quality Auditor** | 意味的な欠損、異常、分類、要確認 | row、schema、policy、source metadata | 中 | A/B: [jev-curate](https://github.com/AkashPriyadarshii/jev-curate)、[pg-jev](https://github.com/realZachi/pg-jev)、[TiAb Review](https://github.com/youkiti/tiab-review-plugin) | 数値・日付・件数はコードで検証 |
 | 5 | **PR / CI Review Gate** | リスク、レビュー観点、担当、準備度 | diff要約、変更ファイル、CI、ポリシー | 中 | B: [jev-review](https://github.com/devagrawal09/jev-review)、[clarity-judge](https://github.com/TypeSafeAI/clarity-judge) | 自動merge・自動blockをしない |
 | 6 | **Incident / Log Triage Router** | アラートの担当、優先度、顧客影響、重複 | alert、service、deploy、ログ要約 | 中 | B/C: [Jev Logs](https://github.com/reachjalil/jevlogs)、[log triage記事](https://dev.to/reachjalil/how-we-tuned-typesafe-jev-for-log-triage-without-alert-storms-1ei0) | 通知抑制の唯一の根拠にしない |
@@ -307,7 +309,7 @@ Stage Aの回答後、コード側で候補IDを解決し、検証済みの引�
 
 #### 何を作るか
 
-現在のJev Triageを、単一問い合わせの結果表示から複数チケットの一覧・担当・優先度・人手確認まで拡張する。
+旧Jev Triage実装を、単一問い合わせの結果表示から複数チケットの一覧・担当・優先度・人手確認まで拡張する。
 
 #### stateと質問
 
@@ -323,20 +325,20 @@ Stage Aの回答後、コード側で候補IDを解決し、検証済みの引�
 }
 ```
 
-- `category`: `Choice`。現行アプリと同じ`billing`、`account`、`technical`、`shipping`を使う。
-- `urgency`: `Score`。現行アプリと同じ0〜2の`low`、`medium`、`high`を使う。
-- `refundRequested`: `Noul / boolean`。現行アプリと同じ返金要求の命題を使う。
+- `category`: `Choice`。旧Jev Triage実装と同じ`billing`、`account`、`technical`、`shipping`を使う。
+- `urgency`: `Score`。旧Jev Triage実装と同じ0〜2の`low`、`medium`、`high`を使う。
+- `refundRequested`: `Noul / boolean`。旧Jev Triage実装と同じ返金要求の命題を使う。
 - `reproducible`: `Noul / boolean`。再現手順と環境情報から再現可能性を判定する追加質問。
 - `customerImpact`: `Noul / boolean`。継続利用や複数ユーザーへの影響を判定する追加質問。
 - `outOfScope`: `Noul / boolean`。4つの既存カテゴリに該当しない問い合わせかを判定するboundedな追加シグナル。
 
-カテゴリ・緊急度・返金要求は既存アプリのschema、ラベル、Score範囲と互換にする。`intent`という別名や4段階のseverityをそのまま導入しない。プロダクト固有の細かい分類が必要なら、既存`category`からコード側のmappingを明示的に作り、保存済みデータと表示ロジックを移行してから使う。`outOfScope`は既存の保存値を置き換えず、未知カテゴリを`needs-review`へ送るための別シグナルとして扱う。
+カテゴリ・緊急度・返金要求は旧Jev Triage実装のschema、ラベル、Score範囲と互換にする。`intent`という別名や4段階のseverityをそのまま導入しない。プロダクト固有の細かい分類が必要なら、既存`category`からコード側のmappingを明示的に作り、保存済みデータと表示ロジックを移行してから使う。`outOfScope`は既存の保存値を置き換えず、未知カテゴリを`needs-review`へ送るための別シグナルとして扱う。
 
 `needsHuman`はJevへ尋ねず、`category`・`urgency`・`refundRequested`・`reproducible`・`customerImpact`・`outOfScope`の回答、各confidence、欠損状態をコードで検証した後に導出する。たとえば、回答欠損、低confidence、`outOfScope=true`、`urgency=high`、`refundRequested=true`、`customerImpact=true`のいずれかがあればtrueとし、trueは`needs-review`へ送る。これにより、独立評価されたJev回答が人手確認の必要性を上書きしない。P0や返金はconfidenceが高くても自動処理しない。
 
 #### ローカルMVP
 
-- 現行フォームに再現手順・顧客プラン・既知障害を追加。
+- 新規フォーム（旧Node.js Webアプリを参考にする場合）に再現手順・顧客プラン・既知障害を追加。
 - 1リクエストのfan-outで質問を評価。
 - 結果をローカル一覧へ追加し、カテゴリ・緊急度・needs-humanで絞り込む。
 - `responseMs`、usage、判定修正を履歴として表示。
@@ -566,9 +568,9 @@ Choice / Score / Noul(boolean) を1リクエストで評価
 
 ### 最終推奨
 
-このリポジトリの次の1タスクは、**Confidence-Gated Agent Tool Router**を最有力とする。理由は、既存の問い合わせトリアージと同じ「型付き質問→結果表示→responseMs」の基盤を再利用しながら、Jevの特徴であるconfidence、許可候補、コード側ポリシー、人手確認を一つの画面で体験できるから。
+2026-09-20時点の調査では、このリポジトリの次の候補として **Confidence-Gated Agent Tool Router**を最有力とした。理由は、旧Node.js Webアプリの問い合わせトリアージと同じ「型付き質問→結果表示→responseMs」の設計知見を参考にしながら、Jevの特徴であるconfidence、許可候補、コード側ポリシー、人手確認を一つの画面で体験できるから。ただし未実装候補であり、現行jevxの次タスクやロードマップ確定ではない。
 
-安全性の説明と評価データを重視するなら、**Citation / Response Verifier**を選ぶ。最短で成果を出すなら、既存の**Bug / Support Triage Board**を拡張する。
+安全性の説明と評価データを重視するなら、**Citation / Response Verifier**を選ぶ。最短で成果を出すなら、旧Node.js Webアプリを参考に**Bug / Support Triage Board**を再設計する。
 
 ## 10. 出典台帳
 

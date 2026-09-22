@@ -19,10 +19,10 @@ Skill 選択のコアは **Shadow Mode**。依頼に合いそうな Skill を提
 - `skills list`: 探索できる Skill カタログを確認する
 - `hooks shadow`: Codex Hook の発火を変更なしで記録する
 - `hooks install`: 既存設定を保持しながら jevx Hook を明示的に登録する
-- `hooks compact-assist`: Compaction前後の安全なcheckpointを記録し、compact後に補助contextを返す
+- `hooks compact-assist`: Compaction前後のcheckpointを記録し、compact後に補助contextを返す
 - `hooks correlate`: Hook の相関IDと重複を集計する
 - `hooks compact-eval`: 合成 Compaction のベースラインを測る
-- `hooks conversation-eval`: 実測から作った安全な JSONL を評価する
+- `hooks conversation-eval`: controlled fixtureから作ったJSONLを評価する
 - `eval` / `eval-repeat`: Skill 選択の品質・速度・分散を測る
 - `doctor` / `stats`: 設定と Telemetry を確認する
 
@@ -37,10 +37,22 @@ Skill 選択のコアは **Shadow Mode**。依頼に合いそうな Skill を提
 ### 必要なもの
 
 - macOS
-- Rust stable と Cargo
+- Rust stable と Cargo（`cargo` がPATHにあること）
+- docsのJSON検証には `jq`、カバレッジ確認には任意で `cargo-llvm-cov`（`cargo install cargo-llvm-cov`）
 - Jev を使う場合は `AI_GATEWAY_API_KEY`
 
 APIキーなしでも、一覧表示・診断・dry-run評価・合成Compaction評価・既存JSONLの評価は実行できるよ。
+
+### Install rootとPATH
+
+リポジトリのルートから `setup.sh` を使う場合の主な引数は `--scope user|project [--repo PATH] [--hooks]`。ヘルプは `--help` / `-h` で表示できる。ここではinstall rootを `$HOME/.local` に固定し、release binaryの `bin` をPATHへ追加する。
+
+```bash
+jevx_install_root="${JEVX_INSTALL_ROOT:-$HOME/.local}"
+JEVX_INSTALL_ROOT="$jevx_install_root" sh jevx/scripts/setup.sh --scope user
+export PATH="$jevx_install_root/bin:$PATH"
+jevx doctor --json
+```
 
 ### ビルドとローカル確認
 
@@ -83,7 +95,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- doctor --json
 
 ### Skillを一覧表示する
 
-探索の優先順位は、プロジェクトの `.agents/skills`、`.codex/skills`、ユーザーの `~/.agents/skills`、`$CODEX_HOME/skills`、`--skill-dir` の順だよ。同じ名前のSkillは、優先順位が高いルートを採用する。
+探索の優先順位は、プロジェクトの `.agents/skills`、`.codex/skills`、ユーザーの `~/.agents/skills`、`$CODEX_HOME/skills`（`CODEX_HOME`未設定時は`~/.codex/skills`）、`--skill-dir` の順だよ。同じ名前のSkillは、優先順位が高いルートを採用する。`--skill-dir` は既定rootsの置換ではなく追加なので、評価では一時HOME・CODEX_HOME・空のproject rootを使ってカタログを隔離する。
 
 ```bash
 cargo run --locked --manifest-path jevx/Cargo.toml -- \
@@ -209,13 +221,17 @@ Mode: shadow
 
 ## Jev Gatewayへ直接 `curl` する
 
-通常は `jevx` を使えばよいけれど、Jevのリクエストとレスポンス形状だけを確認したいときは、同じGatewayへ直接送れる。これは外部APIへ実際に送信するコマンドなので、秘密情報ではないテスト文だけで実行してね。
+通常は `jevx` を使えばよいけれど、Jevのリクエストとレスポンス形状だけを確認したいときは、同じGatewayへ直接送れる。これは外部APIへ実際に送信するコマンドなので、秘密情報ではないテスト文だけで実行してね。認証ヘッダーはprocess substitutionの一時config fdへ渡し、APIキーをcurlのargvへ展開しない形式にしている。
 
 ```bash
 curl --fail-with-body --silent --show-error \
-  -X POST "${JEVX_GATEWAY_ENDPOINT:-https://ai-gateway.vercel.sh/v1/evaluate}" \
-  -H "Authorization: Bearer ${AI_GATEWAY_API_KEY}" \
-  -H 'Content-Type: application/json' \
+  --config <(
+    printf '%s\n' \
+      'request = POST' \
+      "url = ${JEVX_GATEWAY_ENDPOINT:-https://ai-gateway.vercel.sh/v1/evaluate}" \
+      "header = Authorization: Bearer ${AI_GATEWAY_API_KEY}" \
+      'header = Content-Type: application/json'
+  ) \
   --data @- <<'JSON'
 {
   "model": "typesafe-ai/jev",
@@ -258,7 +274,7 @@ Gatewayの構造化レスポンスは、例えば次のようになる。
 
 ## Telemetryと統計
 
-既定では `$JEVX_HOME/events.jsonl`、通常は `~/.jevx/events.jsonl` へ追記する。依頼文そのものではなく、SHA-256、文字数、判定、候補数、速度、Token使用量などのメタデータを保存する設計。
+既定では `$JEVX_HOME/events.jsonl`、通常は `~/.jevx/events.jsonl` へ追記する。依頼文そのものではなく、SHA-256、文字数、判定、候補数、速度、Token使用量などのメタデータを保存する設計で、Gatewayの候補probabilityはTelemetry schemaへ保存しない。
 
 ```bash
 cargo run --locked --manifest-path jevx/Cargo.toml -- stats --json
@@ -300,7 +316,7 @@ JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- \
   skills suggest --prompt "テストを追加したい" --json
 ```
 
-`--no-telemetry` はローカルの記録だけを止めるオプションで、Jevへの送信自体は止めないよ。外部送信を行いたくない場合は `--skill`、`--dry-run`、APIキーなしの一覧・診断コマンドを使ってね。
+`--no-telemetry` はローカルの記録だけを止めるオプションで、Jevへの送信自体は止めないよ。Gatewayへ外部送信しない確認には `eval --dry-run --json`、`skills list`、`doctor`、または明示指定の `skills suggest --prompt "<non-secret prompt>" --skill <skill-id> --json` を使ってね。`--dry-run` は `eval` / `eval-repeat` のサブコマンドであり、単独の安全スイッチではない。
 
 ## Codex Skillとしてセットアップする
 
@@ -309,23 +325,26 @@ JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- \
 ### ユーザー領域へインストール
 
 ```bash
-sh jevx/scripts/setup.sh --scope user
+jevx_install_root="${JEVX_INSTALL_ROOT:-$HOME/.local}"
+JEVX_INSTALL_ROOT="$jevx_install_root" sh jevx/scripts/setup.sh --scope user
 ```
 
-インストール先は `${HOME}/.agents/skills/jevx/SKILL.md`。スクリプトは実際に使うインストール先を `--root` で固定するため、バイナリのrootは `JEVX_INSTALL_ROOT`、`CARGO_INSTALL_ROOT`、`CARGO_HOME`、`${HOME}/.cargo` の順で決まるよ。`--hooks` 付きならそのrootのバイナリを直接使うので、`PATH`へ追加する必要はない。単体で `jevx` を呼ぶ場合だけ、表示された `bin` ディレクトリを `PATH` に追加してね。
+インストール先は `${HOME}/.agents/skills/jevx/SKILL.md`。スクリプトは `JEVX_INSTALL_ROOT`、`CARGO_INSTALL_ROOT`、`CARGO_HOME`、`${HOME}/.cargo` の順でCargo install rootを決め、`cargo install --root`へ渡す。`--hooks` 付きならそのrootのバイナリをcommandへ絶対パスで登録するので、PATHへ追加しなくてもCodexから実行できる。単体で `jevx` を呼ぶ場合は、上のように同じrootの `bin` ディレクトリを `PATH` に追加してね。
 
 Skillのセットアップと同時に、Codex Hookも明示的に登録したい場合は `--hooks` を付ける。Hook設定の生成・Trust確認が発生するので、初回は `--dry-run` 付きのコマンドを先に実行するのがおすすめ。
 
 ```bash
 cargo run --locked --manifest-path jevx/Cargo.toml -- \
   hooks install --scope user --dry-run --json
-sh jevx/scripts/setup.sh --scope user --hooks
+jevx_install_root="${JEVX_INSTALL_ROOT:-$HOME/.local}"
+JEVX_INSTALL_ROOT="$jevx_install_root" sh jevx/scripts/setup.sh --scope user --hooks
 ```
 
 ### このプロジェクトだけへインストール
 
 ```bash
-sh jevx/scripts/setup.sh --scope project --repo "$PWD"
+jevx_install_root="${JEVX_INSTALL_ROOT:-$HOME/.local}"
+JEVX_INSTALL_ROOT="$jevx_install_root" sh jevx/scripts/setup.sh --scope project --repo "$PWD"
 ```
 
 インストール先は `$PWD/.agents/skills/jevx/SKILL.md`。Codex側のSkill探索対象を明示したいときは `CODEX_HOME` も確認してね。
@@ -343,13 +362,13 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 ## Codex Hookを安全にshadow検証する
 
-`hooks shadow` は stdin のHook JSONを読み、Codexへは固定の継続レスポンスだけを返す。
+`hooks shadow` は stdin のHook JSONを読み、known eventを受理した場合だけCodexへ固定の継続レスポンスを返す。未知event、event不一致、JSON不正には固定応答を返さずエラーにする。
 
 ```json
 {"continue":true,"suppressOutput":true}
 ```
 
-対応イベントは `SessionStart`、`PreCompact`、`PostCompact`、`UserPromptSubmit`。`UserPromptSubmit` のときだけ、promptが空でなく、Jev判定が可能ならSkill候補を評価する。
+対応イベントは `SessionStart`、`PreCompact`、`PostCompact`、`UserPromptSubmit`。`UserPromptSubmit` のときだけ、promptが空でなく、Jev判定が可能ならSkill候補を評価する。Jevが失敗してもknown eventの `continue: true` は維持する。
 
 ```bash
 printf '%s\n' \
@@ -361,7 +380,7 @@ printf '%s\n' \
       --output /tmp/jevx-hooks.jsonl
 ```
 
-`--output` へ保存されるHook recordには、次のような安全な値だけが残るよ。
+`--output` へ保存されるHook recordは、hashed IDsとprompt非保存を含む現行schemaの観測記録だよ。`trigger`、`source`、`selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなrecordを拒否し、既存schema v1のloadでは該当metadataを正規化・欠損化して分析互換性を保つよ。
 
 - `sessionIdSha256`、`turnIdSha256`、`modelSha256`、`correlationIdSha256`
 - `promptSha256`、`promptChars`
@@ -428,7 +447,7 @@ printf '%s\n' \
       hooks compact-assist --state-dir /tmp/jevx-compaction
 ```
 
-checkpointには生のmanifest本文を保存せず、redacted本文のSHA-256、文字数、event名、相関ハッシュだけを保存する。`additionalContext`も「補助情報」として返すだけで、Codexの会話履歴・現在のリポジトリ確認・公式Compactionの代替ではないよ。
+checkpointには生のmanifest本文を保存せず、redacted本文のSHA-256、文字数、event名、相関ハッシュだけを保存する。Hook metadataもwrite前にbounded identifierへ正規化し、unsafeな値を保存しないよ。`additionalContext`も「補助情報」として返すだけで、Codexの会話履歴・現在のリポジトリ確認・公式Compactionの代替ではないよ。
 
 この補助を使わず、発火だけを観測したい場合は従来どおり `hooks shadow` を使う。公式Hookのmatcherと出力契約は [Codex Hooks公式ドキュメント](https://learn.chatgpt.com/docs/hooks) を確認してね。
 
@@ -496,6 +515,8 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 40ケースのfixture（合成30件、匿名化テンプレート10件）は [`evals/README.md`](evals/README.md) に説明があるよ。
 
+fixtureの `keywords` は期待根拠の注釈として読み込まれるが、現行 `local_keyword` の予測計算には使われない。現行方式はSkillのID・name・descriptionから一致を作り、`id`・`kind`・`expected`・`keywords` はJev requestへ含めない。単回`eval --output`では`expected`を判定基準としてcase outputへ保存するが、`keywords`は保存しない。
+
 ### APIキーなしのdry-run
 
 ```bash
@@ -503,7 +524,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
   eval --dry-run --json
 ```
 
-`none`、ローカルキーワード、Jev（`not_run`）を同じfixtureで比較する。dry-runでは外部APIへ送信しない。
+`none`、`local_keyword`、`local_rank`、Jev（`not_run`）を同じfixtureで比較する。`nonePrecision` は `expectedNone` 分母の recall（`noneCorrect / expectedNone`）であり、通常のprecisionとは異なる。`eval --dry-run`ではJev/Gatewayへ外部送信しない。
 
 ### Jevを使った1回評価
 
@@ -528,13 +549,30 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
   --output /tmp/jevx-repeat.json
 ```
 
-レポートでは正解率・`none`精度・エラー率と、`discoveryMs`・`jevResponseMs`・`totalMs` の mean / p50 / p95 などを分けて確認できる。出力JSONLへはprompt本文とfixtureのキーワードを保存しない。
+レポートでは正解率・`none` recall（互換キー `nonePrecision`）・エラー率と、`discoveryMs`・`jevResponseMs`・`totalMs` の mean / p50 / p95 などを分けて確認できる。単回`eval --output`のcase JSONLには`id`・`kind`・`expected`・判定・metrics・error codeを保存し、prompt本文・fixtureの`keywords`・Jev response本文を保存しない。`eval-repeat --output`はcase JSONLではなくrun/mode集計だけを保存する。
 
-### Jevあり / なしの比較結果
+### Current / Latest baseline（2026-09-22）
 
-同梱40ケースの固定fixtureで、導入効果と追加コストを同じ条件で確認した結果だよ。
+`JEVX_TELEMETRY=off` の外部送信なし確認では、`none` 10.0%、`local_keyword` 87.5%、`local_rank` 17.5%、`jevx` は `not_run` だった。`nonePrecision` は `expectedNone` 分母の recall（`noneCorrect / expectedNone`）。測定時の実装・fixture commitは `ed0b93c023251400bcbbe2de8cdedd5451f08761`（docs同期前）、fixture SHA-256 `a450a48fac7b49b544002f8c539b961fef0352951cde950f692768b4ea0748fb`、`rustc/cargo 1.98.1`、macOS 26.6.2（build 25G83）、APIキーなし、fixture9件 + 既定rootsの有効候補14件。実行日時 `2026-09-22T15:00:42+09:00` と環境依存性をレポートへ併記する。隔離rootのfixture-only実行では値が変わるため、Latest値と混ぜない。
 
-| 方式 | 正解率 | `none`精度 | 追加コスト |
+| モード | cases | accuracy | none recall（互換キー `nonePrecision`） | 外部通信 |
+| --- | ---: | ---: | ---: | --- |
+| `none` | 40 | 10.0% | 100.0%（4/4） | なし |
+| `local_keyword` | 40 | 87.5% | 75.0%（3/4） | なし |
+| `local_rank` | 40 | 17.5% | 75.0%（3/4） | なし |
+| `jevx` | 0 | — | — | `not_run` |
+
+### Historical snapshot（2026-09-21、APIキーあり）
+
+同梱40ケースの固定fixtureで、導入効果と追加コストを記録時点の条件で確認した結果だよ。これは2026-09-21のHistorical snapshotで、APIキーあり、当時の実装commitに対する値であり、現行Latestの保証ではない。
+
+| snapshot metadata | 値 |
+| --- | --- |
+| 日付 | 2026-09-21 |
+| API key | `AI_GATEWAY_API_KEY` 設定済み（値は記録・表示しない） |
+| commit状態 | 当時の実装commit（現行 `ed0b93c...` とは別。詳細は各Historicalレポート） |
+
+| 方式 | 正解率 | `nonePrecision`（`expectedNone` 分母の recall） | 追加コスト |
 | --- | ---: | ---: | --- |
 | `none` | 10.0% | 100.0% | 外部通信なし |
 | `local_keyword` | 90.0% | 75.0% | 外部通信なし |
@@ -545,9 +583,11 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 ## セキュリティとデータの扱い
 
-- Jevへ送るのは、マスキングしたprompt、作業ディレクトリ、候補SkillのID・名前・説明。Skill本文、過去会話全文、Tool結果、APIキーは送らない。
+- Jevへ送るのは、マスキングしたprompt、rawの作業ディレクトリ、rawの候補Skill ID/name、redactしたdescription。Skill本文、過去会話全文、Tool結果、APIキーは送らない。
 - `AI_GATEWAY_API_KEY` は環境変数からBearer認証へ使い、レスポンスやTelemetryへ書き出さない。
-- Telemetryはprompt本文ではなくハッシュ・文字数・判定・計測値を保存する。
+- Telemetryはprompt本文やprobabilityではなくハッシュ・文字数・判定・選択時の`selectedSkill`（raw ID）・計測値を保存するため、Skill ID自体を秘密値にしない。
+- Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` / `Authorization: Basic <value>` の認識済み形式で値を保存・送信しない。任意の `Basic` 文言や未知のPIIを除去する完全なDLPではない。
+- Hookの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなrecordを拒否し、既存schema v1のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。
 - Hook recordはセッションID、ターンID、モデルをSHA-256化して保存する。
 - `/tmp` の会話評価fixtureやCodexのrollout・認証ファイルは、評価後に削除する運用にする。
 - `--no-telemetry` はローカル保存を止めるだけ。外部送信も止めたいときは、Jevを呼ぶコマンドを実行しない。
@@ -602,7 +642,7 @@ cargo llvm-cov --locked --manifest-path jevx/Cargo.toml \
 
 ## さらに読む
 
-- [`../README.md`](../README.md): プロジェクト全体と画面付きのJevアプリ例
+- [`../docs/README.md`](../docs/README.md): 現行jevx文書の入口
 - [`skill/SKILL.md`](skill/SKILL.md): Codexへ登録するadvisory Skill
 - [`evals/README.md`](evals/README.md): 40ケース評価fixtureの仕様
 - [`../docs/developers/jevx-requirements.md`](../docs/developers/jevx-requirements.md): 要件定義
