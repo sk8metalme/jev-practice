@@ -541,7 +541,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 | `jevx`（1回） | 100.0% | 100.0% | Jev p50/p95 407/673ms、平均 2,401/128 tokens |
 | `jevx`（5回平均） | 98.0% | 100.0% | Jev p50/p95 427/610ms、エラー率2.0% |
 
-5回測定ではローカル候補探索p95が2ms、全体p95が612msだった。今回のfixtureではJevの追加判断がlocal_keywordより良かった一方、Jevの応答時間・Gatewayエラー・Token使用量は常に発生するため、実運用では `stats` のp95とエラー率を一緒に見る。測定条件と「保証ではない」範囲は [`../docs/jevx-comfort-evaluation.md`](../docs/jevx-comfort-evaluation.md) にまとめているよ。
+5回測定ではローカル候補探索p95が2ms、全体p95が612msだった。今回のfixtureではJevの追加判断がlocal_keywordより良かった一方、Jevの応答時間・Gatewayエラー・Token使用量は常に発生するため、実運用では `stats` のp95とエラー率を一緒に見る。測定条件と「保証ではない」範囲は [`../docs/research/evaluations/jevx-comfort-evaluation.md`](../docs/research/evaluations/jevx-comfort-evaluation.md) にまとめているよ。
 
 ## セキュリティとデータの扱い
 
@@ -605,12 +605,12 @@ cargo llvm-cov --locked --manifest-path jevx/Cargo.toml \
 - [`../README.md`](../README.md): プロジェクト全体と画面付きのJevアプリ例
 - [`skill/SKILL.md`](skill/SKILL.md): Codexへ登録するadvisory Skill
 - [`evals/README.md`](evals/README.md): 40ケース評価fixtureの仕様
-- [`../docs/jevx-requirements.md`](../docs/jevx-requirements.md): 要件定義
-- [`../docs/jevx-architecture.md`](../docs/jevx-architecture.md): アーキテクチャと安全側判定
-- [`../docs/jevx-evaluation.md`](../docs/jevx-evaluation.md): 評価Runnerの仕様
-- [`../docs/jevx-codex-hooks-evaluation.md`](../docs/jevx-codex-hooks-evaluation.md): Hook shadow評価
-- [`../docs/jevx-comfort-evaluation.md`](../docs/jevx-comfort-evaluation.md): Jevあり/なし比較と導入判断
-- [`../docs/jevx-real-codex-compaction-evaluation-2026-09-21.md`](../docs/jevx-real-codex-compaction-evaluation-2026-09-21.md): 実Codex / 実会話型Compaction評価
-- [`../docs/jevx-compaction-depth-evaluation-2026-09-21.md`](../docs/jevx-compaction-depth-evaluation-2026-09-21.md): Hook直接検証とCompaction深掘り評価
+- [`../docs/developers/jevx-requirements.md`](../docs/developers/jevx-requirements.md): 要件定義
+- [`../docs/developers/jevx-architecture.md`](../docs/developers/jevx-architecture.md): アーキテクチャと安全側判定
+- [`../docs/developers/jevx-evaluation.md`](../docs/developers/jevx-evaluation.md): 評価Runnerの仕様
+- [`../docs/research/evaluations/jevx-codex-hooks-evaluation.md`](../docs/research/evaluations/jevx-codex-hooks-evaluation.md): Hook shadow評価
+- [`../docs/research/evaluations/jevx-comfort-evaluation.md`](../docs/research/evaluations/jevx-comfort-evaluation.md): Jevあり/なし比較と導入判断
+- [`../docs/research/evaluations/jevx-real-codex-compaction-evaluation-2026-09-21.md`](../docs/research/evaluations/jevx-real-codex-compaction-evaluation-2026-09-21.md): 実Codex / 実会話型Compaction評価
+- [`../docs/research/evaluations/jevx-compaction-depth-evaluation-2026-09-21.md`](../docs/research/evaluations/jevx-compaction-depth-evaluation-2026-09-21.md): Hook直接検証とCompaction深掘り評価
 - [Codex Hooks公式ドキュメント](https://learn.chatgpt.com/docs/hooks)
 - [OpenAI Compaction公式ガイド](https://developers.openai.com/api/docs/guides/compaction)

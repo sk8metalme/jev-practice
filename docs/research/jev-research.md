@@ -1,5 +1,8 @@
 # Jev活用アイデア徹底調査レポート
 
+> 対象読者: 調査・導入判断・評価担当
+> 文書の状態: 歴史的な調査レポート
+
 > 調査日: 2026-09-20
 >
 > 目的: 公開情報をもとにJevの実際の使われ方と未充足の実装機会を整理し、このリポジトリで次にローカル実装する候補を選べるようにする。
@@ -150,7 +153,7 @@ TypeSafe公式はDoomやWikiracingを、コミュニティはMario、Pac-Man、T
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | **Confidence-Gated Agent Tool Router** | 次の許可済みツール、危険度、要確認 | request、現在ノード、許可候補、ルール | 中 | A/B: [公式Intent Routing](https://docs.typesafe.ai/patterns/intent-routing)、[tool router](https://github.com/TypeSafeAI/typesafe-playground/blob/main/docs/tool-router.md)、[pi-warden](https://github.com/DevMortimer/pi-warden) | 選択結果を実行コマンドに直結しない |
 | 2 | **Citation / Response Verifier** | 根拠が支持・部分支持・不支持か | 質問、抜粋、ドラフト回答、出典 | 中 | A/B: [公式Use Case Map](https://docs.typesafe.ai/concepts/use-case-map)、[OpenRouter Cascade](https://openrouter.ai/docs/cookbook/evaluate-and-optimize/jev-verified-cascade) | 支持判定は真実性の証明ではない |
-| 3 | **Bug / Support Triage Board** | 種別、緊急度、再現性、顧客影響、担当 | ticket、account、product、既知障害 | 低 | A/B: [Workflow Evals](https://evals.typesafe.ai/)、[既存アプリ](../README.md)、[Jev Examples](https://github.com/rajivkuriakose/typesafe-jev-examples) | P0・返金・PIIは人手確認 |
+| 3 | **Bug / Support Triage Board** | 種別、緊急度、再現性、顧客影響、担当 | ticket、account、product、既知障害 | 低 | A/B: [Workflow Evals](https://evals.typesafe.ai/)、[既存アプリ](../../README.md)、[Jev Examples](https://github.com/rajivkuriakose/typesafe-jev-examples) | P0・返金・PIIは人手確認 |
 | 4 | **CSV / Document Quality Auditor** | 意味的な欠損、異常、分類、要確認 | row、schema、policy、source metadata | 中 | A/B: [jev-curate](https://github.com/AkashPriyadarshii/jev-curate)、[pg-jev](https://github.com/realZachi/pg-jev)、[TiAb Review](https://github.com/youkiti/tiab-review-plugin) | 数値・日付・件数はコードで検証 |
 | 5 | **PR / CI Review Gate** | リスク、レビュー観点、担当、準備度 | diff要約、変更ファイル、CI、ポリシー | 中 | B: [jev-review](https://github.com/devagrawal09/jev-review)、[clarity-judge](https://github.com/TypeSafeAI/clarity-judge) | 自動merge・自動blockをしない |
 | 6 | **Incident / Log Triage Router** | アラートの担当、優先度、顧客影響、重複 | alert、service、deploy、ログ要約 | 中 | B/C: [Jev Logs](https://github.com/reachjalil/jevlogs)、[log triage記事](https://dev.to/reachjalil/how-we-tuned-typesafe-jev-for-log-triage-without-alert-storms-1ei0) | 通知抑制の唯一の根拠にしない |

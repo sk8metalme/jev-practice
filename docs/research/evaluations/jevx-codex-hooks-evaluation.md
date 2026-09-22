@@ -1,5 +1,10 @@
 # jevx Codex Hook shadow / compaction評価
 
+> 対象読者: 調査・導入判断・評価担当
+> 文書の状態: 歴史的な評価スナップショット
+> 再現方法: コマンドは記録時点の履歴。現行導入はユーザー向けガイドを参照。
+> 注意: 数値と条件は記録時点の観測値であり、現行環境の保証ではない。
+
 ## 目的と範囲
 
 Codex CLIの日常利用へjevxを接続する前に、Hookへ入れても会話の進行を止めず、安全な観測だけを残せるかを確認する。対象はCodex公式Hook仕様に登場する次のイベントだよ。
@@ -13,7 +18,7 @@ Codex CLIの日常利用へjevxを接続する前に、Hookへ入れても会話
 
 `hooks shadow`は引き続きCodex設定を変更しない観測モード。加えて、明示的な`hooks install`で既存設定を保持しながらjevx Hookを登録できるようになった。設定変更を伴うため、`--dry-run`、バックアップ、CodexのHook Trust確認を前提にする。このページのAPIキーあり結果はshadow入力に対するjevxの実行評価で、実Codex CLIとApp Serverを使った実測は[別の詳細記録](jevx-real-codex-compaction-evaluation-2026-09-21.md)へ分けているよ。
 
-実際に使い捨てCODEX_HOMEで導入・trust・manual compact・記録相関まで行う手順は、[compaction実運用runbook](jevx-compaction-operations.md)にまとめている。
+実際に使い捨てCODEX_HOMEで導入・trust・manual compact・記録相関まで行う手順は、[compaction実運用runbook](../../operators/jevx-compaction-operations.md)にまとめている。
 
 ## Shadowの動作
 
@@ -280,7 +285,7 @@ durationが0msなのは、固定文字列のredactionがmacOSのミリ秒時計�
 ## 関連資料
 
 - [複数回・APIキーあり実測](jevx-variance-evaluation-2026-09-21.md)
-- [評価Runnerの仕様](jevx-evaluation.md)
+- [評価Runnerの仕様](../../developers/jevx-evaluation.md)
 - [前回の単回APIキーあり実測](jevx-live-evaluation-2026-09-21.md)
 - [Jevあり/なしの導入効果比較](jevx-comfort-evaluation.md)
 - [実Codex Hook / 実会話型compaction評価](jevx-real-codex-compaction-evaluation-2026-09-21.md)

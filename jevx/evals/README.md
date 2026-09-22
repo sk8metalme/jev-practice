@@ -54,4 +54,4 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
   --json --output /tmp/jevx-repeat.json
 ```
 
-`eval-repeat`の集計はrun単位の品質（accuracy・error rateなど）と、全ケースの遅延・token分布（mean / stddev / min / max / p50 / p95）を分けて保持する。実測値は[`docs/jevx-variance-evaluation-2026-09-21.md`](../../docs/jevx-variance-evaluation-2026-09-21.md)を参照してね。
+`eval-repeat`の集計はrun単位の品質（accuracy・error rateなど）と、全ケースの遅延・token分布（mean / stddev / min / max / p50 / p95）を分けて保持する。実測値は[`docs/research/evaluations/jevx-variance-evaluation-2026-09-21.md`](../../docs/research/evaluations/jevx-variance-evaluation-2026-09-21.md)を参照してね。

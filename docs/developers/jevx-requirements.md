@@ -1,5 +1,8 @@
 # jevx 要件定義と実装状況
 
+> 対象読者: 開発者・保守担当
+> 文書の状態: 現行仕様
+
 ## 目的
 
 `jevx`は、Codex CLIの日常利用を快適にしながら、Jevの実用性を測定するためのmacOS向けCLIである。主目的は、Skill選択・Hook運用・Compaction後のコンテキスト補助について、Jevを使わない場合との差分を安全な計測で確認すること。
@@ -101,7 +104,7 @@ Telemetryには生の依頼文を保存せず、SHA-256、文字数、候補数�
 
 ## 評価結果（2026-09-21）
 
-同梱40ケース（合成30、匿名化テンプレート10）では次の差分を観測した。詳細は[`jevx-comfort-evaluation.md`](jevx-comfort-evaluation.md)に分けている。
+同梱40ケース（合成30、匿名化テンプレート10）では次の差分を観測した。詳細は[`jevx-comfort-evaluation.md`](../research/evaluations/jevx-comfort-evaluation.md)に分けている。
 
 | 方式 | 正解率 | `none`精度 | 速度・コスト |
 | --- | ---: | ---: | --- |

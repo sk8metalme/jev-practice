@@ -1,5 +1,10 @@
 # jevx 実Codex Hook / 実会話型compaction評価
 
+> 対象読者: 調査・導入判断・評価担当
+> 文書の状態: 歴史的な評価スナップショット
+> 再現方法: コマンドは記録時点の履歴。現行導入はユーザー向けガイドを参照。
+> 注意: 数値と条件は記録時点の観測値であり、現行環境の保証ではない。
+
 実際のCodex CLIを使い捨てプロファイルで起動し、jevx Hookの発火と、Codex App Serverのcompact後に会話の要点が残るかを確認した記録だよ。再開後は、成功したCLI compactと、認証付き2モデル×3ケースの実会話型評価まで完了した。
 
 この記録でいう「実測」は、Codexのモデル・認証・App Serverを実際に動かした結果を指す。認証情報、生の会話本文、秘密マーカーはリポジトリへ保存していない。
@@ -300,4 +305,4 @@ App Serverを使った品質評価と、CLI Hookを使ったjev応答速度測�
 - [Codex App Server公式ドキュメント](https://developers.openai.com/codex/app-server)
 - [OpenAI Agents APIのusage・token observability](https://developers.openai.com/api/docs/guides/agents-api/observability)
 - [jevx Codex Hook shadow / compaction評価](jevx-codex-hooks-evaluation.md)
-- [jevx評価Runner仕様](jevx-evaluation.md)
+- [jevx評価Runner仕様](../../developers/jevx-evaluation.md)
