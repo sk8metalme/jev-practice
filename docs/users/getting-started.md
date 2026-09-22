@@ -1,43 +1,12 @@
-# Jev Triageとjevxの始め方
+# jevxの始め方
 
-このページは、Jev Triageを試したい人と、Codex CLIへ `jevx` を導入するか判断したい人向けの入口です。jevxが何を補助し、Jevを使わない場合と何が変わるか、どの条件で導入を見送るべきかを、現在の実装と記録済みの評価に基づいて説明します。
+このページは、Codex CLIへ `jevx` を導入するか判断したい人向けの入口です。jevxが何を補助し、Jevを使わない場合と何が変わるか、どの条件で導入を見送るべきかを、現在の実装と記録済みの評価に基づいて説明します。
 
 ## 先に結論
 
 `jevx`は、Codex CLIのSkill選択を提案し、選択しない `none` も含めて判断結果を計測するmacOS向けRust CLIです。基本動作はShadow Modeで、提案されたSkillを自動でロード・実行したり、会話を書き換えたりしません。
 
 固定fixtureの評価では、Jevx + Jevはローカルキーワード方式より高い正解率と `none` 精度を示しました。一方で、Jev/Gatewayへの外部通信、Token使用量、応答遅延、Provider errorが追加されます。このため、jevxは「必ず速くなる自動化」ではなく、Skill選択の判断と導入効果を観測可能にする補助線として検討してください。
-
-## Jev Triageでできること
-
-Jev Triageは、問い合わせ文をJevへ送り、次の型付き結果を画面に表示します。
-
-- `choice`: 請求・返金、アカウント、不具合、配送のカテゴリ
-- `score`: 対応の緊急度
-- `boolean`: 返金要求の可能性
-- Jevの応答時間とToken使用量
-
-### 起動
-
-必要なものはNode.js 20以上とVercel AI GatewayのAPIキーです。APIキーをブラウザへ渡さないよう、評価リクエストはNode.jsサーバーから送信します。
-
-```bash
-export AI_GATEWAY_API_KEY="<your-ai-gateway-api-key>"
-npm test
-npm run dev
-```
-
-ブラウザで <http://localhost:3000> を開いて問い合わせを入力してください。APIキーが未設定でも画面は表示できますが、判定にはキーが必要です。
-
-### 画面例
-
-![配送に関する問い合わせの判定例](../screenshots/jev-triage-shipping.png)
-
-![請求・返金に関する問い合わせの判定例](../screenshots/jev-triage-billing.png)
-
-![身に覚えのない請求に関する判定例](../screenshots/jev-triage-invisible-charge.png)
-
-Jevの型付き評価やTypeSafe APIを直接呼び出す例は、[TypeSafe APIを直接使う](../developers/typesafe-api.md)を参照してください。
 
 ## jevxの機能
 

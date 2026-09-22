@@ -6,7 +6,7 @@
 
 | 読者 | 入口 | 内容 |
 | --- | --- | --- |
-| 利用者・導入判断担当 | [users/getting-started.md](users/getting-started.md) | Jev Triageとjevxの機能、導入価値、Jevあり/なしの比較、セットアップ |
+| 利用者・導入判断担当 | [users/getting-started.md](users/getting-started.md) | jevxの機能、導入価値、Jevあり/なしの比較、セットアップ |
 | 開発者・保守担当 | [developers/](developers/) | 要件、アーキテクチャ、TypeSafe API、評価Runner |
 | Codex CLI運用担当 | [operators/](operators/) | Hook、Compaction checkpoint、導入・検証・復旧手順 |
 | 調査・評価担当 | [research/](research/) | Jev活用調査、候補案、固定fixtureの評価記録 |
