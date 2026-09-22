@@ -3,7 +3,7 @@
   <title id="jevx-eval-independent-title">jevx評価コマンドの独立した測定経路</title>
   <desc id="jevx-eval-independent-desc">用途別のfixtureやJSONLをeval、compact-eval、conversation-eval、correlateへ独立して渡し、それぞれのレポートを利用者が比較して導入判断を行う流れ。コマンドを直列に実行して全項目を測定するものではない。</desc>
   <defs>
-    <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');
+    <style>
       .zone-label { fill: #4f5d75; font: 500 8px 'Geist Mono', ui-monospace, monospace; letter-spacing: .14em; }
       .node-title { fill: #2d3142; font: 600 10px 'Geist', 'Hiragino Sans', 'Yu Gothic', sans-serif; text-anchor: middle; }
       .node-sub { fill: #4f5d75; font: 400 7.5px 'Geist', 'Hiragino Sans', 'Yu Gothic', sans-serif; text-anchor: middle; }

@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="jevx-overview-title jevx-overview-desc">
       <title id="jevx-overview-title">jevxのSkill選択とデータ境界</title>
-      <desc id="jevx-overview-desc">利用者の依頼をローカルでSkill候補へ絞り、候補がある通常の提案ではredacted prompt・raw cwd・候補metadataをJevへ送り、APIキーはAuthorization: Bearerヘッダーで認証して結果と安全なTelemetryを返す流れ。明示Skill・候補なし・dry-runでは外部判定を省略し、会話全文やTool結果は送信しない。</desc>
+      <desc id="jevx-overview-desc">利用者の依頼をローカルでSkill候補へ絞り、候補がある通常の提案ではredacted prompt・raw cwd・候補metadataをJevへ送り、APIキーはAuthorization: Bearerヘッダーで認証して結果と安全なTelemetryを返す流れ。明示Skill・候補なし・dry-runでは外部判定を省略する。自動取得した会話・Tool結果は追加せず、promptへ貼付した内容は送信対象。</desc>
       <defs>
-        <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');
+        <style>
           .zone-label { fill: #4f5d75; font: 500 8px 'Geist Mono', ui-monospace, monospace; letter-spacing: .16em; }
           .node-title { fill: #2d3142; font: 600 13px 'Geist', 'Hiragino Sans', 'Yu Gothic', sans-serif; text-anchor: middle; }
           .node-sub { fill: #4f5d75; font: 400 9px 'Geist', 'Hiragino Sans', 'Yu Gothic', sans-serif; text-anchor: middle; }
@@ -34,12 +34,12 @@
       <path d="M448 336 H464 Q472 336 472 328 V266 H480" fill="none" stroke="#7a8399" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#jevx-overview-arrow)"/>
       <path d="M448 336 H640 Q648 336 648 328 V184 H704" fill="none" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#jevx-overview-link)"/>
       <path d="M704 184 H664 Q656 184 656 192 V266 H640" fill="none" stroke="#2e5aa8" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#jevx-overview-link)"/>
-      <path d="M560 318 V348" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#jevx-overview-arrow)"/>
+      <path d="M560 330 V348" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#jevx-overview-arrow)"/>
       <path d="M224 384 H248" fill="none" stroke="#7a8399" stroke-width="1" stroke-dasharray="5,4"/>
 
       <!-- Arrow labels have opaque masks and visible gaps from the strokes. -->
-      <rect x="492" y="316" width="148" height="14" rx="2" fill="#f5f5f5"/>
-      <text x="566" y="326" class="arrow-label">JEV CALL · REQUIRED</text>
+      <rect x="656" y="260" width="148" height="14" rx="2" fill="#f5f5f5"/>
+      <text x="730" y="270" class="arrow-label">JEV CALL · REQUIRED</text>
       <circle cx="256" cy="384" r="8" fill="#f5f5f5" stroke="#7a8399" stroke-width="1"/>
       <path d="M252 380 L260 388 M260 380 L252 388" stroke="#7a8399" stroke-width="1.2"/>
 
@@ -65,20 +65,22 @@
       <text x="360" y="347" class="node-sub">name / descriptionを採点</text>
 
       <!-- Decision output -->
-      <rect x="480" y="230" width="160" height="88" rx="6" fill="#ffffff" stroke="#2d3142" stroke-opacity="0.30" stroke-width="1"/>
+      <rect x="480" y="230" width="160" height="100" rx="6" fill="#ffffff" stroke="#2d3142" stroke-opacity="0.30" stroke-width="1"/>
       <rect x="488" y="238" width="46" height="12" rx="2" fill="none" stroke="#2d3142" stroke-opacity="0.35" stroke-width="0.8"/>
       <text x="511" y="247" class="tag">RESULT</text>
       <text x="560" y="270" class="node-title">提案結果</text>
-      <text x="560" y="285" class="node-sub">selected / none</text>
-      <text x="560" y="301" class="node-tech">skip: explicit / no candidates</text>
-      <text x="560" y="313" class="node-tech">or eval dry-run</text>
+      <text x="560" y="285" class="node-sub">selected / none / error</text>
+      <text x="560" y="301" class="node-tech">explicit / no_candidates</text>
+      <text x="560" y="313" class="node-tech">error ≠ none</text>
+      <text x="560" y="325" class="node-tech">dry-run: Jev not_run</text>
 
       <!-- Safe telemetry store -->
       <rect x="480" y="348" width="160" height="72" rx="6" fill="#2d3142" fill-opacity="0.05" stroke="#4f5d75" stroke-width="1"/>
       <rect x="488" y="356" width="44" height="12" rx="2" fill="none" stroke="#4f5d75" stroke-opacity="0.45" stroke-width="0.8"/>
       <text x="510" y="365" class="tag">STORE</text>
-      <text x="560" y="388" class="node-title">Telemetry</text>
-      <text x="560" y="403" class="node-sub">hash / 件数 / 遅延</text>
+      <text x="560" y="384" class="node-title">Telemetry</text>
+      <text x="560" y="399" class="node-sub">decision / selectedSkill ID</text>
+      <text x="560" y="413" class="node-tech">hash / 件数 / 遅延 / tokens</text>
 
       <!-- External gateway for standard suggestions -->
       <rect x="704" y="148" width="152" height="100" rx="6" fill="#2e5aa8" fill-opacity="0.05" stroke="#2e5aa8" stroke-width="1"/>
@@ -89,12 +91,13 @@
       <text x="780" y="206" class="node-tech">candidate metadata + none</text>
       <text x="780" y="220" class="node-tech">Authorization: Bearer</text>
 
-      <!-- Explicitly blocked raw content -->
+      <!-- Automatic history is not ingested; pasted prompt content is still input. -->
       <rect x="72" y="348" width="152" height="72" rx="6" fill="#2d3142" fill-opacity="0.02" stroke="#7a8399" stroke-width="1" stroke-dasharray="4,3"/>
       <rect x="80" y="356" width="36" height="12" rx="2" fill="none" stroke="#7a8399" stroke-opacity="0.50" stroke-width="0.8"/>
       <text x="98" y="365" class="tag">BLOCK</text>
-      <text x="148" y="388" class="node-title">会話全文</text>
-      <text x="148" y="403" class="node-sub">Tool結果も対象外</text>
+      <text x="148" y="388" class="node-title">自動履歴</text>
+      <text x="148" y="403" class="node-sub">会話・Tool結果は自動取得しない</text>
+      <text x="148" y="415" class="node-tech">promptへ貼付した内容は送信対象</text>
 
       <!-- Bottom legend -->
       <line x1="56" y1="500" x2="904" y2="500" stroke="#2d3142" stroke-opacity="0.12" stroke-width="0.8"/>

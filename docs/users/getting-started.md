@@ -283,15 +283,18 @@ Jevへの外部リクエスト境界は次のとおりです。
 | Skill ID / name | 送る（raw） | 候補識別のため送る |
 | Skill description | 送る（redact後） | promptと同じ限定パターンのredaction。Skill本文は送らない |
 | APIキー | 送る（`Authorization: Bearer`ヘッダー） | request bodyやTelemetryには含めない |
-| Skill本文、過去の会話、Tool結果 | 送らない | v1の送信対象外 |
+| Skill本文 | 送らない | v1の送信対象外 |
+| 自動取得した過去の会話、Tool結果 | 送らない | v1で自動追加しない。promptへ貼付した内容はredact後のpromptとして送信対象 |
 
 Basic redactionは、`Authorization=Basic <value>`、`Authorization:Basic <value>`、`Authorization: Basic <value>` の認識済み形式を保護します。通常文中の単独の単語 `Basic` は意味を保つためredactしません。未知のPII・ラベルなし秘密まで除去する完全なDLPではないため、送信前に内容を確認してください。
 
 Jevを使う通常の提案では、APIキーはGatewayへの`Authorization: Bearer`認証ヘッダーとして送信されます。request bodyやTelemetryへ保存されるものではありませんが、APIキーを外部Gatewayへ渡せない環境ではJev判定を使わないでください。
 
+会話やTool結果をprompt本文へ利用者が貼り付けた場合、その部分は現在のpromptの一部としてredact後にGatewayへ送信されます。自動取得した履歴やTool結果をjevxが追加することはありません。
+
 メールアドレス、電話番号、顧客情報、ラベルのない認証情報など、上記パターンに該当しない機密情報は自動除去されません。外部送信してよい内容だけを入力し、必要に応じて送信前に匿名化してください。
 
-既定Telemetryは `~/.jevx/events.jsonl` に、依頼文そのものではなくハッシュ、文字数、判定、候補数、遅延、Token使用量を保存します。Gatewayの回答に含まれる候補確率（probability）はTelemetry schemaへ保存しません。保存を無効にする場合は `--no-telemetry` を使い、集計は `jevx stats --json` で確認します。
+既定Telemetryは `~/.jevx/events.jsonl` に、依頼文そのものではなくハッシュ、文字数、判定（decision）、選択されたSkill ID、候補数、遅延、Token使用量を保存します。Gatewayの回答に含まれる候補確率（probability）はTelemetry schemaへ保存しません。保存を無効にする場合は `--no-telemetry` を使い、集計は `jevx stats --json` で確認します。
 
 ```bash
 jevx stats --json

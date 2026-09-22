@@ -3,7 +3,7 @@
       <title id="jevx-hooks-title">jevx HookとCompaction補助の時系列</title>
       <desc id="jevx-hooks-desc">Codex CLIがjevx Hookへイベントを渡し、Hookが同期I/Oでローカルstateへhashとredacted metadataを保存し、compact後に補助contextを返す流れ。</desc>
       <defs>
-        <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');
+        <style>
           .actor-title { fill: #2d3142; font: 600 13px 'Geist', 'Hiragino Sans', 'Yu Gothic', sans-serif; text-anchor: middle; }
           .actor-sub { fill: #4f5d75; font: 400 9px 'Geist Mono', ui-monospace, monospace; text-anchor: middle; }
           .tag { fill: #7a8399; font: 500 8px 'Geist Mono', ui-monospace, monospace; letter-spacing: .12em; }
