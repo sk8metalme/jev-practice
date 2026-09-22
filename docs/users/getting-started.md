@@ -40,7 +40,7 @@ Codex Hookを使う場合は、利用者が明示的に `hooks install` を実�
 ここでは、普段のCodex作業で利用者が直接メリットを得られる機能を先に説明します。jevxはSkillを勝手に実行するものではなく、「探す」「設定を確認する」「必要な補助を接続する」という利用者の判断を短くする道具です。検証・評価だけを目的とした機能は、後半の[jevxの検証・評価用機能](#jevxの検証評価用機能)に分けています。
 
 <figure>
-<img src="diagrams/jevx-overview.svg" alt="利用者の依頼をローカルでSkill候補へ絞り、必要な場合だけJevへ判定を依頼し、安全なTelemetryだけを保存するjevxの全体像">
+<img src="diagrams/jevx-overview.svg" alt="利用者の依頼をローカルでSkill候補へ絞り、通常の提案ではredacted prompt・raw cwd・候補metadataをJevへ送り、安全なTelemetryだけを保存するjevxの全体像">
 <figcaption>図1：jevxは「候補を提案する場所」と「利用者が実行を決める場所」を分けます。<a href="diagrams/jevx-overview.html">図をブラウザで開く</a></figcaption>
 </figure>
 
@@ -109,12 +109,13 @@ user scopeは`$CODEX_HOME/hooks.json`（未設定なら`~/.codex/hooks.json`）�
 **利用者にとってのメリット**：`PreCompact`と`PostCompact`のcheckpointを残し、`SessionStart(source=compact)`で最新のredacted metadataを補助contextとして返せます。長いセッションの切り替わりで「どの作業を続けるか」を再確認しやすくなります。
 
 <figure>
-<img src="diagrams/jevx-hook-compaction.svg" alt="Codex CLIからjevx Hookへイベントが渡り、ローカルstateへcheckpointを保存し、compact後にredacted contextを返す時系列">
+<img src="diagrams/jevx-hook-compaction.svg" alt="Codex CLIからjevx Hookへイベントが渡り、同期I/Oでローカルstateへcheckpointを保存し、compact後にredacted contextを返す時系列">
 <figcaption>図2：Hookはイベントを観測し、ローカルcheckpointを介してcompact後の補助情報を返します。<a href="diagrams/jevx-hook-compaction.html">図をブラウザで開く</a></figcaption>
 </figure>
 
 ```bash
-jevx hooks compact-assist --state-dir /tmp/jevx-compaction
+printf '%s\n' '{"hook_event_name":"PreCompact","session_id":"demo-session","turn_id":"demo-turn","cwd":"."}' |
+  jevx hooks compact-assist --state-dir /tmp/jevx-compaction
 ```
 
 **境界**：LLM要約器ではなく、会話全文の復元、公式Compactionの再実装、Tool Resultの削除、現在のリポジトリ状態の保証は行いません。返すのは決定的なcheckpoint metadataとredacted contextです。詳しい発火確認・backup・Trust手順は[Codex CLI compaction実運用runbook](../operators/jevx-compaction-operations.md)を参照してください。
@@ -135,7 +136,8 @@ jevx hooks compact-assist --state-dir /tmp/jevx-compaction
 **検証で分かること**：本番設定へ導入する前に、`UserPromptSubmit`やCompaction関連イベントの入力契約と出力を観測できます。生のpromptやsession IDをログへ残さず、hash・文字数・安全なラベル・遅延などだけで導入前の動作を確認できます。
 
 ```bash
-jevx hooks shadow --event UserPromptSubmit --output /tmp/jevx-hooks.jsonl
+printf '%s\n' '{"hook_event_name":"UserPromptSubmit","prompt":"PDFを結合して内容を確認したい","session_id":"demo-session","turn_id":"demo-turn","cwd":"."}' |
+  jevx hooks shadow --event UserPromptSubmit --output /tmp/jevx-hooks.jsonl
 ```
 
 受け付けるknown eventは`SessionStart`、`PreCompact`、`PostCompact`、`UserPromptSubmit`です。未知event、event不一致、壊れたJSONはエラーになります。

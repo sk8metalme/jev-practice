@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="jevx-hooks-title jevx-hooks-desc">
       <title id="jevx-hooks-title">jevx HookとCompaction補助の時系列</title>
-      <desc id="jevx-hooks-desc">Codex CLIがjevx Hookへイベントを渡し、Hookがローカルstateへhashとredacted metadataを保存し、compact後に補助contextを返す流れ。</desc>
+      <desc id="jevx-hooks-desc">Codex CLIがjevx Hookへイベントを渡し、Hookが同期I/Oでローカルstateへhashとredacted metadataを保存し、compact後に補助contextを返す流れ。</desc>
       <defs>
         <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');
           .actor-title { fill: #2d3142; font: 600 13px 'Geist', 'Hiragino Sans', 'Yu Gothic', sans-serif; text-anchor: middle; }
@@ -12,8 +12,7 @@
           .legend-key { fill: #4f5d75; font: 500 8px 'Geist Mono', ui-monospace, monospace; letter-spacing: .16em; }
         </style>
         <marker id="jevx-hooks-call" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><path d="M0 0 L8 3 L0 6 Z" fill="#2e5aa8"/></marker>
-        <marker id="jevx-hooks-async" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><path d="M0 0 L8 3 L0 6 Z" fill="#4f5d75"/></marker>
-        <marker id="jevx-hooks-open" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polyline points="0 0, 8 3, 0 6" fill="none" stroke="#4f5d75" stroke-width="1.2"/></marker>
+        <marker id="jevx-hooks-write" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><path d="M0 0 L8 3 L0 6 Z" fill="#4f5d75"/></marker>
         <marker id="jevx-hooks-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><path d="M0 0 L8 3 L0 6 Z" fill="#eb6c36"/></marker>
       </defs>
 
@@ -32,13 +31,13 @@
       <rect x="476" y="152" width="8" height="340" fill="#2d3142" fill-opacity="0.06" stroke="#4f5d75" stroke-width="0.8"/>
       <rect x="796" y="202" width="8" height="196" fill="#2d3142" fill-opacity="0.06" stroke="#4f5d75" stroke-width="0.8"/>
 
-      <!-- Messages: calls are solid, writes/returns are dashed, success is accent. -->
+      <!-- Messages: calls and synchronous writes are solid, returns are dashed, success is accent. -->
       <line x1="160" y1="164" x2="480" y2="164" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#jevx-hooks-call)"/>
-      <line x1="480" y1="208" x2="800" y2="208" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#jevx-hooks-open)"/>
+      <line x1="480" y1="208" x2="800" y2="208" stroke="#4f5d75" stroke-width="1" marker-end="url(#jevx-hooks-write)"/>
       <line x1="160" y1="252" x2="480" y2="252" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#jevx-hooks-call)"/>
-      <line x1="480" y1="296" x2="800" y2="296" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#jevx-hooks-open)"/>
+      <line x1="480" y1="296" x2="800" y2="296" stroke="#4f5d75" stroke-width="1" marker-end="url(#jevx-hooks-write)"/>
       <line x1="160" y1="340" x2="480" y2="340" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#jevx-hooks-call)"/>
-      <line x1="480" y1="384" x2="800" y2="384" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#jevx-hooks-open)"/>
+      <line x1="480" y1="384" x2="800" y2="384" stroke="#4f5d75" stroke-width="1" marker-end="url(#jevx-hooks-write)"/>
       <line x1="160" y1="428" x2="480" y2="428" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#jevx-hooks-call)"/>
       <line x1="480" y1="472" x2="160" y2="472" stroke="#eb6c36" stroke-width="1.4" stroke-dasharray="5,4" marker-end="url(#jevx-hooks-accent)"/>
 
@@ -70,8 +69,8 @@
       <text x="56" y="546" class="legend-key">LEGEND</text>
       <line x1="56" y1="564" x2="88" y2="564" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#jevx-hooks-call)"/>
       <text x="100" y="568" class="legend">Codex event</text>
-      <line x1="256" y1="564" x2="288" y2="564" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#jevx-hooks-open)"/>
-      <text x="300" y="568" class="legend">write / async</text>
+      <line x1="256" y1="564" x2="288" y2="564" stroke="#4f5d75" stroke-width="1" marker-end="url(#jevx-hooks-write)"/>
+      <text x="300" y="568" class="legend">sync write</text>
       <line x1="456" y1="564" x2="488" y2="564" stroke="#eb6c36" stroke-width="1.4" stroke-dasharray="5,4" marker-end="url(#jevx-hooks-accent)"/>
       <text x="500" y="568" class="legend">redacted additionalContext</text>
     </svg>
