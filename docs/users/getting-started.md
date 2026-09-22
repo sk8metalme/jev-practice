@@ -99,7 +99,7 @@ Codex Hookを使う場合は、利用者が明示的に `hooks install` を実�
 
 Jevへ送るのは、マスキング済みの現在の依頼文、作業ディレクトリ、SkillのID・名前・説明です。Skill本文、過去の会話、Tool結果、APIキーは送信しません。
 
-既定Telemetryは `~/.jevx/events.jsonl` に、依頼文そのものではなくハッシュ、文字数、判定、候補数、確率、遅延、Token使用量を保存します。保存を無効にする場合は `--no-telemetry` を使い、集計は `jevx stats --json` で確認します。
+既定Telemetryは `~/.jevx/events.jsonl` に、依頼文そのものではなくハッシュ、文字数、判定、候補数、遅延、Token使用量を保存します。保存を無効にする場合は `--no-telemetry` を使い、集計は `jevx stats --json` で確認します。
 
 ```bash
 jevx stats --json
@@ -112,10 +112,12 @@ Hookを導入するとCodex設定ファイルが変更されます。最初は `
 
 ### ユーザー領域へセットアップ
 
-リポジトリのルートで実行します。セットアップ後は安定したrelease配置の `jevx` を使います。
+Rust stableとCargoを用意し、リポジトリのルートで実行します。ここではworktreeの`target`に依存しないrelease配置を `$HOME/.local/bin` に固定します。別の配置を使う場合は `JEVX_INSTALL_ROOT` を変更してください。
 
 ```bash
-sh jevx/scripts/setup.sh --scope user
+jevx_install_root="${JEVX_INSTALL_ROOT:-$HOME/.local}"
+JEVX_INSTALL_ROOT="$jevx_install_root" sh jevx/scripts/setup.sh --scope user
+export PATH="$jevx_install_root/bin:$PATH"
 jevx doctor --json
 ```
 
