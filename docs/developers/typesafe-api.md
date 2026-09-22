@@ -86,9 +86,9 @@ JSON
 
 `answers.is_urgent.noul` は「緊急性がある」に近いほど1、ないほど0になる確率値だよ。
 
-## 現在のアプリに近い3軸の例
+## 旧Webアプリに近い3軸の参考例
 
-現在のWebアプリが表示しているカテゴリ・緊急度・返金要求を、TypeSafe直APIの質問型へ置き換えると次のようになるよ。
+legacyとして残るNode.js Webアプリが表示していたカテゴリ・緊急度・返金要求を、TypeSafe直APIの質問型へ置き換える参考例は次のとおり。現行のjevx Rust CLIのリクエスト契約ではないよ。
 
 ```bash
 curl -sS -X POST "https://api.typesafe.ai/v1/systemone" \
@@ -154,7 +154,7 @@ TypeSafe直APIでは、現在のVercel経由の `boolean` の代わりに `noul`
 | yes/no回答 | `probability` | `noul` |
 | usageのキー例 | `inputTokens` / `outputTokens` | `input_tokens` / `output_tokens` |
 
-このページを追加した時点では、アプリの実装経路はまだVercelのままだよ。実装をTypeSafe直APIへ変更する作業は、Node.jsアプリと `jevx` の両方でリクエスト・レスポンス変換・設定・テストを更新する別タスクとして扱うよ。
+現行のjevx Rust CLIの実装経路はVercel AI Gatewayのまま。Node.js Webアプリはlegacy/referenceであり、TypeSafe直APIへの移行は現行jevxの要件には含めない。直接APIへ移行する場合は、別タスクとしてリクエスト・レスポンス変換・設定・テストを更新する。
 
 ## エラーと安全な扱い
 

@@ -5,7 +5,7 @@
 
 > 検討日: 2026-09-20
 
-現在の [`Jev Triage`](../../README.md) は、問い合わせ文を `choice`・`score`・`boolean` の3問で評価し、カテゴリ・緊急度・返金要求をまとめて表示するアプリだよ。この構成を土台に、Jevの型付き評価を活かしやすい候補を比較した。
+この文書で扱う [`旧Jev Triage実装`](../../src/) は、問い合わせ文を `choice`・`score`・`boolean` の3問で評価し、カテゴリ・緊急度・返金要求をまとめて表示していたlegacy Webアプリだよ。現行のサポート対象は `jevx` Rust CLIであり、この文書では過去の実装を候補検討の参考として扱う。
 
 公開事例・GitHub実装・ブログ・SNSまで横断した詳細調査は、[Jev活用アイデア徹底調査レポート](jev-research.md) にまとめているよ。候補を広く比較したいときや、質問設計・評価方法まで確認したいときはこちらを見てね。
 
@@ -28,7 +28,7 @@ Jevは自由文を生成するよりも、同じ入力に対して複数の型�
 - **期待価値:** 判定の標準化、対応時間短縮、見落とし防止への寄与
 - **リスク:** 個人情報、誤判定、最終判断を自動化してはいけない領域
 
-`responseMs` は既存アプリと同じく、Gatewayへ送信してJevの構造化レスポンスを読み終わるまでのアプリ側計測値として表示する。ネットワークとGatewayを含む値なので、案どうしを比較する場合は同じ環境・入力条件で計測する。
+`responseMs` は旧Jev Triage実装と同じく、Gatewayへ送信してJevの構造化レスポンスを読み終わるまでのアプリ側計測値として表示する。ネットワークとGatewayを含む値なので、案どうしを比較する場合は同じ環境・入力条件で計測する。
 
 ## 候補比較
 
@@ -45,11 +45,11 @@ Jevは自由文を生成するよりも、同じ入力に対して複数の型�
 
 ## 既存候補の詳細
 
-この節は、既存アプリからの拡張と開発・運用候補を具体化した旧メモとして残している。現在の上位候補3案と次の実装順位は、冒頭と[詳細調査レポート](jev-research.md)を参照する。
+この節は、旧Jev Triage実装からの拡張と開発・運用候補を具体化した旧メモとして残している。現在の上位候補3案と次の実装順位は、冒頭と[詳細調査レポート](jev-research.md)を参照する。
 
 ### 1. Bug / Support Triage Board
 
-現在のアプリを最も自然に拡張できる案。問い合わせを1件ずつ判定するだけでなく、複数件を一覧化して担当チーム・優先順位・対応期限まで見えるようにする。
+旧Jev Triage実装を最も自然に拡張できる案。問い合わせを1件ずつ判定するだけでなく、複数件を一覧化して担当チーム・優先順位・対応期限まで見えるようにする。
 
 #### Jevに渡すstateと質問
 
@@ -62,11 +62,11 @@ Jevは自由文を生成するよりも、同じ入力に対して複数の型�
 }
 ```
 
-- `category`: 現行アプリと同じ請求、アカウント、技術、配送の `choice`
-- `urgency`: 現行アプリと同じ低・中・高の3段階 `score`
+- `category`: 旧Jev Triage実装と同じ請求、アカウント、技術、配送の `choice`
+- `urgency`: 旧Jev Triage実装と同じ低・中・高の3段階 `score`
 - `reproducible`: 再現手順またはログから再現可能性を判定する `boolean`
 - `customerImpact`: 継続利用や複数ユーザーへの影響を判定する `boolean`
-- `refundRequested`: 返金要求を判定する `boolean`
+- `refundRequested`: 旧Jev Triage実装で使っていた返金要求の `boolean`
 - `outOfScope`: 既存4カテゴリに該当しない問い合わせを判定する `boolean`
 
 `needsHuman`はJevへ送る質問ではなく、上記6つの回答とconfidence、欠損状態をコードで集約して導出する。回答欠損、低confidence、範囲外、高緊急度、返金要求、顧客影響のいずれかは `needs-review` に送る。
@@ -168,7 +168,7 @@ Jevの評価だけでマージ可否を決めない。既存のCI、CODEOWNERS�
 | 運用・SREに広げる | Incident Alert Router | アラート入力 + 担当ルート候補 |
 | 大量処理とコード側検査を測る | CSV / Document Quality Auditor | CSV入力 + 行別監査結果 |
 
-次の1タスクは詳細レポートの順位どおり **Confidence-Gated Agent Tool Router** を第一候補とする。既存アプリを最短で拡張したい場合だけ **Bug / Support Triage Board** を選び、現在の入力・評価・レスポンス時間表示・テストを再利用する。PR / CI Review GateとIncident Alert Routerは、Tool Routerの安全ポリシー設計を開発・運用へ展開する次の候補とする。
+次の1タスクは詳細レポートの順位どおり **Confidence-Gated Agent Tool Router** を第一候補とする。旧Jev Triage実装を最短で拡張したい場合だけ **Bug / Support Triage Board** を選び、当時の入力・評価・レスポンス時間表示・テストを再利用する。PR / CI Review GateとIncident Alert Routerは、Tool Routerの安全ポリシー設計を開発・運用へ展開する次の候補とする。
 
 採用・与信・医療・法務の最終判断のような高リスク用途は、現段階では候補から外す。Jevの結果は人の確認を支える情報に限定し、最終判断を自動化しない。
 
@@ -176,4 +176,4 @@ Jevの評価だけでマージ可否を決めない。既存のCI、CODEOWNERS�
 
 - [Vercel AI Gateway Evaluation](https://vercel.com/docs/ai-gateway/modalities/evaluation)
 - [Jev API, Pricing & Playground](https://vercel.com/ai-gateway/models/jev)
-- [このリポジトリの現在のアプリ](../../README.md)
+- [旧Jev Triage実装](../../src/)

@@ -41,12 +41,17 @@ jevx skills list --json
 jevx stats --json
 jevx stats --input /tmp/events.jsonl --json
 jevx doctor --json
+jevx eval --dry-run --json
+jevx eval-repeat --runs 5 --dry-run --json
 jevx hooks install --scope user --dry-run --json
 jevx hooks shadow
 jevx hooks compact-assist --state-dir /tmp/jevx-compaction
+jevx hooks compact-eval --runs 5 --json
+jevx hooks conversation-eval --input /tmp/conversation.jsonl --json
+jevx hooks correlate --input /tmp/hooks.jsonl --json
 ```
 
-Jev判定は`AI_GATEWAY_API_KEY`を使い、既存アプリと同じVercel AI Gatewayの`typesafe-ai/jev`へ送信する。`hooks install`は外部送信を行わず、`UserPromptSubmit`に登録された`hooks shadow`だけがJev判定を行う。
+Jev判定は`AI_GATEWAY_API_KEY`を使い、Vercel AI Gatewayの`typesafe-ai/jev`へ送信する。`hooks install`は外部送信を行わず、生成された`UserPromptSubmit`の`hooks shadow`だけがJev判定を行う。
 
 デフォルトの設定は次のとおり。
 
@@ -56,6 +61,16 @@ Jev判定は`AI_GATEWAY_API_KEY`を使い、既存アプリと同じVercel AI Ga
 - リクエストタイムアウト: 1,500ms
 - Telemetry: `~/.jevx/events.jsonl`
 - Hook state: Telemetry親ディレクトリ配下の`hooks.jsonl` / `compaction/`
+
+## 実装対応表
+
+| 領域 | 現状 | 境界 |
+| --- | --- | --- |
+| Skill探索・ローカル順位付け・Jev判定 | 実装済み | Shadow Mode。Skill本文の自動ロード・実行はしない |
+| Telemetry・stats・doctor | 実装済み | prompt本文やAPIキーは保存しない |
+| Hook shadow・install・compact-assist | 実装済み | 明示的な導入とCodex側のTrustが必要 |
+| Skill選択・Compaction・会話評価Runner | 実装済み | fixtureまたは安全なJSONLを評価し、Codex/App Serverは起動しない |
+| Skill自動実行・会話全文要約・Tool Result削除 | 対象外 | 別要件と安全性評価が必要 |
 
 ## Hook設定要件
 
@@ -87,7 +102,7 @@ project-local HookはCodex側のプロジェクトTrustが必要であり、フ�
 
 ## データ保護
 
-Jevへ送るのは、マスキング済みの現在の依頼文、作業ディレクトリ、Skillの名前・説明だけとする。Skill本文、過去の会話、Tool結果、APIキーは送信しない。
+Jevへ送るのは、マスキング済みの現在の依頼文、作業ディレクトリ、SkillのID・名前・説明だけとする。Skill本文、過去の会話、Tool結果、APIキーは送信しない。
 
 Telemetryには生の依頼文を保存せず、SHA-256、文字数、候補数、判定、確率、遅延、usageだけを保存する。Hook recordとCompaction checkpointには生のsession ID、turn ID、model、manifest本文を保存しない。
 
@@ -102,9 +117,9 @@ Telemetryには生の依頼文を保存せず、SHA-256、文字数、候補数�
 - Compaction checkpointとredacted manifestが秘密情報を再出力しない
 - 新規Rust実行コードのラインカバレッジ98%以上
 
-## 評価結果（2026-09-21）
+## 記録済み評価スナップショット（2026-09-21）
 
-同梱40ケース（合成30、匿名化テンプレート10）では次の差分を観測した。詳細は[`jevx-comfort-evaluation.md`](../research/evaluations/jevx-comfort-evaluation.md)に分けている。
+以下は記録時点の環境・モデル・Gatewayに対する歴史的な観測値であり、現行環境の保証ではない。同梱40ケース（合成30、匿名化テンプレート10）の詳細は[`jevx-comfort-evaluation.md`](../research/evaluations/jevx-comfort-evaluation.md)に分けている。
 
 | 方式 | 正解率 | `none`精度 | 速度・コスト |
 | --- | ---: | ---: | --- |
@@ -114,6 +129,8 @@ Telemetryには生の依頼文を保存せず、SHA-256、文字数、候補数�
 | jevx + Jev（5回平均） | 98.0% | 100.0% | Jev p50/p95 427/610ms、error rate 2.0%、探索p95 2ms |
 
 これは固定fixtureの観測であり、利用者入力への精度・性能保証ではない。Jevの外部通信・Token使用量・Gatewayエラーを導入判断のコストとして同時に扱う。
+
+現行コードの外部送信なし確認は、`cargo run --locked --manifest-path jevx/Cargo.toml -- eval --dry-run --json` を正本とする。2026-09-22の確認では、`local_keyword` の正解率は87.5%、`local_rank` は17.5%、`none`は10.0%、Jevモードは`not_run`だった。fixtureや実装が変わる場合は、このコマンドを再実行して値を更新する。
 
 ## 評価方法
 

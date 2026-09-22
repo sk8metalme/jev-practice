@@ -2,6 +2,8 @@
 
 `jevx`は、Codex CLIのSkill選択とCompaction運用を補助するmacOS向けCLIです。
 
+このリポジトリの現行サポート対象は、`jevx/` にあるRust製CLIです。ルートの `src/` に残るNode.js Webアプリと `docs/screenshots/` は、過去のJev検証用legacy/referenceであり、現在のjevx要件・運用手順には含めません。
+
 ## まず読む
 
 - [ユーザー向けjevxガイド](docs/users/getting-started.md): 機能、導入価値、Jevあり/なしの比較、セットアップ

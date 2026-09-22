@@ -602,7 +602,7 @@ cargo llvm-cov --locked --manifest-path jevx/Cargo.toml \
 
 ## さらに読む
 
-- [`../README.md`](../README.md): プロジェクト全体と画面付きのJevアプリ例
+- [`../docs/README.md`](../docs/README.md): 現行jevx文書の入口
 - [`skill/SKILL.md`](skill/SKILL.md): Codexへ登録するadvisory Skill
 - [`evals/README.md`](evals/README.md): 40ケース評価fixtureの仕様
 - [`../docs/developers/jevx-requirements.md`](../docs/developers/jevx-requirements.md): 要件定義

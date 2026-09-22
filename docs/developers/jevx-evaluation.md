@@ -57,6 +57,8 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
   eval --dry-run --json
 ```
 
+このコマンドが現行fixtureに対する外部送信なしのベースラインの正本である。2026-09-22の確認では、`local_keyword` の正解率は0.875、`local_rank` は0.175、`none`は0.1、`jevx`は`status: not_run`だった。以下のAPIキーあり数値とJSON例は、記録済みスナップショットとして扱う。
+
 Jevを含めた実測は`--dry-run`を外す。評価用Skillカタログは、通常のユーザーSkillと混ざらないよう`jevx/evals/skills`を明示する。
 
 ```bash

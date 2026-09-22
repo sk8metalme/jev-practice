@@ -2,6 +2,8 @@
 
 このディレクトリは、読む目的ごとに文書を分類しています。導入判断にはユーザー向けガイド、実装・保守には開発者向け文書、Codex CLIへの接続には運用者向けrunbookを使ってください。
 
+現行仕様の正本は `jevx/` のRust CLIです。ルート `src/` のNode.js Webアプリと画面スクリーンショットはlegacy/referenceとして保持していますが、現行の要件・運用対象ではありません。
+
 ## 読者別の入口
 
 | 読者 | 入口 | 内容 |
@@ -16,7 +18,7 @@
 - [jevx 要件定義と実装状況](developers/jevx-requirements.md): 対象範囲、CLI契約、データ保護、成功条件
 - [jevx アーキテクチャ](developers/jevx-architecture.md): Skill探索、Jev判定、Hook、Compaction補助の境界
 - [jevx 評価計画](developers/jevx-evaluation.md): 指標、fixture、再現コマンド、品質ゲート
-- [TypeSafe APIを直接使う](developers/typesafe-api.md): WebアプリからTypeSafe APIを直接呼ぶ場合の例
+- [TypeSafe APIを直接使う](developers/typesafe-api.md): jevxの現行経路とTypeSafe直接APIを比較する参考資料
 
 ## 運用者向け
 
