@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use jevx::hooks::{
-    ConversationCompactionCase, analyze_hook_correlations, append_shadow_record,
+    ConversationCompactionCase, HookShadowRecord, analyze_hook_correlations, append_shadow_record,
     compact_evaluation, evaluate_conversation_compaction, load_conversation_cases,
     load_hook_records, run_shadow,
 };
@@ -17,6 +17,22 @@ struct StubJudge;
 impl Judge for StubJudge {
     async fn evaluate(&self, _request: JudgeRequest) -> Result<JudgeResponse, JevxError> {
         Ok(JudgeResponse::selected("pdf", 0.95, 12, Some((31, 7))))
+    }
+}
+
+struct ChoiceJudge {
+    choice: String,
+}
+
+#[async_trait]
+impl Judge for ChoiceJudge {
+    async fn evaluate(&self, _request: JudgeRequest) -> Result<JudgeResponse, JevxError> {
+        Ok(JudgeResponse::selected(
+            &self.choice,
+            0.95,
+            12,
+            Some((31, 7)),
+        ))
     }
 }
 
@@ -83,6 +99,85 @@ async fn hook_shadow_observes_compaction_events_without_judging() {
     assert_eq!(result.record.trigger.as_deref(), Some("auto"));
     assert_eq!(result.record.selected_skill, None);
     assert!(result.response.continue_running);
+}
+
+#[tokio::test]
+async fn hook_shadow_sanitizes_lifecycle_and_selected_skill_metadata() {
+    let root = tempdir().expect("tempdir");
+    let config = Config::for_test(root.path().join("data"));
+    let lifecycle = run_shadow(
+        r#"{"hook_event_name":"PreCompact","trigger":" manual ","source":"source with space"}"#,
+        Some("PreCompact"),
+        &[],
+        &config,
+        None,
+    )
+    .await
+    .expect("lifecycle hook");
+    assert_eq!(lifecycle.record.trigger.as_deref(), Some("manual"));
+    assert_eq!(lifecycle.record.source, None);
+    let lifecycle_json = serde_json::to_string(&lifecycle.record).expect("lifecycle json");
+    assert!(!lifecycle_json.contains("source with space"));
+
+    let oversized = format!("source-{}", "a".repeat(128));
+    let boundary_input = serde_json::to_string(&json!({
+        "hook_event_name": "PreCompact",
+        "trigger": "\u{1}",
+        "source": oversized,
+    }))
+    .expect("boundary hook json");
+    let boundary = run_shadow(&boundary_input, Some("PreCompact"), &[], &config, None)
+        .await
+        .expect("boundary hook");
+    assert_eq!(boundary.record.trigger, None);
+    assert_eq!(boundary.record.source, None);
+
+    let unsafe_skill = run_shadow(
+        r#"{"hook_event_name":"UserPromptSubmit","prompt":"unsafe skill"}"#,
+        Some("UserPromptSubmit"),
+        &[skill(root.path(), "unsafe skill", "unsafe")],
+        &config,
+        Some(&ChoiceJudge {
+            choice: "unsafe skill".to_owned(),
+        }),
+    )
+    .await
+    .expect("unsafe selected skill hook");
+    assert_eq!(unsafe_skill.record.selected_skill, None);
+
+    let overlong_skill = format!("skill-{}", "a".repeat(128));
+    let overlong_selected = run_shadow(
+        r#"{"hook_event_name":"UserPromptSubmit","prompt":"overlong skill"}"#,
+        Some("UserPromptSubmit"),
+        &[skill(root.path(), &overlong_skill, "overlong")],
+        &config,
+        Some(&ChoiceJudge {
+            choice: overlong_skill,
+        }),
+    )
+    .await
+    .expect("overlong selected skill hook");
+    assert_eq!(overlong_selected.record.selected_skill, None);
+
+    let namespaced_skill = run_shadow(
+        r#"{"hook_event_name":"UserPromptSubmit","prompt":"namespaced skill"}"#,
+        Some("UserPromptSubmit"),
+        &[skill(
+            root.path(),
+            "data-analytics:quality",
+            "namespaced skill",
+        )],
+        &config,
+        Some(&ChoiceJudge {
+            choice: "data-analytics:quality".to_owned(),
+        }),
+    )
+    .await
+    .expect("namespaced selected skill hook");
+    assert_eq!(
+        namespaced_skill.record.selected_skill.as_deref(),
+        Some("data-analytics:quality")
+    );
 }
 
 #[tokio::test]
@@ -566,8 +661,6 @@ fn hook_correlation_loader_rejects_empty_and_secret_echo() {
         ("schemaVersion", json!(2)),
         ("hookEventName", json!("Unknown")),
         ("mode", json!("unsafe mode")),
-        ("trigger", json!("unsafe trigger")),
-        ("source", json!("unsafe source")),
         ("sessionIdSha256", json!("unsafe session")),
         ("turnIdSha256", json!("unsafe turn")),
         ("modelSha256", json!("unsafe model")),
@@ -582,6 +675,62 @@ fn hook_correlation_loader_rejects_empty_and_secret_echo() {
         let error = load_hook_records(&path).expect_err("unsafe record must fail");
         assert!(!error.to_string().contains("unsafe mode"));
     }
+}
+
+#[test]
+fn hook_correlation_loader_migrates_legacy_unsafe_metadata() {
+    let root = tempdir().expect("tempdir");
+    let path = root.path().join("legacy-hook-records.jsonl");
+    let record = json!({
+        "schemaVersion": 1,
+        "mode": "shadow",
+        "hookEventName": "UserPromptSubmit",
+        "trigger": " manual ",
+        "source": "legacy source with spaces",
+        "selectedSkill": "legacy skill 🚀",
+        "elapsedMs": 1,
+    });
+    fs::write(&path, serde_json::to_string(&record).expect("record json")).expect("write");
+
+    let records = load_hook_records(&path).expect("legacy record must remain readable");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].trigger.as_deref(), Some("manual"));
+    assert_eq!(records[0].source, None);
+    assert_eq!(records[0].selected_skill, None);
+    let report = analyze_hook_correlations(&records).expect("migrated record analysis");
+    assert_eq!(report.record_count, 1);
+}
+
+#[test]
+fn append_shadow_record_rejects_untrusted_selected_skill() {
+    let root = tempdir().expect("tempdir");
+    let path = root.path().join("hook-records.jsonl");
+    let record = HookShadowRecord {
+        schema_version: 1,
+        mode: "shadow".to_owned(),
+        hook_event_name: "UserPromptSubmit".to_owned(),
+        trigger: None,
+        source: None,
+        session_id_sha256: None,
+        turn_id_sha256: None,
+        model_sha256: None,
+        correlation_id_sha256: None,
+        prompt_sha256: None,
+        prompt_chars: None,
+        decision: None,
+        selected_skill: Some("unsafe skill".to_owned()),
+        discovery_ms: None,
+        jev_response_ms: None,
+        total_ms: None,
+        input_tokens: None,
+        output_tokens: None,
+        error_code: None,
+        elapsed_ms: 0,
+    };
+
+    let error = append_shadow_record(&path, &record).expect_err("unsafe record must not write");
+    assert!(error.to_string().contains("unsafe identifier"));
+    assert!(!path.exists());
 }
 
 #[test]

@@ -77,7 +77,7 @@ project-local HookはCodex側のプロジェクトTrustが必要であり、フ�
 `compact-assist`は要約器ではなく、次を行う決定的な補助とする。
 
 1. Hook JSONを検証し、既存の安全なshadow record形式へ変換する。
-2. session / turn / correlation / cwdはSHA-256、イベント識別子は安全なラベルだけ保存する。
+2. session / turn / correlation / cwdはSHA-256、イベント識別子は安全なラベルだけ保存する。Hook recordの`trigger` / `source`はtrim後にASCII許可文字と最大長を検証し、`selectedSkill`も同じ境界（namespaceの`:`を含む）で検証する。新規write/appendでは空値・空白・制御文字・長さ超過を拒否し、既存schema v1のloadでは該当する任意metadataだけを正規化または欠損化して分析互換性を保つ。
 3. `.jevx/compact-context.md`があればredact後に最大4,000文字まで利用する。
 4. checkpointへmanifest本文や秘密値を保存しない。
 5. `SessionStart(source=compact)`では、最新checkpoint metadataとredacted manifestだけを`additionalContext`へ返す。
@@ -89,7 +89,7 @@ project-local HookはCodex側のプロジェクトTrustが必要であり、フ�
 
 Jevへ送るのは、マスキング済みの現在の依頼文、作業ディレクトリ、Skillの名前・説明だけとする。Skill本文、過去の会話、Tool結果、APIキーは送信しない。
 
-Telemetryには生の依頼文を保存せず、SHA-256、文字数、候補数、判定、確率、遅延、usageだけを保存する。Hook recordとCompaction checkpointには生のsession ID、turn ID、model、manifest本文を保存しない。
+Telemetryには生の依頼文を保存せず、SHA-256、文字数、候補数、判定、確率、遅延、usageだけを保存する。redactionは認識済みのassignment/Bearer形式と、Authorization文脈のBasic形式を扱い、空白区切りの`Authorization: Basic <value>`も値を保存・送信しない。通常文中の単独`Basic`は意味を保つためredactしない。Hook recordとCompaction checkpointには生のsession ID、turn ID、model、manifest本文を保存しない。
 
 ## 成功条件
 

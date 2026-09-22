@@ -415,7 +415,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 ### Compaction補助の試作
 
-`hooks compact-assist` はHook JSONをstdinから読み、`<state-dir>/hook-records.jsonl` と `checkpoints.jsonl` に安全なmetadataだけを追記する。`SessionStart(source=compact)`のときは、同じセッションのcheckpointと、作業ディレクトリに任意で置いた `.jevx/compact-context.md` をredactして `additionalContext` に返す。
+`hooks compact-assist` はHook JSONをstdinから読み、`<state-dir>/hook-records.jsonl` と `checkpoints.jsonl` に安全なmetadataだけを追記する。Hook recordの `trigger` / `source` / `selectedSkill` はwrite前にbounded identifierへ正規化され、unsafeな値は欠損として扱われる。新規appendはunsafeなrecordを拒否し、既存schema v1のloadでは任意metadataを正規化・欠損化して過去ログを読み続ける。`SessionStart(source=compact)`のときは、同じセッションのcheckpointと、作業ディレクトリに任意で置いた `.jevx/compact-context.md` をredactして `additionalContext` に返す。
 
 ```bash
 mkdir -p .jevx

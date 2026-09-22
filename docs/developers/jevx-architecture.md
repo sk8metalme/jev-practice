@@ -74,7 +74,7 @@ Codex Hook JSON
     └─ SessionStart(source=compact)なら additionalContext
 ```
 
-checkpointへ保存するのはevent名、safeなtrigger/source、各種SHA-256、文字数、context有無だけ。redacted本文はcheckpointへ保存せず、compact後のHook応答を組み立てるプロセス内でだけ使う。contextがない場合は「metadata not found」を返すが、Codexを停止しない。
+checkpointへ保存するのはevent名、boundedなtrigger/source、各種SHA-256、文字数、context有無だけ。Hook recordのselectedSkillもwrite前にbounded identifierへ正規化し、unsafeな値は欠損化する。appendはunsafe recordを拒否し、既存schema v1のloadはtrigger/source/selectedSkillを正規化してから分析へ渡すため、過去ログ1件で全体を壊さない。redacted本文はcheckpointへ保存せず、compact後のHook応答を組み立てるプロセス内でだけ使う。contextがない場合は「metadata not found」を返すが、Codexを停止しない。
 
 ## Skill探索の優先順位
 

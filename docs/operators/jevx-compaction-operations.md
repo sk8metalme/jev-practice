@@ -26,6 +26,7 @@ compact-assistが返すのは、checkpoint metadataと任意のredacted manifest
 
 - 実験・実測は合成入力だけで行い、APIキー、認証ファイル、生の会話、Tool Result、manifest本文をリポジトリへ保存しない。
 - Hook recordとcheckpointにはprompt、session ID、turn ID、model ID、cwdを生で保存せず、hashまたは文字数だけを残す。
+- `trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否する。既存schema v1のloadでは該当metadataを正規化・欠損化して読み続けるため、過去ログの分析を止めない。
 - `SessionStart`の追加contextへ出すmanifestもredact後の最大4,000文字だけにし、秘密値を含むファイルを指定しない。
 - `UserPromptSubmit`のJev判定失敗は `errorCode` に変換し、Hookは `continue: true` でCodexの処理を止めない。
 - 通常のuser profileを直接変更しない。実測では使い捨て `CODEX_HOME` と `JEVX_HOME` を指定する。

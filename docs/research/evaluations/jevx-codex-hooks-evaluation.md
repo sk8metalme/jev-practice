@@ -18,6 +18,8 @@ Codex CLIの日常利用へjevxを接続する前に、Hookへ入れても会話
 
 `hooks shadow`は引き続きCodex設定を変更しない観測モード。加えて、明示的な`hooks install`で既存設定を保持しながらjevx Hookを登録できるようになった。設定変更を伴うため、`--dry-run`、バックアップ、CodexのHook Trust確認を前提にする。このページのAPIキーあり結果はshadow入力に対するjevxの実行評価で、実Codex CLIとApp Serverを使った実測は[別の詳細記録](jevx-real-codex-compaction-evaluation-2026-09-21.md)へ分けているよ。
 
+現行のHook recordは、write前に`trigger` / `source` / `selectedSkill`をbounded identifierへ正規化する。空値・空白・制御文字・長さ超過は欠損として扱い、selectedSkillのnamespace区切りに使う`:`だけは許可する。新規appendはunsafeなrecordを拒否し、既存schema v1のloadは該当metadataを正規化・欠損化して分析互換性を保つ。これはprompt本文・session ID・modelなどのhash化とは別のmetadata入力境界だよ。
+
 実際に使い捨てCODEX_HOMEで導入・trust・manual compact・記録相関まで行う手順は、[compaction実運用runbook](../../operators/jevx-compaction-operations.md)にまとめている。
 
 ## Shadowの動作
