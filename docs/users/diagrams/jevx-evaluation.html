@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>jevx評価Runnerの流れ</title>
+  <title>jevx評価コマンドの独立した測定経路</title>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; }
     :root {
       --paper: #f5f5f5; --ink: #2d3142; --muted: #4f5d75; --soft: #7a8399;
-      --accent: #eb6c36; --link: #2e5aa8; --sans: 'Geist', 'Hiragino Sans', 'Yu Gothic', sans-serif;
+      --accent: #eb6c36; --sans: 'Geist', 'Hiragino Sans', 'Yu Gothic', sans-serif;
       --serif: 'Instrument Serif', serif; --mono: 'Geist Mono', ui-monospace, monospace;
     }
     body { min-height: 100vh; margin: 0; padding: 3rem 2rem; background: var(--paper); color: var(--ink); font-family: var(--sans); }
@@ -23,114 +23,100 @@
 <body>
   <main class="frame">
     <p class="eyebrow">JEVX · EVALUATION RUNNER</p>
-    <h1>導入前に「品質」と「安全性」を測って判断する</h1>
-    <p class="dek">固定fixtureや管理済みJSONLを評価Runnerへ渡し、外部通信の有無と出力の安全境界を分けて確認します。評価Runnerは通常のCodexセッションを起動しません。</p>
+    <h1>評価コマンドを用途別に測って判断する</h1>
+    <p class="dek">用途別のfixtureやJSONLを、Skill選択・Compaction安全性・会話保持・Hook相関の各runnerへ独立して渡します。評価Runnerは通常のCodexセッションを起動せず、各レポートを利用者の導入判断へ渡します。</p>
 
-    <svg viewBox="0 0 728 356" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="jevx-eval-title jevx-eval-desc">
-      <title id="jevx-eval-title">jevx評価Runnerの入力から導入判断まで</title>
-      <desc id="jevx-eval-desc">安全なfixtureまたはJSONLをローカル評価と任意のJev評価へ渡し、品質・安全性の集計レポートを利用者が導入判断に使う流れ。</desc>
+    <svg viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="jevx-eval-independent-title jevx-eval-independent-desc">
+      <title id="jevx-eval-independent-title">jevx評価コマンドの独立した測定経路</title>
+      <desc id="jevx-eval-independent-desc">用途別のfixtureやJSONLをeval、compact-eval、conversation-eval、correlateへ独立して渡し、それぞれのレポートを利用者が比較して導入判断を行う流れ。コマンドを直列に実行して全項目を測定するものではない。</desc>
       <defs>
         <style>
-          .step-number, .step-label, .lane-label, .role-text, .chip-text, .legend-label, .arrow-label { font-family: 'Geist Mono', ui-monospace, monospace; text-anchor: middle; }
-          .step-number { fill: #2d3142; font-size: 7px; font-weight: 600; }
-          .step-label { fill: #4f5d75; font-size: 7px; font-weight: 500; letter-spacing: .12em; }
-          .lane-label { fill: #4f5d75; font-size: 8px; font-weight: 500; letter-spacing: .14em; }
-          .role-text { fill: #2d3142; font-size: 6px; font-weight: 600; }
-          .node-title { fill: #2d3142; font: 600 9px 'Geist', 'Hiragino Sans', 'Yu Gothic', sans-serif; text-anchor: middle; }
-          .node-sub { fill: #4f5d75; font: 400 6.5px 'Geist', 'Hiragino Sans', 'Yu Gothic', sans-serif; text-anchor: middle; }
-          .node-tool { fill: #7a8399; font: 400 6.5px 'Geist Mono', ui-monospace, monospace; text-anchor: middle; }
-          .chip-text { fill: #fff; font-size: 5px; font-weight: 700; }
-          .focal-text { fill: #eb6c36; }
-          .legend-label { fill: #4f5d75; font-size: 7px; font-weight: 500; letter-spacing: .12em; text-anchor: end; }
-          .legend-text { fill: #4f5d75; font: 400 7px 'Geist', 'Hiragino Sans', 'Yu Gothic', sans-serif; }
-          .arrow-label { fill: #eb6c36; font-size: 7px; letter-spacing: .05em; }
+          .zone-label { fill: #4f5d75; font: 500 8px 'Geist Mono', ui-monospace, monospace; letter-spacing: .14em; }
+          .node-title { fill: #2d3142; font: 600 10px 'Geist', 'Hiragino Sans', 'Yu Gothic', sans-serif; text-anchor: middle; }
+          .node-sub { fill: #4f5d75; font: 400 7.5px 'Geist', 'Hiragino Sans', 'Yu Gothic', sans-serif; text-anchor: middle; }
+          .node-tech { fill: #7a8399; font: 400 7px 'Geist Mono', ui-monospace, monospace; text-anchor: middle; }
+          .tag { fill: #7a8399; font: 500 7px 'Geist Mono', ui-monospace, monospace; letter-spacing: .12em; }
+          .legend { fill: #4f5d75; font: 400 9px 'Geist', 'Hiragino Sans', 'Yu Gothic', sans-serif; }
+          .legend-key { fill: #4f5d75; font: 500 8px 'Geist Mono', ui-monospace, monospace; letter-spacing: .14em; }
         </style>
-        <marker id="jevx-eval-muted" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#4f5d75"/></marker>
-        <marker id="jevx-eval-accent" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#eb6c36"/></marker>
+        <marker id="jevx-eval-independent-muted" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><path d="M0 0 L8 3 L0 6 Z" fill="#4f5d75"/></marker>
+        <marker id="jevx-eval-independent-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><path d="M0 0 L8 3 L0 6 Z" fill="#eb6c36"/></marker>
       </defs>
 
-      <rect width="728" height="356" fill="#f5f5f5"/>
-      <rect x="0" y="36" width="728" height="80" fill="rgba(45,49,66,0.018)"/>
-      <rect x="0" y="196" width="728" height="80" fill="rgba(45,49,66,0.018)"/>
+      <rect width="800" height="500" fill="#f5f5f5"/>
 
-      <!-- Header and lane structure. -->
-      <line x1="0" y1="36" x2="728" y2="36" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
-      <line x1="0" y1="116" x2="728" y2="116" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
-      <line x1="0" y1="196" x2="728" y2="196" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
-      <line x1="0" y1="276" x2="728" y2="276" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
-      <line x1="140" y1="36" x2="140" y2="276" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+      <!-- Three zones: inputs, independent runners, and the human decision. -->
+      <rect x="32" y="48" width="216" height="304" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.18)" stroke-width="1"/>
+      <rect x="272" y="48" width="240" height="360" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.18)" stroke-width="1"/>
+      <rect x="536" y="164" width="232" height="168" rx="8" fill="rgba(235,108,54,0.03)" stroke="rgba(235,108,54,0.34)" stroke-width="1" stroke-dasharray="4,3"/>
+      <rect x="48" y="52" width="108" height="14" rx="2" fill="#f5f5f5"/>
+      <text x="56" y="62" class="zone-label">INPUTS</text>
+      <rect x="288" y="52" width="144" height="14" rx="2" fill="#f5f5f5"/>
+      <text x="296" y="62" class="zone-label">INDEPENDENT RUNNERS</text>
+      <rect x="552" y="168" width="142" height="14" rx="2" fill="#f5f5f5"/>
+      <text x="560" y="178" class="zone-label">HUMAN DECISION</text>
 
-      <g aria-label="Evaluation steps">
-        <rect x="180" y="6" width="32" height="16" rx="8" fill="rgba(45,49,66,0.12)"/><text x="196" y="14" class="step-number">01</text><text x="196" y="29" class="step-label">PREPARE</text>
-        <rect x="292" y="6" width="32" height="16" rx="8" fill="rgba(45,49,66,0.12)"/><text x="308" y="14" class="step-number">02</text><text x="308" y="29" class="step-label">LOCAL</text>
-        <rect x="404" y="6" width="32" height="16" rx="8" fill="rgba(45,49,66,0.12)"/><text x="420" y="14" class="step-number">03</text><text x="420" y="29" class="step-label">JEV</text>
-        <rect x="516" y="6" width="32" height="16" rx="8" fill="rgba(45,49,66,0.12)"/><text x="532" y="14" class="step-number">04</text><text x="532" y="29" class="step-label">CHECK</text>
-        <rect x="628" y="6" width="32" height="16" rx="8" fill="rgba(235,108,54,0.20)"/><text x="644" y="14" class="step-number focal-text">05</text><text x="644" y="29" class="step-label focal-text">DECIDE</text>
-      </g>
+      <!-- Connectors are drawn before all node boxes. Each runner has its own path. -->
+      <path d="M232 200 H248 Q256 200 256 192 V116 H296" fill="none" stroke="#4f5d75" stroke-width="1.1" marker-end="url(#jevx-eval-independent-muted)"/>
+      <path d="M232 224 H260 Q268 224 268 216 V196 H296" fill="none" stroke="#4f5d75" stroke-width="1.1" marker-end="url(#jevx-eval-independent-muted)"/>
+      <path d="M232 248 H272 Q280 248 280 256 V276 H296" fill="none" stroke="#4f5d75" stroke-width="1.1" marker-end="url(#jevx-eval-independent-muted)"/>
+      <path d="M232 272 H284 Q292 272 292 280 V356 H296" fill="none" stroke="#4f5d75" stroke-width="1.1" marker-end="url(#jevx-eval-independent-muted)"/>
+      <path d="M480 116 H504 Q512 116 512 124 V220 H560" fill="none" stroke="#4f5d75" stroke-width="1.1" marker-end="url(#jevx-eval-independent-muted)"/>
+      <path d="M480 196 H516 Q524 196 524 204 V240 H560" fill="none" stroke="#4f5d75" stroke-width="1.1" marker-end="url(#jevx-eval-independent-muted)"/>
+      <path d="M480 276 H528 Q536 276 536 268 V260 H560" fill="none" stroke="#4f5d75" stroke-width="1.1" marker-end="url(#jevx-eval-independent-muted)"/>
+      <path d="M480 356 H548 Q556 356 556 348 V280 H560" fill="none" stroke="#4f5d75" stroke-width="1.1" marker-end="url(#jevx-eval-independent-muted)"/>
 
-      <g aria-label="Evaluation roles">
-        <text x="70" y="72" class="lane-label">INPUT</text><text x="70" y="84" class="lane-label">OWNER</text>
-        <text x="70" y="152" class="lane-label">EVAL</text><text x="70" y="164" class="lane-label">RUNNER</text>
-        <text x="70" y="232" class="lane-label">READER</text><text x="70" y="244" class="lane-label">DECISION</text>
-      </g>
+      <!-- Shared input catalog. The four rows align with the four independent runners. -->
+      <rect x="48" y="176" width="184" height="144" rx="6" fill="#f5f5f5" stroke="#2d3142" stroke-opacity="0.28" stroke-width="1"/>
+      <rect x="56" y="184" width="30" height="12" rx="2" fill="none" stroke="#2d3142" stroke-opacity="0.38" stroke-width="0.8"/>
+      <text x="71" y="193" class="tag">INPUT</text>
+      <text x="140" y="208" class="node-title">用途別の入力</text>
+      <text x="140" y="226" class="node-sub">Skill fixture</text>
+      <text x="140" y="242" class="node-sub">synthetic transcript</text>
+      <text x="140" y="258" class="node-sub">anonymous JSONL / Hook records</text>
+      <text x="140" y="294" class="node-tech">prepared / redacted</text>
 
-      <!-- Connectors first. The JEV branch is optional; the focal handoff is the safe report. -->
-      <path d="M246 76 H300 Q308 76 308 84 V124" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#jevx-eval-muted)"/>
-      <line x1="358" y1="156" x2="370" y2="156" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#jevx-eval-muted)"/>
-      <line x1="470" y1="156" x2="482" y2="156" stroke="#4f5d75" stroke-width="1" marker-end="url(#jevx-eval-muted)"/>
-      <path d="M582 156 H636 Q644 156 644 164 V204" fill="none" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#jevx-eval-accent)"/>
-      <rect x="584" y="132" width="94" height="12" rx="2" fill="#f5f5f5"/>
-      <text x="631" y="141" class="arrow-label">SAFE METRICS</text>
+      <!-- Independent command runners. -->
+      <rect x="296" y="88" width="184" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-opacity="0.28" stroke-width="1"/>
+      <rect x="304" y="96" width="30" height="12" rx="2" fill="none" stroke="#2d3142" stroke-opacity="0.38" stroke-width="0.8"/>
+      <text x="319" y="105" class="tag">RUN</text>
+      <text x="388" y="112" class="node-title">eval / eval-repeat</text>
+      <text x="388" y="126" class="node-sub">Skill選択品質・ばらつき</text>
 
-      <!-- Input node -->
-      <rect x="146" y="44" width="100" height="64" rx="6" fill="#f5f5f5" stroke="rgba(45,49,66,0.25)"/>
-      <rect x="150" y="48" width="18" height="10" rx="3" fill="rgba(45,49,66,0.12)"/><text x="159" y="53" class="role-text">IN</text>
-      <text x="196" y="67" class="node-title">安全なfixture</text><text x="196" y="79" class="node-sub">JSONL / 合成データ</text><text x="196" y="91" class="node-tool">user prepared</text>
-      <rect x="226" y="98" width="16" height="8" rx="3" fill="#5e7a9b"/><text x="234" y="104" class="chip-text">DB</text>
+      <rect x="296" y="168" width="184" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-opacity="0.28" stroke-width="1"/>
+      <rect x="304" y="176" width="30" height="12" rx="2" fill="none" stroke="#2d3142" stroke-opacity="0.38" stroke-width="0.8"/>
+      <text x="319" y="185" class="tag">RUN</text>
+      <text x="388" y="192" class="node-title">compact-eval</text>
+      <text x="388" y="206" class="node-sub">合成fixtureの安全性</text>
 
-      <!-- Local baseline -->
-      <rect x="258" y="124" width="100" height="64" rx="6" fill="#f5f5f5" stroke="rgba(45,49,66,0.25)"/>
-      <rect x="262" y="128" width="18" height="10" rx="3" fill="rgba(45,49,66,0.12)"/><text x="271" y="133" class="role-text">RUN</text>
-      <text x="308" y="147" class="node-title">ローカル基準</text><text x="308" y="159" class="node-sub">dry-run / 外部なし</text><text x="308" y="171" class="node-tool">baseline</text>
-      <rect x="262" y="178" width="16" height="8" rx="3" fill="#5e7a9b"/><text x="270" y="184" class="chip-text">DB</text>
-      <rect x="338" y="178" width="16" height="8" rx="3" fill="#b8915a"/><text x="346" y="184" class="chip-text">TB</text>
+      <rect x="296" y="248" width="184" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-opacity="0.28" stroke-width="1"/>
+      <rect x="304" y="256" width="30" height="12" rx="2" fill="none" stroke="#2d3142" stroke-opacity="0.38" stroke-width="0.8"/>
+      <text x="319" y="265" class="tag">RUN</text>
+      <text x="388" y="272" class="node-title">conversation-eval</text>
+      <text x="388" y="286" class="node-sub">匿名化会話JSONL</text>
 
-      <!-- Optional Jev -->
-      <rect x="370" y="124" width="100" height="64" rx="6" fill="rgba(46,90,168,0.04)" stroke="#2e5aa8" stroke-width="1" stroke-dasharray="4,3"/>
-      <rect x="374" y="128" width="18" height="10" rx="3" fill="rgba(46,90,168,0.14)"/><text x="383" y="133" fill="#2e5aa8" class="role-text">JEV</text>
-      <text x="420" y="147" class="node-title">Jev任意</text><text x="420" y="159" class="node-sub">API key + no dry-run</text><text x="420" y="171" class="node-tool">Gateway call</text>
-      <rect x="374" y="178" width="16" height="8" rx="3" fill="#5e7a9b"/><text x="382" y="184" class="chip-text">DB</text>
-      <rect x="450" y="178" width="16" height="8" rx="3" fill="#b8915a"/><text x="458" y="184" class="chip-text">TB</text>
+      <rect x="296" y="328" width="184" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-opacity="0.28" stroke-width="1"/>
+      <rect x="304" y="336" width="30" height="12" rx="2" fill="none" stroke="#2d3142" stroke-opacity="0.38" stroke-width="0.8"/>
+      <text x="319" y="345" class="tag">RUN</text>
+      <text x="388" y="352" class="node-title">correlate</text>
+      <text x="388" y="366" class="node-sub">Hook重複・イベント分布</text>
 
-      <!-- Safety check -->
-      <rect x="482" y="124" width="100" height="64" rx="6" fill="#f5f5f5" stroke="rgba(45,49,66,0.25)"/>
-      <rect x="486" y="128" width="18" height="10" rx="3" fill="rgba(45,49,66,0.12)"/><text x="495" y="133" class="role-text">QA</text>
-      <text x="532" y="147" class="node-title">安全性チェック</text><text x="532" y="159" class="node-sub">保持・漏えい・重複</text><text x="532" y="171" class="node-tool">report only</text>
-      <rect x="486" y="178" width="16" height="8" rx="3" fill="#b8915a"/><text x="494" y="184" class="chip-text">TB</text>
-      <rect x="562" y="178" width="16" height="8" rx="3" fill="#b8915a"/><text x="570" y="184" class="chip-text">TB</text>
-
-      <!-- Decision node receives focal handoff. -->
-      <rect x="594" y="204" width="100" height="64" rx="6" fill="rgba(235,108,54,0.07)" stroke="#eb6c36" stroke-width="1.2"/>
-      <rect x="598" y="208" width="18" height="10" rx="3" fill="rgba(235,108,54,0.20)"/><text x="607" y="213" fill="#eb6c36" class="role-text">YOU</text>
-      <text x="644" y="227" class="node-title">導入判断</text><text x="644" y="239" class="node-sub">品質・コスト・境界</text><text x="644" y="251" class="node-tool">human decision</text>
-      <rect x="598" y="258" width="16" height="8" rx="3" fill="#b8915a"/><text x="606" y="264" class="chip-text">TB</text>
-      <rect x="674" y="258" width="16" height="8" rx="3" fill="#9c6b50"/><text x="682" y="264" class="chip-text">FL</text>
+      <!-- One human decision consumes separate reports; it is not another runner. -->
+      <rect x="560" y="204" width="184" height="96" rx="6" fill="rgba(235,108,54,0.07)" stroke="#eb6c36" stroke-width="1.2"/>
+      <rect x="568" y="212" width="30" height="12" rx="2" fill="rgba(235,108,54,0.20)" stroke="rgba(235,108,54,0.42)" stroke-width="0.8"/>
+      <text x="583" y="221" fill="#eb6c36" class="tag">YOU</text>
+      <text x="652" y="236" class="node-title">導入判断</text>
+      <text x="652" y="251" class="node-sub">各レポートを個別に比較</text>
+      <text x="652" y="267" class="node-tech">quality / safety / cost</text>
 
       <!-- Legend -->
-      <text x="164" y="293" class="legend-label">STEPS</text>
-      <rect x="180" y="284" width="24" height="12" rx="6" fill="rgba(45,49,66,0.12)"/><text x="192" y="292" class="step-number">01</text><text x="212" y="293" class="legend-text">Prepare</text>
-      <rect x="274" y="284" width="24" height="12" rx="6" fill="rgba(45,49,66,0.12)"/><text x="286" y="292" class="step-number">02</text><text x="306" y="293" class="legend-text">Local</text>
-      <rect x="354" y="284" width="24" height="12" rx="6" fill="rgba(45,49,66,0.12)"/><text x="366" y="292" class="step-number">03</text><text x="386" y="293" class="legend-text">Jev</text>
-      <rect x="424" y="284" width="24" height="12" rx="6" fill="rgba(45,49,66,0.12)"/><text x="436" y="292" class="step-number">04</text><text x="456" y="293" class="legend-text">Check</text>
-      <rect x="494" y="284" width="24" height="12" rx="6" fill="rgba(235,108,54,0.20)"/><text x="506" y="292" class="step-number focal-text">05</text><text x="526" y="293" class="legend-text">Decide</text>
-      <text x="164" y="314" class="legend-label">DATA TYPE</text>
-      <rect x="180" y="306" width="16" height="8" rx="3" fill="#5e7a9b"/><text x="188" y="312" class="chip-text">DB</text><text x="202" y="314" class="legend-text">fixture / dataset</text>
-      <rect x="316" y="306" width="16" height="8" rx="3" fill="#b8915a"/><text x="324" y="312" class="chip-text">TB</text><text x="338" y="314" class="legend-text">metrics</text>
-      <text x="420" y="314" class="legend-text">left = input · right = output</text>
-      <text x="164" y="336" class="legend-label">FLOW</text>
-      <line x1="180" y1="333" x2="204" y2="333" stroke="#4f5d75" marker-end="url(#jevx-eval-muted)"/><text x="212" y="336" class="legend-text">standard</text>
-      <line x1="286" y1="333" x2="310" y2="333" stroke="#4f5d75" stroke-dasharray="4,3" marker-end="url(#jevx-eval-muted)"/><text x="318" y="336" class="legend-text">optional</text>
-      <line x1="400" y1="333" x2="424" y2="333" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#jevx-eval-accent)"/><text x="432" y="336" class="legend-text">safe metrics to reader</text>
+      <line x1="48" y1="424" x2="752" y2="424" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+      <text x="48" y="442" class="legend-key">LEGEND</text>
+      <line x1="48" y1="464" x2="80" y2="464" stroke="#4f5d75" stroke-width="1.1" marker-end="url(#jevx-eval-independent-muted)"/>
+      <text x="92" y="468" class="legend">用途別runnerへの独立した測定</text>
+      <line x1="376" y1="464" x2="408" y2="464" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#jevx-eval-independent-accent)"/>
+      <text x="420" y="468" class="legend">個別レポートを人が比較</text>
+      <text x="752" y="468" class="legend" text-anchor="end">各コマンドは直列処理ではない</text>
     </svg>
   </main>
 </body>

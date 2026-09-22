@@ -25,11 +25,11 @@
   <main class="frame">
     <p class="eyebrow">JEVX · OVERVIEW</p>
     <h1>「提案」と「実行」を分けて、安全にSkillを選ぶ</h1>
-    <p class="dek">jevxは候補をローカルで絞り、通常のSkill提案ではredacted prompt・raw cwd・候補metadataをJevへ送って判断材料を返します。Skillの実行や会話の書き換えは利用者が決め、Telemetryも本文ではなく集計に必要な情報だけを扱います。</p>
+    <p class="dek">jevxは候補をローカルで絞り、通常のSkill提案ではredacted prompt・raw cwd・候補metadataをJevへ送り、APIキーはAuthorization: Bearerヘッダーで認証して判断材料を返します。Skillの実行や会話の書き換えは利用者が決め、Telemetryも本文ではなく集計に必要な情報だけを扱います。</p>
 
     <svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="jevx-overview-title jevx-overview-desc">
       <title id="jevx-overview-title">jevxのSkill選択とデータ境界</title>
-      <desc id="jevx-overview-desc">利用者の依頼をローカルでSkill候補へ絞り、候補がある通常の提案ではredacted prompt・raw cwd・候補metadataをJevへ送り、結果と安全なTelemetryを返す流れ。明示Skill・候補なし・dry-runでは外部判定を省略し、会話全文やTool結果は送信しない。</desc>
+      <desc id="jevx-overview-desc">利用者の依頼をローカルでSkill候補へ絞り、候補がある通常の提案ではredacted prompt・raw cwd・候補metadataをJevへ送り、APIキーはAuthorization: Bearerヘッダーで認証して結果と安全なTelemetryを返す流れ。明示Skill・候補なし・dry-runでは外部判定を省略し、会話全文やTool結果は送信しない。</desc>
       <defs>
         <style>
           .zone-label { fill: #4f5d75; font: 500 8px 'Geist Mono', ui-monospace, monospace; letter-spacing: .16em; }
@@ -109,12 +109,13 @@
       <text x="560" y="403" class="node-sub">hash / 件数 / 遅延</text>
 
       <!-- External gateway for standard suggestions -->
-      <rect x="704" y="148" width="152" height="88" rx="6" fill="rgba(46,90,168,0.05)" stroke="#2e5aa8" stroke-width="1"/>
+      <rect x="704" y="148" width="152" height="100" rx="6" fill="rgba(46,90,168,0.05)" stroke="#2e5aa8" stroke-width="1"/>
       <rect x="712" y="156" width="36" height="12" rx="2" fill="none" stroke="rgba(46,90,168,0.45)" stroke-width="0.8"/>
       <text x="730" y="165" fill="#2e5aa8" class="tag">JEV</text>
       <text x="780" y="178" class="node-title">Jev判定</text>
       <text x="780" y="192" class="node-sub">redacted prompt + raw cwd</text>
       <text x="780" y="206" class="node-tech">candidate metadata + none</text>
+      <text x="780" y="220" class="node-tech">Authorization: Bearer</text>
 
       <!-- Explicitly blocked raw content -->
       <rect x="72" y="348" width="152" height="72" rx="6" fill="rgba(45,49,66,0.02)" stroke="#7a8399" stroke-width="1" stroke-dasharray="4,3"/>

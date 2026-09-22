@@ -113,7 +113,11 @@ user scopeは`$CODEX_HOME/hooks.json`（未設定なら`~/.codex/hooks.json`）�
 <figcaption>図2：Hookはイベントを観測し、ローカルcheckpointを介してcompact後の補助情報を返します。<a href="diagrams/jevx-hook-compaction.html">図をブラウザで開く</a></figcaption>
 </figure>
 
+`SessionStart(source=compact)`で作業内容の補助contextも返したい場合は、作業ディレクトリに`.jevx/compact-context.md`を利用者が作成・更新しておきます。checkpoint自体はイベント名・hash・文字数などだけを保存し、作業本文を復元しません。manifestがない場合は、追加の作業contextは返りません。最大4,000文字までのredaction済み内容だけを補助contextへ渡すため、秘密情報は書かないでください。
+
 ```bash
+mkdir -p .jevx
+printf '%s\n' '# 次に続ける作業' '- 例：テスト結果を確認してからドキュメントを更新する' > .jevx/compact-context.md
 printf '%s\n' '{"hook_event_name":"PreCompact","session_id":"demo-session","turn_id":"demo-turn","cwd":"."}' |
   jevx hooks compact-assist --state-dir /tmp/jevx-compaction
 ```
@@ -125,8 +129,8 @@ printf '%s\n' '{"hook_event_name":"PreCompact","session_id":"demo-session","turn
 ここからは、通常のCodex作業で常用する機能ではありません。jevxを導入する前後に、Hookの契約・Skill選択の品質・Compaction補助の安全性を測定したい開発者や運用者向けです。これらのコマンドを実行しても、通常のCodexセッションへSkillを自動適用したり、会話品質を改善したりはしません。
 
 <figure>
-<img src="diagrams/jevx-evaluation.svg" alt="安全なfixtureまたはJSONLをローカル評価と任意のJev評価へ渡し、集計レポートを利用者が導入判断に使う評価Runnerの流れ">
-<figcaption>図3：評価Runnerは通常のCodexセッションを起動せず、測定結果を利用者の導入判断へ渡します。<a href="diagrams/jevx-evaluation.html">図をブラウザで開く</a></figcaption>
+<img src="diagrams/jevx-evaluation.svg" alt="用途別のfixtureやJSONLをeval、compact-eval、conversation-eval、correlateへ独立して渡し、それぞれのレポートを利用者が導入判断に使う評価Runnerの流れ">
+<figcaption>図3：評価コマンドは用途別に独立してレポートを出し、結果を利用者が比較して導入判断します。<a href="diagrams/jevx-evaluation.html">図をブラウザで開く</a></figcaption>
 </figure>
 
 ### 1. 導入前のHook動作確認（`hooks shadow`）
@@ -166,6 +170,8 @@ jevx hooks correlate --input /tmp/jevx-hooks.jsonl --json
 jevx eval --dry-run --json
 jevx eval-repeat --runs 5 --dry-run --json
 ```
+
+上の例は、`jevx/evals/skill-selection.jsonl` と`jevx/evals/skills`が存在するリポジトリルートから実行してください。`setup.sh`で配布されるのはバイナリと`SKILL.md`で、評価fixtureは別ディレクトリへ自動コピーされません。別の場所から実行する場合は、対象リポジトリのfixtureを`--fixtures`と`--skill-dir`で明示します。
 
 `--dry-run`ではGatewayへ送らず、Jevモードは`not_run`です。Jev自体を測る場合は、APIキーを環境変数へ設定し、`--dry-run`を外して実行します。出力レポートにはprompt本文やfixtureのkeywordsを保存しません。
 
@@ -276,10 +282,12 @@ Jevへの外部リクエスト境界は次のとおりです。
 | `cwd` | 送る（raw） | 作業ディレクトリはハッシュ化せず入力に含める。パス名に秘密を置かない |
 | Skill ID / name | 送る（raw） | 候補識別のため送る |
 | Skill description | 送る（redact後） | promptと同じ限定パターンのredaction。Skill本文は送らない |
-| APIキー | 送らない | GatewayのBearer認証ヘッダーにだけ使う |
+| APIキー | 送る（`Authorization: Bearer`ヘッダー） | request bodyやTelemetryには含めない |
 | Skill本文、過去の会話、Tool結果 | 送らない | v1の送信対象外 |
 
 Basic redactionは、`Authorization=Basic <value>`、`Authorization:Basic <value>`、`Authorization: Basic <value>` の認識済み形式を保護します。通常文中の単独の単語 `Basic` は意味を保つためredactしません。未知のPII・ラベルなし秘密まで除去する完全なDLPではないため、送信前に内容を確認してください。
+
+Jevを使う通常の提案では、APIキーはGatewayへの`Authorization: Bearer`認証ヘッダーとして送信されます。request bodyやTelemetryへ保存されるものではありませんが、APIキーを外部Gatewayへ渡せない環境ではJev判定を使わないでください。
 
 メールアドレス、電話番号、顧客情報、ラベルのない認証情報など、上記パターンに該当しない機密情報は自動除去されません。外部送信してよい内容だけを入力し、必要に応じて送信前に匿名化してください。
 
