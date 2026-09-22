@@ -97,7 +97,9 @@ Codex Hookを使う場合は、利用者が明示的に `hooks install` を実�
 
 ## データの扱いと安全性
 
-Jevへ送るのは、マスキング済みの現在の依頼文、作業ディレクトリ、SkillのID・名前・説明です。Skill本文、過去の会話、Tool結果、APIキーは送信しません。
+Jevへ送るのは、実装が認識するパターンをredactした現在の依頼文、作業ディレクトリ、SkillのID・名前・説明です。`token` / `api_key` / `secret` / `password` / `authorization` のキーに続く値、Bearer/Basic形式の値、`sk-` / `tsk-` で始まるTokenなどはredactされます。設定に使うAPIキー自体、Skill本文、過去の会話、Tool結果は送信しません。
+
+メールアドレス、電話番号、顧客情報、ラベルのない認証情報など、上記パターンに該当しない機密情報は自動除去されません。外部送信してよい内容だけを入力し、必要に応じて送信前に匿名化してください。
 
 既定Telemetryは `~/.jevx/events.jsonl` に、依頼文そのものではなくハッシュ、文字数、判定、候補数、遅延、Token使用量を保存します。保存を無効にする場合は `--no-telemetry` を使い、集計は `jevx stats --json` で確認します。
 

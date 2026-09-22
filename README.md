@@ -12,6 +12,7 @@ Jev Triageは、Jevの型付き評価で問い合わせのカテゴリ・緊急�
 ```bash
 sh jevx/scripts/setup.sh --scope user
 jevx doctor --json
+export AI_GATEWAY_API_KEY="<your-ai-gateway-api-key>"
 jevx skills suggest --prompt "PDFを結合して内容を確認したい" --json
 ```
 
