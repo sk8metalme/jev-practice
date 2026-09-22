@@ -1,5 +1,10 @@
 # jevx 複数回・APIキーあり実測レポート
 
+> 対象読者: 調査・導入判断・評価担当
+> 文書の状態: 歴史的な評価スナップショット
+> 再現方法: コマンドは記録時点の履歴。現行導入はユーザー向けガイドを参照。
+> 注意: 数値と条件は記録時点の観測値であり、現行環境の保証ではない。
+
 ## 結論
 
 同梱の40ケースを、同じSkillカタログと設定で5回繰り返し、合計200ケースをJevへ送信した。今回の環境では、Jevxは正解率平均98.0%、`none`精度100%、candidate miss rate 0%、エラー率2.0%だった。成功したケースのJev応答時間はp50 427ms / p95 610ms、Skill探索を含む全体時間はp50 429ms / p95 612msだった。
@@ -136,7 +141,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 ## 関連資料
 
-- [評価Runnerの仕様と指標](jevx-evaluation.md)
+- [評価Runnerの仕様と指標](../../developers/jevx-evaluation.md)
 - [Codex Hook shadow実測](jevx-codex-hooks-evaluation.md)
 - [前回の単回APIキーあり実測](jevx-live-evaluation-2026-09-21.md)
-- [評価fixtureの使い方](../jevx/evals/README.md)
+- [評価fixtureの使い方](../../../jevx/evals/README.md)

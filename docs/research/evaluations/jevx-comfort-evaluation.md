@@ -1,5 +1,10 @@
 # jevx 導入効果評価：Jevあり / なしで何が変わるか
 
+> 対象読者: 調査・導入判断・評価担当
+> 文書の状態: 歴史的な評価スナップショット
+> 再現方法: コマンドは記録時点の履歴。現行導入はユーザー向けガイドを参照。
+> 注意: 数値と条件は記録時点の観測値であり、現行環境の保証ではない。
+
 ## 結論
 
 `jevx`をCodex CLIのSkill選択補助として使う価値は、今回の固定fixtureでは「ローカル候補を作る」ことよりも、「候補から選ぶ・選ばないをJevが安全側に判断する」ことにあったよ。
@@ -185,8 +190,8 @@ Jevxを日常導入する判断は、正解率だけで決めない。
 
 - [jevx APIキーあり単回実測](jevx-live-evaluation-2026-09-21.md)
 - [jevx APIキーあり5回実測](jevx-variance-evaluation-2026-09-21.md)
-- [jevx要件定義](jevx-requirements.md)
-- [jevxアーキテクチャ](jevx-architecture.md)
+- [jevx要件定義](../../developers/jevx-requirements.md)
+- [jevxアーキテクチャ](../../developers/jevx-architecture.md)
 - [Codex Hook shadow / compact評価](jevx-codex-hooks-evaluation.md)
 - [Codex Hooks公式ドキュメント](https://learn.chatgpt.com/docs/hooks)
 - [OpenAI Compaction公式ガイド](https://developers.openai.com/api/docs/guides/compaction)

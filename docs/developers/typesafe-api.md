@@ -1,5 +1,8 @@
 # TypeSafe APIを直接使う
 
+> 対象読者: 開発者・保守担当
+> 文書の状態: 現行仕様
+
 このリポジトリのWebアプリと `jevx` は、現在はVercel AI Gateway経由でJevを呼び出しているよ。このページでは、Vercelを経由せずTypeSafe APIへ直接リクエストする方法をまとめるね。
 
 ## 利用開始

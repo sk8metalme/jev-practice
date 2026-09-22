@@ -1,5 +1,8 @@
 # jevx アーキテクチャ
 
+> 対象読者: 開発者・保守担当
+> 文書の状態: 現行仕様
+
 ## 目的と境界
 
 jevxはCodex CLIの前段に置く「Skill選択とコンテキスト運用の補助線」だよ。依頼から候補Skillを探索し、ローカルの軽量スコアで上位候補を絞ってから、候補を1回のbatched ChoiceとしてJevへ渡す。Hookを明示的に登録した場合は、同じCLIでHook lifecycleとCompaction checkpointも観測する。

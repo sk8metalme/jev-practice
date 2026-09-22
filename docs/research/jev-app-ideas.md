@@ -1,8 +1,11 @@
 # Jevを活用したアプリ候補案
 
+> 対象読者: 調査・導入判断・評価担当
+> 文書の状態: 歴史的な調査メモ
+
 > 検討日: 2026-09-20
 
-現在の [`Jev Triage`](../README.md) は、問い合わせ文を `choice`・`score`・`boolean` の3問で評価し、カテゴリ・緊急度・返金要求をまとめて表示するアプリだよ。この構成を土台に、Jevの型付き評価を活かしやすい候補を比較した。
+現在の [`Jev Triage`](../../README.md) は、問い合わせ文を `choice`・`score`・`boolean` の3問で評価し、カテゴリ・緊急度・返金要求をまとめて表示するアプリだよ。この構成を土台に、Jevの型付き評価を活かしやすい候補を比較した。
 
 公開事例・GitHub実装・ブログ・SNSまで横断した詳細調査は、[Jev活用アイデア徹底調査レポート](jev-research.md) にまとめているよ。候補を広く比較したいときや、質問設計・評価方法まで確認したいときはこちらを見てね。
 
@@ -173,4 +176,4 @@ Jevの評価だけでマージ可否を決めない。既存のCI、CODEOWNERS�
 
 - [Vercel AI Gateway Evaluation](https://vercel.com/docs/ai-gateway/modalities/evaluation)
 - [Jev API, Pricing & Playground](https://vercel.com/ai-gateway/models/jev)
-- [このリポジトリの現在のアプリ](../README.md)
+- [このリポジトリの現在のアプリ](../../README.md)

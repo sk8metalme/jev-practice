@@ -1,5 +1,8 @@
 # jevx Codex CLI compaction実運用runbook
 
+> 対象読者: Codex CLIを導入・運用する担当者
+> 文書の状態: 現行運用
+
 ## 目的と境界
 
 このrunbookは、jevxのHookとcompact-assistをCodex CLIへ安全に接続し、compact前後の状態を観測・補助するための手順だよ。設定変更はopt-inで行い、通常のCodex compactionや現在の会話・リポジトリ確認を置き換えない。
