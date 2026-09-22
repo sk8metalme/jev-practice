@@ -41,20 +41,24 @@ cargo llvm-cov --locked --manifest-path jevx/Cargo.toml --all-targets --fail-und
 Hookのstdout契約を確認する。
 
 ~~~bash
-fixture_dir=$(mktemp -d -t jevx-compaction-fixture.XXXXXX)
-export JEVX_HOME="$fixture_dir/data"
+(
+  set -eu
+  fixture_dir=$(mktemp -d -t jevx-compaction-fixture.XXXXXX)
+  trap 'rm -rf "$fixture_dir"' EXIT
+  export JEVX_HOME="$fixture_dir/data"
 
-printf '%s\n' '{"hook_event_name":"PreCompact","trigger":"manual","session_id":"fixture-session","turn_id":"fixture-turn","cwd":"/tmp/safe-fixture"}' \
-  | cargo run --locked --manifest-path jevx/Cargo.toml -- \
-      hooks compact-assist --state-dir "$fixture_dir/compaction"
+  printf '%s\n' '{"hook_event_name":"PreCompact","trigger":"manual","session_id":"fixture-session","turn_id":"fixture-turn","cwd":"/tmp/safe-fixture"}' \
+    | cargo run --locked --manifest-path jevx/Cargo.toml -- \
+        hooks compact-assist --state-dir "$fixture_dir/compaction"
 
-printf '%s\n' '{"hook_event_name":"PostCompact","trigger":"manual","session_id":"fixture-session","turn_id":"fixture-after","cwd":"/tmp/safe-fixture"}' \
-  | cargo run --locked --manifest-path jevx/Cargo.toml -- \
-      hooks compact-assist --state-dir "$fixture_dir/compaction"
+  printf '%s\n' '{"hook_event_name":"PostCompact","trigger":"manual","session_id":"fixture-session","turn_id":"fixture-after","cwd":"/tmp/safe-fixture"}' \
+    | cargo run --locked --manifest-path jevx/Cargo.toml -- \
+        hooks compact-assist --state-dir "$fixture_dir/compaction"
 
-printf '%s\n' '{"hook_event_name":"SessionStart","source":"compact","session_id":"fixture-session","cwd":"/tmp/safe-fixture"}' \
-  | cargo run --locked --manifest-path jevx/Cargo.toml -- \
-      hooks compact-assist --state-dir "$fixture_dir/compaction"
+  printf '%s\n' '{"hook_event_name":"SessionStart","source":"compact","session_id":"fixture-session","cwd":"/tmp/safe-fixture"}' \
+    | cargo run --locked --manifest-path jevx/Cargo.toml -- \
+        hooks compact-assist --state-dir "$fixture_dir/compaction"
+)
 ~~~
 
 3つの応答がJSONとして読み取れ、すべて `continue: true` ならHookの継続契約は満たす。最後の応答だけ `hookSpecificOutput.additionalContext` を持ち、`checkpoint event=PostCompact` または `checkpoint metadata was not found` を含む。
@@ -62,10 +66,15 @@ printf '%s\n' '{"hook_event_name":"SessionStart","source":"compact","session_id"
 評価器を使うときは、本文を一時JSONLへ置いて集計後に破棄する。
 
 ~~~bash
-case_file="$fixture_dir/conversation.jsonl"
-printf '%s\n' '{"caseId":"safe-case","model":"fixture-model","requiredFacts":["goal=keep-context","next=verify"],"followUpText":"goal=keep-context\nnext=verify\ndecoy=redacted","secretMarkers":["LOCAL_FIXTURE_SECRET"],"compactionCompleted":true,"compactionDurationMs":120,"inputChars":300,"conversationTurns":8,"contextChars":1200,"observedEvents":["contextCompaction","turn/completed"]}' > "$case_file"
-cargo run --locked --manifest-path jevx/Cargo.toml -- \
-  hooks conversation-eval --input "$case_file" --json
+(
+  set -eu
+  evaluation_dir=$(mktemp -d -t jevx-conversation-eval.XXXXXX)
+  trap 'rm -rf "$evaluation_dir"' EXIT
+  case_file="$evaluation_dir/conversation.jsonl"
+  printf '%s\n' '{"caseId":"safe-case","model":"fixture-model","requiredFacts":["goal=keep-context","next=verify"],"followUpText":"goal=keep-context\nnext=verify\ndecoy=redacted","secretMarkers":["LOCAL_FIXTURE_SECRET"],"compactionCompleted":true,"compactionDurationMs":120,"inputChars":300,"conversationTurns":8,"contextChars":1200,"observedEvents":["contextCompaction","turn/completed"]}' > "$case_file"
+  cargo run --locked --manifest-path jevx/Cargo.toml -- \
+    hooks conversation-eval --input "$case_file" --json
+)
 ~~~
 
 レポートには保持件数・漏えい件数・遅延・エラーコードだけが残り、`followUpText`と秘密marker本文は再出力されないことを確認する。
@@ -75,15 +84,35 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 生成先とデータ保存先を一時profileへ分離してから、まずdry-runだけを実行する。
 
 ~~~bash
-codex_profile=$(mktemp -d -t jevx-codex-profile.XXXXXX)
-export CODEX_HOME="$codex_profile"
-export JEVX_HOME="$codex_profile/jevx-data"
+(
+  set -eu
+  codex_profile=$(mktemp -d -t jevx-codex-profile.XXXXXX)
+  trap 'rm -rf "$codex_profile"' EXIT
+  export CODEX_HOME="$codex_profile"
+  export JEVX_HOME="$codex_profile/jevx-data"
+  # 認証キャッシュを一時profile内へ限定し、終了時にtrapで削除する。
+  printf '%s\n' 'cli_auth_credentials_store = "file"' > "$CODEX_HOME/config.toml"
 
-cargo run --locked --manifest-path jevx/Cargo.toml -- \
-  hooks install --scope user --repo "$PWD" --dry-run --json
+  cargo run --locked --manifest-path jevx/Cargo.toml -- \
+    hooks install --scope user --repo "$PWD" --dry-run --json
+
+  # 既存設定の保持とbackupを検証するための合成設定。秘密値は入れない。
+  printf '%s\n' '{"description":"fixture","hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"custom-handler"}]}]}}' \
+    > "$CODEX_HOME/hooks.json"
+
+  first_install=$(cargo run --locked --manifest-path jevx/Cargo.toml -- \
+    hooks install --scope user --repo "$PWD" --json)
+  printf '%s\n' "$first_install"
+  test -f "$CODEX_HOME/hooks.json.jevx.bak"
+
+  second_install=$(cargo run --locked --manifest-path jevx/Cargo.toml -- \
+    hooks install --scope user --repo "$PWD" --json)
+  printf '%s\n' "$second_install"
+  printf '%s\n' "$second_install" | jq -e '.changed == false'
+)
 ~~~
 
-dry-runでは `CODEX_HOME/hooks.json`、backup、Hook stateを作らない。JSONの次をレビューする。
+dry-runでは `CODEX_HOME/hooks.json`、backup、Hook stateを作らない。JSONの次をレビューする。上の実install例では、合成した既存設定をjevxが保持し、初回だけbackupを作り、2回目に`changed=false`になることも確認する。
 
 - `SessionStart` matcherが `startup|resume|clear|compact`
 - `PreCompact` / `PostCompact` matcherが `manual|auto`
@@ -92,23 +121,11 @@ dry-runでは `CODEX_HOME/hooks.json`、backup、Hook stateを作らない。JSO
 - `UserPromptSubmit` は候補提案のshadow用途で、Skill本文をロード・実行しない
 - `compact-assist` は `SessionStart(source=compact)` へ追加contextを返すだけで、会話を停止しない
 
-dry-runのJSONに秘密値や生の入力が含まれていないことも確認する。実書き込みを行う場合は、同じ一時 `CODEX_HOME` に対して明示的に再実行する。初回だけ `hooks.json.jevx.bak` が作られ、2回目は `changed=false` になることを確認する。
+dry-runのJSONに秘密値や生の入力が含まれていないことも確認する。空のprofileでは既存の`hooks.json`がないため、実installを初めて実行してもbackupが作られない。backupを確認する場合は、上のように安全な既存設定を先に用意し、既存設定がある場合だけ初回installで`hooks.json.jevx.bak`が作られることを確認する。
 
 ## 3. Codex CLIでmanual compactをsmoke testする
 
 実Codexを使う測定は、認証済みの外部サービスへ合成入力を送るため、必要な許可がある場合だけ行う。開始前に次を確認する。
-
-~~~bash
-codex --version
-test -n "$CODEX_HOME"
-test -n "$JEVX_HOME"
-~~~
-
-一時profileのまま、read-only・approvalなしでCodexを起動する。
-
-~~~bash
-codex --sandbox read-only --ask-for-approval never --no-alt-screen --cd "$PWD"
-~~~
 
 起動後の順序:
 
@@ -119,12 +136,43 @@ codex --sandbox read-only --ask-for-approval never --no-alt-screen --cd "$PWD"
 5. Codexを終了し、Hook recordを相関分析する。
 
 ~~~bash
-records="$JEVX_HOME/hooks.jsonl"
-cargo run --locked --manifest-path jevx/Cargo.toml -- \
-  hooks correlate --input "$records" --json
+(
+  set -eu
+  codex_profile=$(mktemp -d -t jevx-codex-smoke.XXXXXX)
+  trap 'rm -rf "$codex_profile"' EXIT
+  export CODEX_HOME="$codex_profile"
+  export JEVX_HOME="$codex_profile/jevx-data"
+
+  cargo run --locked --manifest-path jevx/Cargo.toml -- \
+    hooks install --scope user --repo "$PWD" --json
+
+  codex --version
+  test -n "$CODEX_HOME"
+  test -n "$JEVX_HOME"
+
+  # 空profileは通常profileの認証を引き継がない。未認証なら同じprofileでloginする。
+  if ! codex login status >/dev/null 2>&1; then
+    if test -n "${OPENAI_API_KEY:-}"; then
+      printenv OPENAI_API_KEY | codex login --with-api-key >/dev/null
+    else
+      codex login
+      # headless環境では上の `codex login` を `codex login --device-auth` に置き換える。
+    fi
+  fi
+  codex login status
+  unset OPENAI_API_KEY
+
+  # ここでCodexが終了するまで、上の手順1〜4を対話的に実行する。
+  codex --sandbox read-only --ask-for-approval never --no-alt-screen --cd "$PWD"
+
+  records="$JEVX_HOME/compaction/hook-records.jsonl"
+  test -s "$records"
+  cargo run --locked --manifest-path jevx/Cargo.toml -- \
+    hooks correlate --input "$records" --json
+)
 ~~~
 
-成功経路では少なくとも `PreCompact`、`PostCompact`、`SessionStart`（`source=compact`）を観測する。相関分析の `duplicateRecordCount` は0を期待するが、1回のsmoke testだけで長期運用の統計的な重複率を保証しない。
+成功経路では少なくとも `PreCompact`、`PostCompact`、`SessionStart`（`source=compact`）を観測する。compaction Hook recordは `$JEVX_HOME/compaction/hook-records.jsonl` に保存され、UserPromptSubmitのshadow recordだけが `$JEVX_HOME/hooks.jsonl` に保存される。上の相関分析は前者を入力にする。UserPromptSubmitも含める場合は、両方を同じ一時JSONLへ結合してから `--input` に渡す。`duplicateRecordCount` は0を期待するが、1回のsmoke testだけで長期運用の統計的な重複率を保証しない。
 
 Hookをtrustするためだけに `--dangerously-bypass-hook-trust` を常用しない。外部で定義をレビュー済みの一回限りの自動化で使う場合も、実行profile・入力・出力を分離して記録する。
 
@@ -135,7 +183,7 @@ Hookをtrustするためだけに `--dangerously-bypass-hook-trust` を常用し
 - Rustの全テスト、fmt、clippyが成功する。
 - ラインカバレッジが98%以上である。
 - dry-runがファイルを変更しない。
-- installの初回backupと2回目の冪等性を確認できる。
+- 既存設定を用意した場合の初回backupと2回目の冪等性を確認できる。空profileでbackupがない場合も正常として扱う。
 - fixture評価で必須事実保持率100%、秘密marker漏えい0件、Hook継続率100%になる。
 
 ### 実Codex smoke test合格
@@ -156,4 +204,5 @@ Hookをtrustするためだけに `--dangerously-bypass-hook-trust` を常用し
 ## 公式仕様
 
 - [Codex Hooks](https://learn.chatgpt.com/docs/hooks)
+- [Codex Authentication](https://learn.chatgpt.com/docs/auth)
 - [OpenAI API Compaction](https://developers.openai.com/api/docs/guides/compaction)
