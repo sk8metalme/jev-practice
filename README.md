@@ -188,6 +188,7 @@ JSON
 
 ## 参考
 
+- [Codex CLI compaction実運用runbook](docs/jevx-compaction-operations.md)
 - [Vercel AI Gateway Evaluation](https://vercel.com/docs/ai-gateway/modalities/evaluation)
 - [Jev API, Pricing & Playground](https://vercel.com/ai-gateway/models/jev)
 - [Vercel AI SDKの評価モデル実装](https://github.com/vercel/ai/blob/main/packages/gateway/src/gateway-evaluation-model.ts)
