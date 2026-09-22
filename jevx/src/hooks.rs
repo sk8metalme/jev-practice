@@ -391,14 +391,8 @@ pub async fn run_shadow(
         schema_version: HOOK_SCHEMA_VERSION,
         mode: "shadow".to_owned(),
         hook_event_name: event.to_owned(),
-        trigger: payload
-            .get("trigger")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        source: payload
-            .get("source")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        trigger: sanitized_identifier(payload.get("trigger").and_then(Value::as_str), 32),
+        source: sanitized_identifier(payload.get("source").and_then(Value::as_str), 64),
         session_id_sha256: session_id.map(sha256_hex),
         turn_id_sha256: turn_id.map(sha256_hex),
         model_sha256: model.map(sha256_hex),
@@ -436,7 +430,9 @@ pub async fn run_shadow(
         match suggest_with_judge(input, skills.to_vec(), config, judge).await {
             Ok(result) => {
                 record.decision = Some(result.decision);
-                record.selected_skill = result.selected.map(|candidate| candidate.id);
+                record.selected_skill = result
+                    .selected
+                    .and_then(|candidate| sanitized_skill_identifier(Some(&candidate.id), 128));
                 record.discovery_ms = Some(result.metrics.discovery_ms);
                 record.jev_response_ms = Some(result.metrics.jev_response_ms);
                 record.total_ms = Some(result.metrics.total_ms);
@@ -461,6 +457,7 @@ fn shadow_result(record: HookShadowRecord) -> HookShadowResult {
 }
 
 pub fn append_shadow_record(path: &Path, record: &HookShadowRecord) -> Result<(), JevxError> {
+    validate_hook_record(record, "hook record")?;
     append_json_line(path, record)
 }
 
@@ -472,10 +469,10 @@ pub fn load_hook_records(path: &Path) -> Result<Vec<HookShadowRecord>, JevxError
         if line.is_empty() {
             continue;
         }
-        let record = serde_json::from_str::<HookShadowRecord>(line).map_err(|_| {
+        let mut record = serde_json::from_str::<HookShadowRecord>(line).map_err(|_| {
             JevxError::InvalidInput(format!("invalid hook record at line {}", line_number + 1))
         })?;
-        validate_hook_record(&record, &format!("line {}", line_number + 1))?;
+        normalize_loaded_hook_record(&mut record, &format!("line {}", line_number + 1))?;
         records.push(record);
     }
     if records.is_empty() {
@@ -760,6 +757,10 @@ fn validate_hook_record(record: &HookShadowRecord, context: &str) -> Result<(), 
             .as_deref()
             .is_some_and(|value| !safe_identifier(value, 64))
         || record
+            .selected_skill
+            .as_deref()
+            .is_some_and(|value| !safe_skill_identifier(value, 128))
+        || record
             .session_id_sha256
             .as_deref()
             .is_some_and(|value| !safe_identifier(value, 128))
@@ -783,12 +784,42 @@ fn validate_hook_record(record: &HookShadowRecord, context: &str) -> Result<(), 
     Ok(())
 }
 
+fn normalize_loaded_hook_record(
+    record: &mut HookShadowRecord,
+    context: &str,
+) -> Result<(), JevxError> {
+    if record.schema_version == HOOK_SCHEMA_VERSION {
+        record.trigger = sanitized_identifier(record.trigger.as_deref(), 32);
+        record.source = sanitized_identifier(record.source.as_deref(), 64);
+        record.selected_skill = sanitized_skill_identifier(record.selected_skill.as_deref(), 128);
+    }
+    validate_hook_record(record, context)
+}
+
 fn safe_identifier(value: &str, max_chars: usize) -> bool {
     !value.is_empty()
         && value.chars().count() <= max_chars
         && value
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || "_-/.".contains(character))
+}
+
+fn safe_skill_identifier(value: &str, max_chars: usize) -> bool {
+    !value.is_empty()
+        && value.chars().count() <= max_chars
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "_-/.:".contains(character))
+}
+
+fn sanitized_identifier(value: Option<&str>, max_chars: usize) -> Option<String> {
+    let value = value?.trim();
+    safe_identifier(value, max_chars).then(|| value.to_owned())
+}
+
+fn sanitized_skill_identifier(value: Option<&str>, max_chars: usize) -> Option<String> {
+    let value = value?.trim();
+    safe_skill_identifier(value, max_chars).then(|| value.to_owned())
 }
 
 fn conversation_once(run: usize, case: &ConversationCompactionCase) -> CompactionRun {

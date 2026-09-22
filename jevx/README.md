@@ -380,7 +380,7 @@ printf '%s\n' \
       --output /tmp/jevx-hooks.jsonl
 ```
 
-`--output` へ保存されるHook recordは、hashed IDsとprompt非保存を含む現行schemaの観測記録だよ。`trigger`、`source`、`selectedSkill`はwrite時に入力文字列をrawで記録し、correlate/load時は`trigger` / `source`など一部だけを`safe_identifier`で形式検証する。`selectedSkill`はrawのままこのvalidatorの対象外なので、trust boundary済みの値やmetadataとは呼ばないでね。
+`--output` へ保存されるHook recordは、hashed IDsとprompt非保存を含む現行schemaの観測記録だよ。`trigger`、`source`、`selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなrecordを拒否し、既存schema v1のloadでは該当metadataを正規化・欠損化して分析互換性を保つよ。
 
 - `sessionIdSha256`、`turnIdSha256`、`modelSha256`、`correlationIdSha256`
 - `promptSha256`、`promptChars`
@@ -434,7 +434,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 ### Compaction補助の試作
 
-`hooks compact-assist` はHook JSONをstdinから読み、`<state-dir>/hook-records.jsonl` と `checkpoints.jsonl` に現行schemaのmetadataを追記する。Hook recordの`trigger` / `source` / `selectedSkill`はrawで、checkpoint側の`safe_label`は長さ・許可文字を絞るだけで入力の信頼性を保証しない。相関時の`safe_identifier`は`trigger` / `source`など一部フィールドだけを形式検証し、`selectedSkill`は対象外である。`SessionStart(source=compact)`のときは、同じセッションのcheckpointと、作業ディレクトリに任意で置いた `.jevx/compact-context.md` をredactして `additionalContext` に返す。
+`hooks compact-assist` はHook JSONをstdinから読み、`<state-dir>/hook-records.jsonl` と `checkpoints.jsonl` に安全なmetadataだけを追記する。Hook recordの `trigger` / `source` / `selectedSkill` はwrite前にbounded identifierへ正規化され、unsafeな値は欠損として扱われる。新規appendはunsafeなrecordを拒否し、既存schema v1のloadでは任意metadataを正規化・欠損化して過去ログを読み続ける。`SessionStart(source=compact)`のときは、同じセッションのcheckpointと、作業ディレクトリに任意で置いた `.jevx/compact-context.md` をredactして `additionalContext` に返す。
 
 ```bash
 mkdir -p .jevx
@@ -447,7 +447,7 @@ printf '%s\n' \
       hooks compact-assist --state-dir /tmp/jevx-compaction
 ```
 
-checkpointには生のmanifest本文を保存せず、redacted本文のSHA-256、文字数、event名、相関ハッシュだけを保存する。これはprompt非保存・ID hash化・controlled fixture metadataという現行境界であり、raw metadataのwrite前hardeningは未実装で別フォローアップだよ。`additionalContext`も「補助情報」として返すだけで、Codexの会話履歴・現在のリポジトリ確認・公式Compactionの代替ではないよ。
+checkpointには生のmanifest本文を保存せず、redacted本文のSHA-256、文字数、event名、相関ハッシュだけを保存する。Hook metadataもwrite前にbounded identifierへ正規化し、unsafeな値を保存しないよ。`additionalContext`も「補助情報」として返すだけで、Codexの会話履歴・現在のリポジトリ確認・公式Compactionの代替ではないよ。
 
 この補助を使わず、発火だけを観測したい場合は従来どおり `hooks shadow` を使う。公式Hookのmatcherと出力契約は [Codex Hooks公式ドキュメント](https://learn.chatgpt.com/docs/hooks) を確認してね。
 
@@ -586,8 +586,8 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 - Jevへ送るのは、マスキングしたprompt、rawの作業ディレクトリ、rawの候補Skill ID/name、redactしたdescription。Skill本文、過去会話全文、Tool結果、APIキーは送らない。
 - `AI_GATEWAY_API_KEY` は環境変数からBearer認証へ使い、レスポンスやTelemetryへ書き出さない。
 - Telemetryはprompt本文やprobabilityではなくハッシュ・文字数・判定・選択時の`selectedSkill`（raw ID）・計測値を保存するため、Skill ID自体を秘密値にしない。
-- Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` のようにキーとBasicの間に空白がない認識済み形式に限定される。`Authorization: Basic <value>`（コロンの後に空白あり）は現行redaction.rsでは値が保護されないため、送信前に手動で匿名化すること。任意の `Basic` 文言や未知のPIIを除去する完全なDLPではない。
-- Hookの`trigger` / `source` / `selectedSkill`はwrite時にrawで記録され、correlate/load時は`trigger` / `source`など一部だけを`safe_identifier`で形式検証する。`selectedSkill`は対象外。prompt非保存、hashed IDs、controlled fixture metadataは現行の制約であり、write前のhash/allowlist hardeningは未実装の別フォローアップ。
+- Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` / `Authorization: Basic <value>` の認識済み形式で値を保存・送信しない。任意の `Basic` 文言や未知のPIIを除去する完全なDLPではない。
+- Hookの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなrecordを拒否し、既存schema v1のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。
 - Hook recordはセッションID、ターンID、モデルをSHA-256化して保存する。
 - `/tmp` の会話評価fixtureやCodexのrollout・認証ファイルは、評価後に削除する運用にする。
 - `--no-telemetry` はローカル保存を止めるだけ。外部送信も止めたいときは、Jevを呼ぶコマンドを実行しない。

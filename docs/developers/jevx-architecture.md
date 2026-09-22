@@ -74,7 +74,7 @@ Codex Hook JSON
     └─ SessionStart(source=compact)なら additionalContext
 ```
 
-checkpointへ保存するのはevent名、`trigger`/`source`のcheckpoint値、各種SHA-256、文字数、context有無だけ。Hook recordの`trigger`、`source`、`selectedSkill`はwrite時に入力文字列をrawでシリアライズする。`compact-assist`の`safe_label`は長さと許可文字を絞るだけで、入力のtrust boundaryを作るものではない。correlate/load時は`trigger`と`source`など一部フィールドだけを`safe_identifier`で形式検証し、`selectedSkill`はrawのままこのvalidatorの対象外である。prompt本文を保存しないことやIDをSHA-256化することとは別の制約である。redacted本文はcheckpointへ保存せず、compact後のHook応答を組み立てるプロセス内でだけ使う。contextがない場合は「metadata not found」を返すが、Codexを停止しない。
+checkpointへ保存するのはevent名、boundedなtrigger/source、各種SHA-256、文字数、context有無だけ。Hook recordのselectedSkillもwrite前にbounded identifierへ正規化し、unsafeな値は欠損化する。appendはunsafe recordを拒否し、既存schema v1のloadはtrigger/source/selectedSkillを正規化してから分析へ渡すため、過去ログ1件で全体を壊さない。redacted本文はcheckpointへ保存せず、compact後のHook応答を組み立てるプロセス内でだけ使う。contextがない場合は「metadata not found」を返すが、Codexを停止しない。
 
 ## Skill探索の優先順位
 
@@ -105,9 +105,9 @@ checkpointへ保存するのはevent名、`trigger`/`source`のcheckpoint値、�
 | 会話全文 / Tool結果 / Skill本文 / APIキー | 送らない | v1の対象外 |
 | probability | Gateway応答にはあり得るが送信対象ではない | Telemetry schemaへ保存しない |
 
-Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` のようにキーとBasicの間に空白がない認識済み形式に限定される。`Authorization: Basic <value>`（コロンの後に空白あり）は現行redaction.rsでは値が保護されないため、送信前に手動で匿名化すること。未知のPIIや任意の `Basic` 文言まで除去するDLPではない。`--no-telemetry` はローカル記録を止めるだけで、Jev/Gatewayへの外部送信停止ではない。
+Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` / `Authorization: Basic <value>` の認識済み形式で値を保存・送信しない。未知のPIIや任意の `Basic` 文言まで除去するDLPではない。`--no-telemetry` はローカル記録を止めるだけで、Jev/Gatewayへの外部送信停止ではない。
 
-Hook metadataのwrite前hash/allowlist、`selectedSkill`を含むrawフィールドの入力境界、信頼済みfixture metadataとの分離は未実装のhardeningであり、別フォローアップで扱う。
+Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否し、既存schema v1のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。
 
 Jev未設定時はローカル推測へフォールバックせず、`missing_api_key`を返す。これは「Jevの有用性を測る」目的で、ローカルだけの結果をJev結果と混同しないためだよ。
 

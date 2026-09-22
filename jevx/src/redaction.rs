@@ -5,10 +5,12 @@ const SENSITIVE_KEYS: [&str; 5] = ["token", "api_key", "secret", "password", "au
 pub fn redact(value: &str) -> String {
     let mut output = Vec::new();
     let mut redact_next = false;
+    let mut redact_authorization_scheme = false;
 
     for token in value.split_whitespace() {
         if redact_next {
-            if is_bearer_word(token) {
+            if is_bearer_word(token) || (redact_authorization_scheme && is_auth_scheme_word(token))
+            {
                 output.push("<redacted>".to_owned());
                 continue;
             }
@@ -18,13 +20,19 @@ pub fn redact(value: &str) -> String {
             }
             output.push("<redacted>".to_owned());
             redact_next = false;
+            redact_authorization_scheme = false;
             continue;
         }
 
         if let Some(has_value) = sensitive_assignment(token) {
             output.push("<redacted>".to_owned());
             redact_next = !has_value || has_embedded_authorization_scheme(token);
-        } else if is_sensitive_key(token) || is_bearer_word(token) {
+            redact_authorization_scheme = is_authorization_key(token) && redact_next;
+        } else if is_sensitive_key(token) {
+            output.push("<redacted>".to_owned());
+            redact_next = true;
+            redact_authorization_scheme = is_authorization_key(token);
+        } else if is_bearer_word(token) {
             output.push("<redacted>".to_owned());
             redact_next = true;
         } else if is_secret_token(token) {
@@ -76,10 +84,24 @@ fn is_sensitive_key(token: &str) -> bool {
         .any(|candidate| key.eq_ignore_ascii_case(candidate))
 }
 
+fn is_auth_scheme_word(token: &str) -> bool {
+    let token = trim_wrappers(token).trim_matches(|character| matches!(character, ':' | '='));
+    token.eq_ignore_ascii_case("bearer") || token.eq_ignore_ascii_case("basic")
+}
+
 fn is_bearer_word(token: &str) -> bool {
-    trim_wrappers(token)
-        .trim_matches(|character| matches!(character, ':' | '='))
-        .eq_ignore_ascii_case("bearer")
+    let token = trim_wrappers(token).trim_matches(|character| matches!(character, ':' | '='));
+    token.eq_ignore_ascii_case("bearer")
+}
+
+fn is_authorization_key(token: &str) -> bool {
+    let token = trim_wrappers(token);
+    let key = token
+        .char_indices()
+        .find(|(_, character)| matches!(character, ':' | '='))
+        .map(|(index, _)| &token[..index])
+        .unwrap_or(token);
+    trim_wrappers(key).eq_ignore_ascii_case("authorization")
 }
 
 fn is_secret_token(token: &str) -> bool {

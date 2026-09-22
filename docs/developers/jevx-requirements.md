@@ -93,8 +93,8 @@ project-local HookはCodex側のプロジェクトTrustが必要であり、フ�
 
 `compact-assist`は要約器ではなく、次を行う決定的な補助とする。
 
-1. Hook JSONを検証し、現行のshadow record schemaへ変換する。
-2. session / turn / correlation / cwdはSHA-256、manifest本文は保存しない。Hook recordの`trigger` / `source` / `selectedSkill`はwrite時にrawで記録され、correlate/load時は`trigger` / `source`など一部だけを`safe_identifier`で形式検証する。`selectedSkill`はこの検証対象外であり、trust boundary済みmetadataや値を保証しない。
+1. Hook JSONを検証し、既存の安全なshadow record形式へ変換する。
+2. session / turn / correlation / cwdはSHA-256、イベント識別子は安全なラベルだけ保存する。Hook recordの`trigger` / `source`はtrim後にASCII許可文字と最大長を検証し、`selectedSkill`も同じ境界（namespaceの`:`を含む）で検証する。新規write/appendでは空値・空白・制御文字・長さ超過を拒否し、既存schema v1のloadでは該当する任意metadataだけを正規化または欠損化して分析互換性を保つ。
 3. `.jevx/compact-context.md`があればredact後に最大4,000文字まで利用する。
 4. checkpointへmanifest本文や秘密値を保存しない。
 5. `SessionStart(source=compact)`では、最新checkpoint metadataとredacted manifestだけを`additionalContext`へ返す。
@@ -108,16 +108,16 @@ Jevへの送信境界は次のとおり。
 
 | データ | Gatewayへ送るか | 実装上の扱い |
 | --- | --- | --- |
-| 現在のprompt | 送る（redact後） | 認識済みのsecret assignment、Bearer、`sk-` / `tsk-`をredact |
+| 現在のprompt | 送る（redact後） | 認識済みのsecret assignment、Bearer / Basic、`sk-` / `tsk-`をredact |
 | `cwd` | 送る（raw） | 依頼の作業ディレクトリをそのまま含む |
 | Skill ID / name | 送る（raw） | 候補識別子として含む |
 | Skill description | 送る（redact後） | Skill本文は送らない |
 | APIキー | 送らない | Bearer認証ヘッダーにのみ使用 |
 | Skill本文、過去会話、Tool結果 | 送らない | v1の対象外 |
 
-Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` のようにキーとBasicの間に空白がない認識済み形式に限定される。`Authorization: Basic <value>`（コロンの後に空白あり）は現行redaction.rsでは値が保護されないため、送信前に手動で匿名化すること。完全なDLPではない。Telemetryには生の依頼文を保存せず、SHA-256、文字数、候補数、判定、選択時の`selectedSkill`（raw ID）、遅延、usageを保存し、Jevのprobabilityは保存しない。Skill ID自体を秘密値として扱う設計ではない。`--no-telemetry` はローカル記録を止めるだけで、Gatewayへの外部送信停止ではない。Hook recordとCompaction checkpointには生のsession ID、turn ID、model、manifest本文を保存しない。
+Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` / `Authorization: Basic <value>` の認識済み形式で値を保存・送信しない。通常文中の単独`Basic`は意味を保つためredactしない。完全なDLPではない。Telemetryには生の依頼文を保存せず、SHA-256、文字数、候補数、判定、選択時の`selectedSkill`（raw ID）、遅延、usageを保存し、Jevのprobabilityは保存しない。Skill ID自体を秘密値として扱う設計ではない。`--no-telemetry` はローカル記録を止めるだけで、Gatewayへの外部送信停止ではない。Hook recordとCompaction checkpointには生のsession ID、turn ID、model、manifest本文を保存しない。
 
-Hook metadataのwrite前hash/allowlist、raw `trigger` / `source` / `selectedSkill`の入力境界、信頼済みfixture metadataとの分離は未実装のhardeningであり、別フォローアップで扱う。
+Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否し、既存schema v1のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。
 
 ## 成功条件
 
