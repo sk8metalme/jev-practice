@@ -3,11 +3,11 @@
 > 対象読者: 調査・導入判断・評価担当
 > 文書の状態: 歴史的な評価スナップショット
 > 再現方法: コマンドは記録時点の履歴。現行導入はユーザー向けガイドを参照。
-> 注意: 数値と条件は記録時点の観測値であり、現行環境の保証ではない。
+> 注意: 数値と条件は記録時点の観測値であり、現行環境の保証ではない。本稿はHistorical snapshotで、未実装候補や現行ロードマップではない。現行Hook導入は[canonical runbook](../../operators/jevx-compaction-operations.md)を参照する。
 
 2026-09-21時点のCodex CLI 0.155.1を使い、使い捨て`CODEX_HOME`でHook発火を直接確認した記録だよ。あわせて、認証付きApp Serverで2モデル×3ケースのcompaction評価を実施し、ツール履歴・失敗復旧・interrupt復旧・compact後のcache/token usageまで測定方法・品質結果・限界を整理する。
 
-この文書の実測では、認証情報・生の会話本文・prompt本文・デコイ本文をリポジトリへ保存していない。Hook記録のセッション・ターン・モデル識別子はSHA-256相関値だけを保存する。
+この文書の実測では、認証情報・生の会話本文・prompt本文・デコイ本文をリポジトリへ保存していない。Hook記録のセッション・ターン・モデル識別子はSHA-256相関値だけを保存するが、`trigger` / `source` / `selectedSkill`はwrite時にrawで記録され、correlate/load時は`trigger` / `source`など一部だけを`safe_identifier`で形式検証し、`selectedSkill`は対象外である。
 
 ## 結論
 
@@ -55,7 +55,7 @@ CODEX_HOME=/private/tmp/<disposable-codex-home> \
   --cd "$PWD"
 ```
 
-起動後に短い入力を送り、`/compact`を実行してから後続入力を送った。画面には`Context compacted · 2s`と表示され、compact後の会話継続まで完了した。Hook recordは次のように安全なフィールドだけを集計できる。
+起動後に短い入力を送り、`/compact`を実行してから後続入力を送った。画面には`Context compacted · 2s`と表示され、compact後の会話継続まで完了した。Hook recordはhashed ID、イベント、文字数、metricsなど現行schemaのbounded fieldsを集計できる。ただし`trigger` / `source` / `selectedSkill`のraw入力を安全・信頼済みmetadataとは扱わない。
 
 ```bash
 jevx/target/debug/jevx hooks correlate \
@@ -223,7 +223,7 @@ jevx/target/debug/jevx hooks conversation-eval \
 - 必須事実保持率をモデル別に算出できる。
 - デコイ漏えい件数をモデル別に算出できる。
 - compact時間のp50/p95をモデル別に算出できる。
-- 失敗ツール・interrupt・復旧turnを安全な件数で集計できる。
+- 失敗ツール・interrupt・復旧turnを件数で集計できる。
 - post-compaction usageが取得できるケースではcache hit率、uncached input、billable proxyのp50/p95を算出できる。
 - 失敗ケースは成功扱いへ補正せず、エラーコードと未到達イベントを記録する。
 
@@ -238,7 +238,7 @@ jevx/target/debug/jevx hooks conversation-eval \
 - 会話には秘密情報ではなく、検証専用のデコイマーカーだけを使う。
 - sandboxはread-only、approvalはneverにする。
 - 生の会話、Hook record、rollout、認証ファイルは測定後に一時領域から削除する。
-- リポジトリへ保存するのは安全な集計値だけにする。
+- リポジトリへ保存するのはhashed IDs、prompt非保存、controlled fixture metadata、metricsなど現行schemaの集計値に限る。Hook recordのrawな`trigger` / `source` / `selectedSkill`は保護済みの値とはみなさない。
 
 追加で、App Serverへ送った会話は秘密情報を含まない合成fixtureに限定し、後続回答の生テキストは集計後に保存していない。
 
@@ -249,6 +249,10 @@ jevx/target/debug/jevx hooks conversation-eval \
 - 実ツールを実行して得た長い出力ではなく、`turn/start.toolOutput`へ注入した合成ツール出力を評価した。shell・MCP・ファイル編集などの実ツール履歴品質は未評価である。
 - 各ケースは8ターンだが、`contextChars`は約2,011〜2,030文字だった。10,000文字級の長文コンテキストで同じcache・復旧特性になるかは未評価である。
 - ChatGPT認証のApp Server実測のため、公開APIのモデル単価を掛けたUSD請求額は算出していない。
+
+### 未実装のhardening
+
+Hook recordの`trigger` / `source` / `selectedSkill`をwrite前にハッシュ化・allowlist化する処理、`selectedSkill`を含む全rawフィールドへcorrelate/load時の形式検証を拡張する処理、controlled fixture metadataと外部入力を分離する処理は未実装であり、別フォローアップとする。
 
 ## 参考
 

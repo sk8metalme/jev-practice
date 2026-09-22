@@ -3,13 +3,13 @@
 > 対象読者: 調査・導入判断・評価担当
 > 文書の状態: 歴史的な評価スナップショット
 > 再現方法: コマンドは記録時点の履歴。現行導入はユーザー向けガイドを参照。
-> 注意: 数値と条件は記録時点の観測値であり、現行環境の保証ではない。
+> 注意: 数値と条件は記録時点の観測値であり、現行環境の保証ではない。現行値は[Latest評価baseline](../../developers/jevx-evaluation.md)から取得し、Hookの現行導入は[canonical runbook](../../operators/jevx-compaction-operations.md)に従う。
 
 ## 結論
 
 同梱の固定40ケースを、`AI_GATEWAY_API_KEY` が設定された環境からJevへ送信して実測したよ。今回の1回のスナップショットでは、jevxは40/40件を成功処理し、正解率100%、エラー率0%、Jev応答 p95 673ms、全体 p95 675msだった。
 
-Jevxの候補ミス率も0%だったため、このケースセットでは期待Skillがローカル候補に入らない問題は発生していない。local_keywordとの比較では、正解率が90%から100%へ、`none`精度が75%から100%へ改善した。
+jevxの候補ミス率も0%だったため、このケースセットでは期待Skillがローカル候補に入らない問題は発生していない。local_keywordとの比較では、正解率が90%から100%へ、`none` recall（互換JSONキー `nonePrecision`、`noneCorrect / expectedNone`）が75%から100%へ改善した。
 
 > このレポートは40ケース・1回の実測結果だよ。統計的な性能保証や、すべての利用者入力への精度保証を意味しない。再現性とレイテンシの分散は、複数回実測で別途確認する。
 
@@ -35,9 +35,9 @@ Jevxの候補ミス率も0%だったため、このケースセットでは期�
 
 ## 全体結果
 
-`none precision` は、既存Runnerの定義に合わせて「期待ラベルが `none` のケースを `none` と判定できた割合」としているよ。Jevxのレイテンシとusageは成功した40件の実測値から算出した。
+旧レポートでprecisionと表示していた値の実体は、既存Runnerの互換JSONキー `nonePrecision` に対応する none recall（`noneCorrect / expectedNone`）、つまり「期待ラベルが `none` のケースを `none` と判定できた割合」だよ。通常の「none予測全体を分母にするprecision」ではない。jevxのレイテンシとusageは成功した40件の実測値から算出した。
 
-| モード | 件数 | 正解率 | none precision | candidate miss rate | エラー率 | Jev p50 / p95 | total p50 / p95 | 平均 input / output |
+| モード | 件数 | 正解率 | none recall（`nonePrecision`、expectedNone分母） | candidate miss rate | エラー率 | Jev p50 / p95 | total p50 / p95 | 平均 input / output |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | none | 40 | 10.00% | 100.00% | — | 0.00% | — | — | — |
 | local_keyword | 40 | 90.00% | 75.00% | — | 0.00% | — | — | — |
@@ -45,7 +45,7 @@ Jevxの候補ミス率も0%だったため、このケースセットでは期�
 
 ### ケース種別ごとの結果
 
-| ケース種別 | 件数 | 期待none | noneモード正解率 | local_keyword正解率 | jevx正解率 | jevx none precision | エラー率 | Jev p50 / p95 | total p50 / p95 | 平均 input / output |
+| ケース種別 | 件数 | 期待none | noneモード正解率 | local_keyword正解率 | jevx正解率 | jevx none recall（`nonePrecision`） | エラー率 | Jev p50 / p95 | total p50 / p95 | 平均 input / output |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | synthetic | 30 | 3 | 10.00% | 86.67% | **100.00%** | **100.00%** | 0.00% | 405 / 673ms | 407 / 675ms | 2400.967 / 127.7 |
 | anonymized-template | 10 | 1 | 10.00% | 70.00% | **100.00%** | **100.00%** | 0.00% | 508 / 712ms | 510 / 714ms | 2401.8 / 127.6 |
@@ -56,9 +56,9 @@ Jevxの候補ミス率も0%だったため、このケースセットでは期�
 | --- | --- | --- |
 | ローカル探索 p95 <= 100ms | 未計測 | 現行の評価Runnerはローカル探索だけのp95を集計しない。今回の `total` はJev呼び出しを含む全体値。 |
 | Jevを含む全体 p95 <= 2,000ms | **PASS** | `totalMsP95 = 675ms`。 |
-| 低確信度の誤推薦を増やさない | **PASS（今回のケースセット）** | jevxの `none precision = 100%`。local_keywordの75%から改善。 |
+| 低確信度の誤推薦を増やさない | **PASS（今回のケースセット）** | jevxの `none recall（nonePrecision） = 100%`。local_keywordの75%から改善。 |
 | 成功結果に `jevResponseMs` が存在する | **PASS** | 成功40/40件で計測値あり。 |
-| APIキー・Skill本文・生プロンプトをTelemetryへ出さない | **PASS** | `eval` 実行時にTelemetryを無効化し、出力にもprompt/keywords/レスポンス本文を保存していない。 |
+| eval runnerのcase outputにprompt・keywords・レスポンス本文・probabilityを保存しない | **PASS（eval runner出力のみ）** | `eval` 実行時にTelemetryを無効化し、保存レポートにはcaseの識別・判定・metricsだけを残している。通常の`skills suggest`や`UserPromptSubmit` Telemetryを実測した判定ではない。 |
 | 新規Rust実行コードのラインカバレッジ >= 98% | **PASS** | 対象実行コードは前コミットの検証で99%以上。今回の変更はdocsのみ。 |
 
 ## 観測結果と解釈
@@ -84,7 +84,9 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
   > /tmp/jevx-live-eval-summary.json
 ```
 
-集計結果の最低限の確認は次のとおり。`--output` のJSONLはケースID・種別・判定・遅延・usageなどの安全なフィールドだけで、prompt・keywords・レスポンス本文を含まない。
+`--skill-dir`は既定のSkill rootを置き換えず、追加のrootとして扱われる。カタログを隔離して再現する場合は、[評価Runnerの隔離root手順](../../developers/jevx-evaluation.md#隔離したskill-rootでの実行)に従って一時`HOME`・`CODEX_HOME`・空のプロジェクトを用意すること。
+
+集計結果の最低限の確認は次のとおり。単回`eval --output`のJSONLはケースID・種別・expected・判定・metrics/errorなど現行case schemaのフィールドだけで、prompt・keywords・レスポンス本文を含まない。これは保存レポートの境界であり、Jevへ送るrequestの入力項目とは別に管理する。
 
 ```bash
 jq -e \
@@ -95,6 +97,8 @@ jq -s -e \
   '([.[] | select(has("prompt") or has("keywords"))] | length) == 0' \
   /tmp/jevx-live-eval-cases.jsonl
 ```
+
+このHistorical評価のPASSは、上記のeval runner出力範囲に限った結果だよ。通常の`skills suggest`実行や`UserPromptSubmit` HookのTelemetryが同じ安全性を持つことを実測した保証ではない。
 
 ## 制約と次の測定
 

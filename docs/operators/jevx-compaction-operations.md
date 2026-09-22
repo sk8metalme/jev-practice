@@ -1,7 +1,7 @@
 # jevx Codex CLI compaction実運用runbook
 
 > 対象読者: Codex CLIを導入・運用する担当者
-> 文書の状態: 現行運用
+> 文書の状態: 現行運用・canonical runbook（2026-09-22）
 
 ## 目的と境界
 
@@ -11,14 +11,16 @@ compact-assistが返すのは、checkpoint metadataと任意のredacted manifest
 
 ## Hook契約
 
+`hooks shadow` が受理するknown eventは `SessionStart`、`PreCompact`、`PostCompact`、`UserPromptSubmit` だけです。known eventの受理時だけ `{"continue":true,"suppressOutput":true}` の固定応答を返します。未知event、event不一致、壊れたJSONは固定応答を返さずエラーにするため、「すべての入力に継続応答する」とは解釈しないでください。
+
 | イベント | 役割 | jevxの動作 | Codexへ返すもの |
 | --- | --- | --- | --- |
 | `PreCompact` | compact前。`trigger` は `manual` / `auto` | session・turn・cwdのhashとredacted contextのmetadataをcheckpointへ追記 | `continue: true` |
 | `PostCompact` | compact後。`trigger` は `manual` / `auto` | compact完了のcheckpointを追記 | `continue: true` |
 | `SessionStart(source=compact)` | compact後、次のmodel request前 | 最新checkpointとredacted manifestを追加contextへ組み立てる | `hookSpecificOutput.additionalContext` |
-| `UserPromptSubmit` | ユーザー入力の送信前 | Shadow Modeで候補探索・Jev判定・安全なmetricsを記録 | `continue: true`。会話本文は追加しない |
+| `UserPromptSubmit` | ユーザー入力の送信前 | Shadow Modeで候補探索・Jev判定・metricsを記録 | `continue: true`。会話本文は追加しない |
 
-`PreCompact` / `PostCompact` は追加contextを返す場所ではなく、compact後の補助contextは `SessionStart(source=compact)` へ限定する。`suppressOutput` は現行Codexではparseされるだけなので、表示抑制の保証に使わない。
+`PreCompact` / `PostCompact` は追加contextを返す場所ではなく、compact後の補助contextは `SessionStart(source=compact)` へ限定する。`suppressOutput` は現行Codexではparseされるだけなので、表示抑制の保証に使わない。Jev/Gatewayエラー時もknown eventなら `continue: true` を優先するが、unknown/mismatch eventには固定応答を返さない。
 
 公式仕様では、hookのmatcherはイベントごとの `source` / `trigger` に適用される。通常のcommand hookのtimeoutと、`SessionEnd` / `Interrupt` の1〜3秒制限は分けて扱う。現在のinstallerが生成するtimeout値を変更するときは、対象イベントの公式仕様を再確認すること。
 
@@ -34,6 +36,8 @@ compact-assistが返すのは、checkpoint metadataと任意のredacted manifest
 ## 1. まずローカルfixtureだけで確認する
 
 Rustのテストとfixture評価は外部サービスを使わずに実行できる。
+
+品質検証まで行う場合、JSON確認に `jq`（macOSなら`brew install jq`）、カバレッジ確認に任意の `cargo-llvm-cov`（`cargo install cargo-llvm-cov`）が必要です。
 
 ~~~bash
 cargo test --locked --manifest-path jevx/Cargo.toml --all-targets
@@ -51,15 +55,15 @@ Hookのstdout契約を確認する。
   trap 'rm -rf "$fixture_dir"' EXIT
   export JEVX_HOME="$fixture_dir/data"
 
-  printf '%s\n' '{"hook_event_name":"PreCompact","trigger":"manual","session_id":"fixture-session","turn_id":"fixture-turn","cwd":"/tmp/safe-fixture"}' \
+  printf '%s\n' '{"hook_event_name":"PreCompact","trigger":"manual","session_id":"fixture-session","turn_id":"fixture-turn","cwd":"/tmp/controlled-fixture"}' \
     | cargo run --locked --manifest-path jevx/Cargo.toml -- \
         hooks compact-assist --state-dir "$fixture_dir/compaction"
 
-  printf '%s\n' '{"hook_event_name":"PostCompact","trigger":"manual","session_id":"fixture-session","turn_id":"fixture-after","cwd":"/tmp/safe-fixture"}' \
+  printf '%s\n' '{"hook_event_name":"PostCompact","trigger":"manual","session_id":"fixture-session","turn_id":"fixture-after","cwd":"/tmp/controlled-fixture"}' \
     | cargo run --locked --manifest-path jevx/Cargo.toml -- \
         hooks compact-assist --state-dir "$fixture_dir/compaction"
 
-  printf '%s\n' '{"hook_event_name":"SessionStart","source":"compact","session_id":"fixture-session","cwd":"/tmp/safe-fixture"}' \
+  printf '%s\n' '{"hook_event_name":"SessionStart","source":"compact","session_id":"fixture-session","cwd":"/tmp/controlled-fixture"}' \
     | cargo run --locked --manifest-path jevx/Cargo.toml -- \
         hooks compact-assist --state-dir "$fixture_dir/compaction"
 )
@@ -75,7 +79,7 @@ Hookのstdout契約を確認する。
   evaluation_dir=$(mktemp -d -t jevx-conversation-eval.XXXXXX)
   trap 'rm -rf "$evaluation_dir"' EXIT
   case_file="$evaluation_dir/conversation.jsonl"
-  printf '%s\n' '{"caseId":"safe-case","model":"fixture-model","requiredFacts":["goal=keep-context","next=verify"],"followUpText":"goal=keep-context\nnext=verify\ndecoy=redacted","secretMarkers":["LOCAL_FIXTURE_SECRET"],"compactionCompleted":true,"compactionDurationMs":120,"inputChars":300,"conversationTurns":8,"contextChars":1200,"observedEvents":["contextCompaction","turn/completed"]}' > "$case_file"
+  printf '%s\n' '{"caseId":"controlled-case","model":"fixture-model","requiredFacts":["goal=keep-context","next=verify"],"followUpText":"goal=keep-context\nnext=verify\ndecoy=redacted","secretMarkers":["LOCAL_FIXTURE_SECRET"],"compactionCompleted":true,"compactionDurationMs":120,"inputChars":300,"conversationTurns":8,"contextChars":1200,"observedEvents":["contextCompaction","turn/completed"]}' > "$case_file"
   cargo run --locked --manifest-path jevx/Cargo.toml -- \
     hooks conversation-eval --input "$case_file" --json
 )
@@ -125,11 +129,13 @@ dry-runでは `CODEX_HOME/hooks.json`、backup、Hook stateを作らない。JSO
 - `UserPromptSubmit` は候補提案のshadow用途で、Skill本文をロード・実行しない
 - `compact-assist` は `SessionStart(source=compact)` へ追加contextを返すだけで、会話を停止しない
 
-dry-runのJSONに秘密値や生の入力が含まれていないことも確認する。空のprofileでは既存の`hooks.json`がないため、実installを初めて実行してもbackupが作られない。backupを確認する場合は、上のように安全な既存設定を先に用意し、既存設定がある場合だけ初回installで`hooks.json.jevx.bak`が作られることを確認する。
+dry-runのJSONに秘密値や生の入力が含まれていないことも確認する。空のprofileでは既存の`hooks.json`がないため、実installを初めて実行してもbackupが作られない。backupを確認する場合は、上のようにfixture用の既存設定を先に用意し、既存設定がある場合だけ初回installで`hooks.json.jevx.bak`が作られることを確認する。
 
 ### 常用user hooksはrelease配置から登録する
 
 `cargo run`や`target/debug/jevx`から常用の`hooks.json`を登録すると、Hook commandがworktreeの絶対パスに固定される。fixtureとdry-run以外では、`cargo install --root`を使う`setup.sh`でreleaseバイナリを配置し、その絶対パスから登録する。
+
+setup scriptの主な引数は `setup.sh --scope user|project [--repo PATH] [--hooks]` で、ヘルプは `--help` / `-h` で表示できる。install rootは `jevx_install_root="${JEVX_INSTALL_ROOT:-$HOME/.local}"` で決めて `JEVX_INSTALL_ROOT="$jevx_install_root" sh jevx/scripts/setup.sh --scope user` のように実行し、単体 `jevx` もPATHから呼ぶ場合は同rootの `bin` を `PATH`へ追加する。
 
 ~~~bash
 (
@@ -140,7 +146,10 @@ dry-runのJSONに秘密値や生の入力が含まれていないことも確認
   test -x "$jevx_bin"
   "$jevx_bin" --version
 
-  jevx_commands=$(jq -r '.hooks | to_entries[] | .value[]? | .hooks[]? | select(.command? | contains("jevx")) | .command' "$HOME/.codex/hooks.json")
+  hooks_home="${CODEX_HOME:-$HOME/.codex}"
+  hooks_file="$hooks_home/hooks.json"
+  test -f "$hooks_file"
+  jevx_commands=$(jq -r '.hooks | to_entries[] | .value[]? | .hooks[]? | select((.command? // "") | tostring | contains("jevx")) | .command // empty' "$hooks_file")
   printf '%s\n' "$jevx_commands"
   ! printf '%s\n' "$jevx_commands" | grep -q '/target/'
   printf '%s\n' "$jevx_commands" | grep -F "$jevx_bin" >/dev/null
@@ -158,7 +167,7 @@ Hook commandは絶対パスなので、`$HOME/.local/bin`を`PATH`へ追加し�
 1. `/hooks` を開き、生成されたHookのcommand・matcher・保存先をreviewしてtrustする。
 2. 秘密値を含まない短い依頼を送り、Hookが処理を継続することを確認する。
 3. `/compact` を実行し、compact完了表示を確認する。
-4. compact後に、最初の依頼で指定した安全なgoal・制約・next actionを再確認する。
+4. compact後に、最初の依頼で指定したcontrolled fixtureのgoal・制約・next actionを再確認する。
 5. Codexを終了し、Hook recordを相関分析する。
 
 ~~~bash

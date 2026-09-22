@@ -3,11 +3,11 @@
 > 対象読者: 調査・導入判断・評価担当
 > 文書の状態: 歴史的な評価スナップショット
 > 再現方法: コマンドは記録時点の履歴。現行導入はユーザー向けガイドを参照。
-> 注意: 数値と条件は記録時点の観測値であり、現行環境の保証ではない。
+> 注意: 数値と条件は記録時点の観測値であり、現行環境の保証ではない。本稿はHistorical snapshot・評価記録で、未実装候補や現行ロードマップを示さない。現行Hook導入は[canonical runbook](../../operators/jevx-compaction-operations.md)に従う。
 
 ## 目的と範囲
 
-Codex CLIの日常利用へjevxを接続する前に、Hookへ入れても会話の進行を止めず、安全な観測だけを残せるかを確認する。対象はCodex公式Hook仕様に登場する次のイベントだよ。
+Codex CLIの日常利用へjevxを接続する前に、Hookへ入れたときの記録内容と会話継続の挙動を確認する。対象はCodex公式Hook仕様に登場する次のイベントだよ。
 
 - `PreCompact`: compaction前。`trigger` は `auto` または `manual`。
 - `PostCompact`: compaction後。`trigger` は `auto` または `manual`。
@@ -36,17 +36,17 @@ jevx hooks shadow
         └─ UserPromptSubmit
              └─ 候補探索 + Jev判定を実行（shadow）
 
-stdout: {"continue":true,"suppressOutput":true}
-記録: promptのSHA-256・文字数・判定・Skill ID・遅延・usage・errorCodeのみ
+stdout（known event受理時のみ）: {"continue":true,"suppressOutput":true}
+記録: promptのSHA-256・文字数・判定・Skill ID・遅延・usage・errorCodeに加え、trigger/source/selectedSkillは入力文字列をrawで保持
 ```
 
-成功・失敗に関係なく、shadowのstdoutは次の固定契約を返す。`additionalContext`を返さず、会話本文を書き換えず、HookからCodexの処理を停止しない。`suppressOutput`は互換性のため出力しているが、Codex公式ドキュメントでは現在パースされるだけで未実装と説明されているため、出力抑制の保証として扱わない。
+known event（`SessionStart`、`PreCompact`、`PostCompact`、`UserPromptSubmit`）を受理した場合だけ、shadowのstdoutは次の固定契約を返す。未知event、event不一致、JSON不正は固定応答を返さずエラーにする。known eventでは `additionalContext`を返さず、会話本文を書き換えず、HookからCodexの処理を停止しない。`suppressOutput`は互換性のため出力しているが、Codex公式ドキュメントでは現在パースされるだけで未実装と説明されているため、出力抑制の保証として扱わない。
 
 ```json
 {"continue":true,"suppressOutput":true}
 ```
 
-`UserPromptSubmit`でAPIキーが未設定、promptが空、Providerがエラーになった場合も、失敗理由を安全な`errorCode`へ変換して記録し、stdoutの`continue`は維持する。生prompt、APIキー、Skill本文は記録しない。
+`UserPromptSubmit`でAPIキーが未設定、promptが空、Providerがエラーになった場合も、失敗理由を限定された`errorCode`へ変換して記録し、stdoutの`continue`は維持する。生prompt、APIキー、Skill本文は記録しない。
 
 ## ローカル実行例
 
@@ -80,7 +80,7 @@ printf '%s\n' '{"hook_event_name":"SessionStart","source":"compact"}' \
       hooks shadow --event SessionStart --output /tmp/jevx-hooks.jsonl
 ```
 
-Codexの`hooks.json`へ手で接続する場合のshadow-only最小例は次のようになる。実際には`jevx`の絶対パス、書き込み先、プロジェクトのTrust設定を環境に合わせて決める。Compaction補助を含む安全なmergeは、下記の`hooks install`を明示的に実行する方法が使える。
+Codexの`hooks.json`へ手で接続する場合のshadow-only最小例は次のようになる。実際には`jevx`の絶対パス、書き込み先、プロジェクトのTrust設定を環境に合わせて決める。Compaction補助を含む既存設定を保持したmergeは、下記の`hooks install`を明示的に実行する方法が使える。
 
 ```json
 {
@@ -151,7 +151,14 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 user scopeの保存先は`$CODEX_HOME/hooks.json`（未設定時`~/.codex/hooks.json`）、project scopeは`<repo>/.codex/hooks.json`。既存root・未知イベント・カスタムhandlerを保持し、jevxのmarkerを含む古いcommandだけ置換する。変更前のファイルは初回だけ`hooks.json.jevx.bak`へ退避し、再実行は冪等だよ。
 
-`jevx/scripts/setup.sh --scope user --hooks` はadvisory Skillの導入後に同じ登録を行う。設定を書けてもCodexが信頼したとは限らないので、`/hooks`でreview/trustし、使い捨て`CODEX_HOME`でstartup→prompt→`/compact`→後続入力の順に発火を確認する。
+`setup.sh`の主な引数は`--scope user|project [--repo PATH] [--hooks]`で、ヘルプは`--help` / `-h`で表示できる。advisory Skillの導入後に同じ登録を行う場合も、install rootは他の導入例と同じく`JEVX_INSTALL_ROOT`を優先して`$HOME/.local`へフォールバックする。
+
+```bash
+jevx_install_root="${JEVX_INSTALL_ROOT:-$HOME/.local}"
+JEVX_INSTALL_ROOT="$jevx_install_root" sh jevx/scripts/setup.sh --scope user --hooks
+```
+
+設定を書けてもCodexが信頼したとは限らないので、`/hooks`でreview/trustし、使い捨て`CODEX_HOME`でstartup→prompt→`/compact`→後続入力の順に発火を確認する。
 
 ## `compact-assist` の動作と限界
 
@@ -181,7 +188,7 @@ printf '%s\n' \
 
 ### イベント結果
 
-| イベント | 件数 | Jev呼び出し | 安全なstdout | 結果 |
+| イベント | 件数 | Jev呼び出し | known event固定stdout | 結果 |
 | --- | ---: | ---: | ---: | --- |
 | `PreCompact` | 1 | 0 | 1/1 | `trigger=auto`を記録、continue |
 | `PostCompact` | 1 | 0 | 1/1 | `trigger=manual`を記録、continue |
@@ -202,7 +209,7 @@ printf '%s\n' \
 
 5件すべてが`decision=selected`、`selectedSkill=pdf`、`errorCode`なしだった。lifecycle 3件はJevを呼ばず、metadataとcontinue応答だけを確認した。
 
-実際の記録には次のような安全フィールドだけが入る。
+実際の記録例は次のとおり。これはprompt本文を保存しないことと、現行schemaのmetrics項目を示す観測例であり、すべての入力フィールドを安全・信頼済みと保証するものではない。
 
 ```json
 {
@@ -223,6 +230,8 @@ printf '%s\n' \
 ```
 
 `promptSha256`は再現性の補助に使える一方向ハッシュであり、照合用の生promptは保存しない。`cwd`、会話本文、Skill本文、APIキーもrecordへコピーしない。
+
+一方、Hook recordの`trigger` / `source` / `selectedSkill`はwrite時に入力文字列をrawで記録する。correlate/load時は`trigger` / `source`など一部だけを`safe_identifier`で形式検証し、`selectedSkill`は対象外である。いずれもtrust boundary済みのmetadataや値へ変換する処理ではない。
 
 ## Compaction相当のshadow評価
 
@@ -266,21 +275,25 @@ durationが0msなのは、固定文字列のredactionがmacOSのミリ秒時計�
 
 ### 確認できたこと
 
-- Pre/Post compactとSessionStartを、Jevを呼ばずに安全に観測できる。
+- Pre/Post compactとSessionStartを、Jevを呼ばずにknown eventとして観測できる。
 - UserPromptSubmitのJev判定をshadow実行しても、stdoutは固定のcontinue応答にできる。
 - `hooks install`が既存設定を保持し、jevx handlerだけを置換しながら冪等にmergeできる。
-- `compact-assist`がcheckpointへ生のmanifestや秘密値を保存せず、compact後だけredacted contextを返せる。
+- `compact-assist`がcheckpointへ生のmanifestや秘密値を保存せず、compact後だけredacted contextを返せる。ただしHook recordのraw metadataは別の現行制約として残る。
 - APIキーありの5回実測で、Hook処理全体p95は578msだった。
-- prompt本文を保存せず、選択結果・遅延・usage・ハッシュだけを保存できる。
+- prompt本文とJev probabilityを保存せず、選択結果・遅延・usage・ハッシュを保存できる。`trigger` / `source` / `selectedSkill`はrawであり、safe metadataではない。
 - compaction相当fixtureで、必須事実保持とfixture秘密マーカー除去を5/5で確認した。
 - 実Codex CLIでもstartup/prompt Hookと、成功compact経路の`PreCompact` / `PostCompact` / `SessionStart(source=compact)`を確認した。詳細は[実Codex Hook / 実会話型compaction評価](jevx-real-codex-compaction-evaluation-2026-09-21.md)を参照する。
 
 ### まだ証明していないこと
 
-- `hooks install`を実行した使い捨てCodex profileで、trust後の発火順・終了コード・複数回の冪等性をまとめて採取すること。手動設定による実Codex発火は確認済みだが、installer経路は別の導入確認として扱う。
+- 本Historical snapshotのinstaller観測と、現行release配置・trust後の発火順・終了コード・複数回の冪等性を混同しないこと。installer経路の最新確認は[canonical runbook](../../operators/jevx-compaction-operations.md)の手順と実行日時を正本にする。
 - Codex内部の要約結果が、長い会話の目的・制約・次アクションを保持すること。
 - 連続利用時のHook累積遅延、Gateway rate limit、API費用、失敗時の再試行戦略。
 - 実ユーザー入力の匿名化fixtureで同じ精度・レイテンシーになること。
+
+### 未実装のhardening
+
+現行実装はHook recordの`trigger` / `source` / `selectedSkill`をwrite前にハッシュ化・allowlist化せず、rawで保存する。correlate/load時は`trigger` / `source`など一部を`safe_identifier`で形式確認するが、`selectedSkill`はそのvalidatorの対象外であるため、信頼境界を強化するwrite前の正規化・許可リスト・controlled fixture metadata分離は、別のフォローアップとして扱う。
 
 次は、使い捨てCodex profileで`hooks install`後のtrust・発火順・終了コードを複数回採取し、長文・実利用に近い匿名化fixtureでcompact後の保持判定を増やす。
 

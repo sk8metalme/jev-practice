@@ -3,11 +3,11 @@
 > 対象読者: 調査・導入判断・評価担当
 > 文書の状態: 歴史的な評価スナップショット
 > 再現方法: コマンドは記録時点の履歴。現行導入はユーザー向けガイドを参照。
-> 注意: 数値と条件は記録時点の観測値であり、現行環境の保証ではない。
+> 注意: 数値と条件は記録時点の観測値であり、現行環境の保証ではない。現行値は[Latest評価baseline](../../developers/jevx-evaluation.md)から取得し、現行Hook手順は[canonical runbook](../../operators/jevx-compaction-operations.md)を参照する。
 
 ## 結論
 
-同梱の40ケースを、同じSkillカタログと設定で5回繰り返し、合計200ケースをJevへ送信した。今回の環境では、Jevxは正解率平均98.0%、`none`精度100%、candidate miss rate 0%、エラー率2.0%だった。成功したケースのJev応答時間はp50 427ms / p95 610ms、Skill探索を含む全体時間はp50 429ms / p95 612msだった。
+同梱の40ケースを、同じSkillカタログと設定で5回繰り返し、合計200ケースをJevへ送信した。今回の環境では、jevxは正解率平均98.0%、`none` recall（互換JSONキー `nonePrecision`、`noneCorrect / expectedNone`）100%、candidate miss rate 0%、エラー率2.0%だった。成功したケースのJev応答時間はp50 427ms / p95 610ms、Skill探索を含む全体時間はp50 429ms / p95 612msだった。
 
 ローカル候補探索はp50 2ms / p95 2msで、既存の品質ゲート `p95 <= 100ms` を満たした。Jevを追加する主なコストはローカル探索ではなく、Gatewayを経由するJevの応答時間と、その分散だと確認できたよ。
 
@@ -54,13 +54,15 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
   > /tmp/jevx-repeat-live.stdout.json
 ```
 
-`eval-repeat`は、各runのモード別サマリーと、runをまたいだ分布（`mean` / `stddev` / `min` / `max` / `p50` / `p95`）を出力する。保存される集計レポートにはケースのprompt本文とfixtureの`keywords`を含めない。
+`--skill-dir`は既定のSkill rootを置き換えず、追加のrootとして扱われる。カタログを隔離して再現する場合は、[評価Runnerの隔離root手順](../../developers/jevx-evaluation.md#隔離したskill-rootでの実行)を使うこと。
+
+`eval-repeat`は、各runのモード別サマリーと、`local_rank` / `jevx` が計測するケースを対象にしたrun横断の分布（`mean` / `stddev` / `min` / `max` / `p50` / `p95`）を出力する。`--output`はcase JSONLではなくrun/mode集計JSONで、ケースのprompt本文・fixtureの`keywords`・Jevレスポンス本文を含めない。
 
 ## 全体結果
 
 割合の分布は5回分のrun-level値、時間とtokenの分布は各runの全ケースから収集した観測値を対象にする。Jevの時間とtokenはProviderエラーで値が得られなかった4件を除く196件で集計した。
 
-| モード | Accuracy（平均 / min–max） | `none`精度 | candidate miss | error rate | 探索 p50 / p95 | Jev p50 / p95 | total p50 / p95 |
+| モード | Accuracy（平均 / min–max） | `nonePrecision`（expectedNone分母のrecall） | candidate miss | error rate | 探索 p50 / p95 | Jev p50 / p95 | total p50 / p95 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `none` | 10.0% / 10.0–10.0% | 100.0% | — | 0.0% | — | — | — |
 | `local_keyword` | 90.0% / 90.0–90.0% | 75.0% | — | 0.0% | — | — | — |
@@ -69,12 +71,12 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 `local_rank`は本番の候補ランキングをTop-1へ切り出した測定で、fixture用の単純なキーワードベースライン（`local_keyword`）とは目的が異なる。`local_rank`のAccuracyが低くてもcandidate missは0%なので、今回の失敗は「期待Skillが候補32件へ入らない」問題ではなく、ランキングまたはJev判断の改善対象として切り分けられる。
 
-### Jevx分布の詳細
+### jevx分布の詳細
 
 | 指標 | 平均 | 標準偏差 | 最小 | 最大 | p50 | p95 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Accuracy（run単位） | 98.0% | 1.87pp | 95.0% | 100.0% | 97.5% | 100.0% |
-| `none` precision（run単位） | 100.0% | 0.00pp | 100.0% | 100.0% | 100.0% | 100.0% |
+| `none` recall（`nonePrecision`、run単位） | 100.0% | 0.00pp | 100.0% | 100.0% | 100.0% | 100.0% |
 | candidate miss rate（run単位） | 0.0% | 0.00pp | 0.0% | 0.0% | 0.0% | 0.0% |
 | error rate（run単位） | 2.0% | 1.87pp | 0.0% | 5.0% | 2.5% | 5.0% |
 | `discoveryMs` | 1.58ms | 0.49ms | 1ms | 2ms | 2ms | 2ms |
@@ -117,24 +119,26 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 | ローカル探索 | p95 <= 100ms | 2ms | **PASS** |
 | Jev込み全体 | p95 <= 2,000ms | 612ms | **PASS** |
 | candidate miss | 0%を目標 | 0% | **PASS** |
-| `none` precision | 誤推薦を増やさない | 100% | **PASS** |
+| `none` recall（`nonePrecision`） | 期待noneを取りこぼさない | 100% | **PASS** |
 | 新規Rust行カバレッジ | >= 98% | 全体99.29% | **PASS** |
-| APIキー・生prompt保存 | 保存しない | 集計値のみ | **PASS** |
+| eval-repeat出力にAPIキー・生prompt・Jevレスポンス本文を保存しない | 保存しない | run/mode集計値のみ | **PASS（eval runner出力のみ）** |
 
 ## 安全性の確認
 
 - APIキーは環境変数から読み、標準出力・レポート・Gitへ書き込んでいない。
-- 評価fixtureのpromptと`keywords`は、APIへ送るリクエスト以外の保存対象から除外している。
-- repeatレポートはケースID・ラベル・判定・遅延・usage・エラーコードだけを保存する。
+- 評価fixtureの`id` / `kind` / `expected` / `keywords`はrequest境界で扱いを分け、promptはredactしてJevへ送るが、保存レポートへ本文をコピーしない。
+- `eval-repeat`レポートはcase JSONLではなくrun/mode集計だけを保存する。単回`eval`のcase outputに保存するのはid / kind / expected / decision / metrics / errorなどで、prompt / keywords / response本文は保存しない。
 - 実測JSONは`/tmp`へ出力し、リポジトリへ追加していない。
-- Telemetryは評価Runner内で無効化した。
+- Telemetryは評価Runner内で無効化した。Telemetry schemaにはJevのprobabilityを保存しない。
+
+ここでのPASSはeval runnerが生成した保存レポートの範囲だけを指す。通常の`skills suggest`や`UserPromptSubmit` Telemetryの安全性を実測した保証、またはHook recordのraw metadataに対するhardening完了を意味しない。
 
 ## 解釈と次の測定
 
-今回の5回測定から、Jevx導入の実用性について次を確認できる。
+今回の5回測定から、jevx導入の実用性について次を確認できる。
 
-1. 同梱fixtureでは、Jevxはローカルキーワードベースラインの90.0%を上回り、98.0%まで改善した。
-2. `none` precision 100.0%とcandidate miss 0.0%を維持しており、低確信度の推薦を抑えながら候補の入口も失っていない。
+1. 同梱fixtureでは、jevxはローカルキーワードベースラインの90.0%を上回り、98.0%まで改善した。
+2. `none` recall（`nonePrecision`）100.0%とcandidate miss 0.0%を維持しており、低確信度の推薦を抑えながら候補の入口も失っていない。
 3. ただし、4件のProviderエラーと最大678msのJev応答があるため、Hookへ同期的に組み込む場合はタイムアウト時のshadow継続が必要。
 4. fixtureは実ユーザーログではないため、次は秘密情報を除去した実利用に近い匿名化ケースを追加し、同じ5回以上の測定を行う。
 5. CIでAPIキーあり測定を定期実行する場合は、シークレット管理・費用上限・レート制限・結果の匿名化を別途設計する。
