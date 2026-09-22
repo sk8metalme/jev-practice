@@ -3,7 +3,7 @@
 > 対象読者: 調査・導入判断・評価担当
 > 文書の状態: 歴史的な評価スナップショット
 > 再現方法: コマンドは記録時点の履歴。現行導入はユーザー向けガイドを参照。
-> 注意: 数値と条件は記録時点の観測値であり、現行環境の保証ではない。
+> 注意: 数値と条件は記録時点の観測値であり、現行環境の保証ではない。本稿はHistorical snapshotで、未実装候補や現行ロードマップではない。現行Hook導入は[canonical runbook](../../operators/jevx-compaction-operations.md)を参照する。
 
 実際のCodex CLIを使い捨てプロファイルで起動し、jevx Hookの発火と、Codex App Serverのcompact後に会話の要点が残るかを確認した記録だよ。再開後は、成功したCLI compactと、認証付き2モデル×3ケースの実会話型評価まで完了した。
 
@@ -94,7 +94,7 @@
 
 ### Hook記録
 
-成功したインタラクティブCLI実行1回分について、安全なフィールドだけを集計した。
+成功したインタラクティブCLI実行1回分について、hashed ID、イベント、decision、metricsなど現行schemaのbounded fieldsを集計した。
 
 | Hookイベント | 件数 | Jev呼び出し | decision | Jev応答p50 | Jev応答p95 | Hook全体p95 |
 | --- | ---: | ---: | --- | ---: | ---: | ---: |
@@ -120,7 +120,7 @@ Hook出力は次の契約を返した。
 - 使い捨てプロファイルに置いたHook設定が実Codex CLIから読まれた。
 - SessionStart、UserPromptSubmit、PreCompact、PostCompact、SessionStart(source=compact)が実際に発火した。
 - UserPromptSubmitでは候補探索とJev判定が実行され、Jev応答時間をJSONLへ保存できた。
-- Hook記録にはprompt本文ではなく、文字数・SHA-256・判定・Skill ID・遅延など安全なフィールドだけが残った。
+- Hook記録にはprompt本文ではなく、文字数・SHA-256・判定・Skill ID・遅延などのmetricsが残る。ただし`trigger` / `source` / `selectedSkill`はwrite時にrawで記録され、trust boundary済みmetadataや値ではない。
 
 ### この経路での限界
 
@@ -136,7 +136,7 @@ Hook出力は次の契約を返した。
 1. Codexへ目的・受け入れ条件・制約・次アクション・デコイを含む初回入力を送る。
 2. thread/compact/startで明示的にcompactする。
 3. 後続ターンで5項目を列挙させ、デコイは値を出さず redacted と返すよう依頼する。
-4. App Serverイベントのcompact完了、後続回答、処理時間を安全な評価JSONLへ転記する。
+4. App Serverイベントのcompact完了、後続回答、処理時間を現行評価schemaのJSONLへ転記する。
 
 評価器は入力の requiredFacts と後続回答を比較する。Codexが goal=value を goal: value に整形する自然な表記ゆれは同一事実として扱う。デコイは完全一致で検出し、評価レポートには文字列自体を保存しない。
 
@@ -241,7 +241,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 | compactionCompleted | App Serverのcompact完了イベントを観測できたか |
 | compactionDurationMs | contextCompaction開始から完了までの実測時間 |
 | inputChars | 初回入力の文字数。本文ではなく数値だけを保存 |
-| observedEvents | contextCompactionなど安全なイベント名 |
+| observedEvents | contextCompactionなど観測対象として許可したイベント名 |
 
 ## 4. App ServerとHookの差分
 
@@ -257,7 +257,7 @@ compact後の後続 turn/start は成功し、6ケースすべてで要点を回
 - PostCompact
 - SessionStart with source=compact
 
-このため、現時点の安全な結論は次のとおり。
+このため、現時点の結論は次のとおり。
 
 | 検証対象 | 判定 |
 | --- | --- |
@@ -273,7 +273,7 @@ App Serverを使った品質評価と、CLI Hookを使ったjev応答速度測�
 - 一時 CODEX_HOME は /tmp配下に作成した。
 - 実行時の認証ファイルは一時領域だけに置き、測定後に削除した。
 - リポジトリへ追加するレポートには認証情報、prompt本文、後続回答本文、Skill本文を含めない。
-- デコイは安全なfixture文字列であり、レポートには漏えい件数だけを残す。
+- デコイは秘密情報を含まないcontrolled fixture文字列であり、レポートには漏えい件数だけを残す。
 - Hookコマンドはread-only実行にし、評価会話でもファイル変更・コマンド実行を禁止した。
 - --dangerously-bypass-hook-trust は一時検証でのみ使用し、通常利用の推奨設定には含めない。
 
@@ -284,7 +284,7 @@ App Serverを使った品質評価と、CLI Hookを使ったjev応答速度測�
 3. 認証を一時プロファイルへ用意し、通常の ~/.codexを直接変更しない。
 4. hooks.jsonのHookコマンドを絶対パスで構成する。
 5. Hook trustを明示的に確認するか、一時検証だけbypassする。
-6. SessionStart / UserPromptSubmit / PreCompact / PostCompactの安全なrecordを確認する。
+6. SessionStart / UserPromptSubmit / PreCompact / PostCompactの現行schema recordを確認する。raw metadataを安全・信頼済みと解釈しない。
 7. App Serverで初回ターン→compact→後続ターンを複数モデル・3ケース以上実行する。
 8. 失敗ツール・interrupt・復旧を含む場合は、toolOutputを合成fixtureとして明記する。
 9. 生会話をGitへ追加せず、conversation-evalで集計する。
@@ -298,6 +298,7 @@ App Serverを使った品質評価と、CLI Hookを使ったjev応答速度測�
 - 10,000文字級の長文コンテキストで、今回のcache・復旧特性が再現するかを確認する。
 - App Server経路でJevをcompact前後へ接続する場合は、CLI Hookとは別の統合ポイントと追加遅延を設計・実測する。
 - Gateway rate limit、API費用、認証期限切れ、Jev失敗時に会話を止めない動作を長時間実行で確認する。
+- Hook recordの`trigger` / `source` / `selectedSkill`をwrite前にハッシュ化・allowlist化し、controlled fixture metadataと外部入力を分離するhardeningは未実装であり、別フォローアップとする。
 
 ## 参考
 

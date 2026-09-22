@@ -1,21 +1,21 @@
 # Jevを活用したアプリ候補案
 
 > 対象読者: 調査・導入判断・評価担当
-> 文書の状態: 歴史的な調査メモ
+> 文書の状態: 歴史的な調査メモ・未実装候補
 
 > 検討日: 2026-09-20
 
-この文書で扱う [`旧Jev Triage実装`](../../src/) は、問い合わせ文を `choice`・`score`・`boolean` の3問で評価し、カテゴリ・緊急度・返金要求をまとめて表示していたlegacy Webアプリだよ。現行のサポート対象は `jevx` Rust CLIであり、この文書では過去の実装を候補検討の参考として扱う。
+この文書で扱う [`旧Jev Triage実装`](../../src/) は、問い合わせ文を `choice`・`score`・`boolean` の3問で評価し、カテゴリ・緊急度・返金要求をまとめて表示していた旧Node.js Webアプリだよ。現行のサポート対象は `jevx` Rust CLIであり、この文書では過去の実装を候補検討の参考として扱う。以下の候補案は未実装で、現行ロードマップやcanonical runbookではない。
 
 公開事例・GitHub実装・ブログ・SNSまで横断した詳細調査は、[Jev活用アイデア徹底調査レポート](jev-research.md) にまとめているよ。候補を広く比較したいときや、質問設計・評価方法まで確認したいときはこちらを見てね。
 
 ## 結論
 
-詳細調査レポートのランキングをこのメモの最新の推奨順として扱う。次に作る候補は、目的別にこの3案がおすすめ。
+詳細調査レポートのランキングを、この2026-09-20時点の推奨順として扱う。次に作る候補は、目的別にこの3案がおすすめだが、実装開始の承認やロードマップ確定を意味しない。
 
 1. **Jev固有の判断基盤を試す:** Confidence-Gated Agent Tool Router
 2. **LLM回答の根拠を検証する:** Citation / Response Verifier
-3. **今あるアプリを最短で育てる:** Bug / Support Triage Board
+3. **旧Node.js Webアプリを最短で再設計する:** Bug / Support Triage Board
 
 PR / CI Review GateとIncident Alert Routerは有力な代替候補として下の比較表に残している。候補の詳細設計、評価、出典の正本は[詳細調査レポート](jev-research.md)にあり、この短いメモの旧順位より優先する。
 
@@ -45,7 +45,7 @@ Jevは自由文を生成するよりも、同じ入力に対して複数の型�
 
 ## 既存候補の詳細
 
-この節は、旧Jev Triage実装からの拡張と開発・運用候補を具体化した旧メモとして残している。現在の上位候補3案と次の実装順位は、冒頭と[詳細調査レポート](jev-research.md)を参照する。
+この節は、旧Node.js Webアプリからの拡張と開発・運用候補を具体化した旧メモとして残している。現行jevxの仕様説明ではなく、候補の設計比較として読むこと。上位候補3案と当時の順位は、冒頭と[詳細調査レポート](jev-research.md)を参照する。
 
 ### 1. Bug / Support Triage Board
 
@@ -73,7 +73,7 @@ Jevは自由文を生成するよりも、同じ入力に対して複数の型�
 
 #### MVP
 
-1. 現在の入力画面に再現手順・顧客プランを追加する。
+1. 新規の入力画面（旧Node.js Webアプリを参考にする場合）に再現手順・顧客プランを追加する。
 2. 1回の評価で6問を送信し、結果をカードと `Jev response xxx ms` で表示する。`needsHuman`は6問の結果からコードで計算する。
 3. 結果をローカルの一覧に追加し、カテゴリ・深刻度で絞り込む。
 
@@ -163,12 +163,12 @@ Jevの評価だけでマージ可否を決めない。既存のCI、CODEOWNERS�
 | --- | --- | --- |
 | Jev固有の判断基盤を試す | Confidence-Gated Agent Tool Router | 要求・許可候補・確認ルートのシミュレーター |
 | LLM回答の根拠を検証する | Citation / Response Verifier | claim・evidence・送信可否の検証画面 |
-| 今あるアプリを最短で育てる | Bug / Support Triage Board | 問い合わせ一覧 + 追加評価フォーム |
+| 旧Node.js Webアプリを最短で再設計する | Bug / Support Triage Board | 問い合わせ一覧 + 追加評価フォーム |
 | 開発フローに組み込む | PR / CI Review Gate | PR情報貼り付けフォーム + review結果 |
 | 運用・SREに広げる | Incident Alert Router | アラート入力 + 担当ルート候補 |
 | 大量処理とコード側検査を測る | CSV / Document Quality Auditor | CSV入力 + 行別監査結果 |
 
-次の1タスクは詳細レポートの順位どおり **Confidence-Gated Agent Tool Router** を第一候補とする。旧Jev Triage実装を最短で拡張したい場合だけ **Bug / Support Triage Board** を選び、当時の入力・評価・レスポンス時間表示・テストを再利用する。PR / CI Review GateとIncident Alert Routerは、Tool Routerの安全ポリシー設計を開発・運用へ展開する次の候補とする。
+2026-09-20時点の候補順位では、詳細レポートの順に **Confidence-Gated Agent Tool Router** を第一候補とした。旧Node.js Webアプリを最短で再設計する場合だけ **Bug / Support Triage Board** を選び、当時の入力・評価・レスポンス時間表示・テストを参考にする。これは未実装候補の比較結果であり、実装着手やロードマップ確定ではない。PR / CI Review GateとIncident Alert Routerは、Tool Routerの安全ポリシー設計を開発・運用へ展開する次の候補とする。
 
 採用・与信・医療・法務の最終判断のような高リスク用途は、現段階では候補から外す。Jevの結果は人の確認を支える情報に限定し、最終判断を自動化しない。
 
