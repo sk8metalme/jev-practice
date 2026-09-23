@@ -1054,6 +1054,8 @@ fn binary_reports_missing_key_as_json_error() {
         .arg(eval_skills)
         .env("AI_GATEWAY_API_KEY", "")
         .env("JEVX_HOME", root.path())
+        // Receipts are written only when telemetry is on; do not depend on the caller's environment.
+        .env("JEVX_TELEMETRY", "1")
         .output()
         .expect("run binary");
     assert_eq!(output.status.code(), Some(2));

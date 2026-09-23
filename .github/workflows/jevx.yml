@@ -13,7 +13,6 @@ jobs:
     runs-on: macos-latest
     env:
       CARGO_TERM_COLOR: always
-      JEVX_TELEMETRY: "off"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -30,4 +29,6 @@ jobs:
       - name: Test with coverage (lines >= 98%)
         run: cargo llvm-cov --locked --manifest-path jevx/Cargo.toml --summary-only --fail-under-lines 98 < /dev/null
       - name: Evaluation smoke test (no external calls)
+        env:
+          JEVX_TELEMETRY: "off"
         run: cargo run --locked --manifest-path jevx/Cargo.toml -- eval --dry-run --json > /dev/null
