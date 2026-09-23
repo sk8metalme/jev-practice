@@ -2,7 +2,7 @@
 
 このディレクトリは、読む目的ごとに文書を分類しています。導入判断にはユーザー向けガイド、実装・保守には開発者向け文書、Codex CLIへの接続には運用者向けrunbookを使ってください。現行値と歴史値は入口から分けています。
 
-現行仕様の正本は `jevx/` のRust CLIとそのCLI helpです。ルート `src/` の旧Node.js Webアプリと画面スクリーンショットはreferenceとして保持していますが、現行の要件・運用対象ではありません。
+現行仕様の正本は `jevx/` のRust CLIとそのCLI helpです。`legacy/jev-triage/` に隔離した旧Node.js Webアプリと画面スクリーンショットはreferenceとして保持していますが、現行の要件・運用対象ではありません。
 
 ## Current / Latest
 
@@ -22,7 +22,7 @@
 | 資料 | 位置付け |
 | --- | --- |
 | [TypeSafe APIを直接使う](developers/typesafe-api.md) | TypeSafe直接APIの参考・非現行経路。現行jevxのGateway実装ではない |
-| ルート `src/` のNode.js Webアプリ | 過去のJev検証用reference。現行の要件・運用対象ではない |
+| [`legacy/jev-triage/`](../legacy/jev-triage/README.md) のNode.js Webアプリ | 過去のJev検証用reference。現行の要件・運用対象ではない |
 
 ## 読者別の入口
 
