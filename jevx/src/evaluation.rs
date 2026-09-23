@@ -63,6 +63,16 @@ pub struct RepeatModeSummary {
     pub candidate_miss_rate: DistributionSummary,
     #[serde(rename = "errorRate")]
     pub error_rate: DistributionSummary,
+    #[serde(rename = "fallbackRate")]
+    pub fallback_rate: DistributionSummary,
+    #[serde(rename = "cacheHitRate")]
+    pub cache_hit_rate: DistributionSummary,
+    #[serde(rename = "retryRate")]
+    pub retry_rate: DistributionSummary,
+    #[serde(rename = "averageRetries")]
+    pub average_retries: DistributionSummary,
+    #[serde(rename = "relativeCost")]
+    pub relative_cost: DistributionSummary,
     #[serde(rename = "discoveryMs")]
     pub discovery_ms: DistributionSummary,
     #[serde(rename = "jevResponseMs")]
@@ -104,6 +114,16 @@ pub struct ModeSummary {
     pub errors: usize,
     #[serde(rename = "errorRate")]
     pub error_rate: Option<f64>,
+    #[serde(rename = "fallbackRate")]
+    pub fallback_rate: Option<f64>,
+    #[serde(rename = "cacheHitRate")]
+    pub cache_hit_rate: Option<f64>,
+    #[serde(rename = "retryRate")]
+    pub retry_rate: Option<f64>,
+    #[serde(rename = "averageRetries")]
+    pub average_retries: Option<f64>,
+    #[serde(rename = "averageRelativeCost")]
+    pub average_relative_cost: Option<f64>,
     #[serde(rename = "jevResponseMsP50")]
     pub jev_response_ms_p50: Option<u64>,
     #[serde(rename = "jevResponseMsP95")]
@@ -162,6 +182,16 @@ pub struct JevCaseResult {
     pub input_tokens: Option<u64>,
     #[serde(rename = "outputTokens", skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
+    #[serde(rename = "decisionCalls", skip_serializing_if = "Option::is_none")]
+    pub decision_calls: Option<u32>,
+    #[serde(rename = "decisionRetries", skip_serializing_if = "Option::is_none")]
+    pub decision_retries: Option<u32>,
+    #[serde(rename = "cacheHit", skip_serializing_if = "Option::is_none")]
+    pub cache_hit: Option<bool>,
+    #[serde(rename = "relativeCost", skip_serializing_if = "Option::is_none")]
+    pub relative_cost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<bool>,
     #[serde(rename = "errorCode", skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
     #[serde(rename = "candidateMiss")]
@@ -178,6 +208,10 @@ struct Observation {
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     discovery_ms: Option<u64>,
+    fallback: bool,
+    cache_hit: bool,
+    retries: u32,
+    relative_cost: Option<f64>,
 }
 
 pub fn load_fixtures(path: &Path) -> Result<Vec<EvaluationFixture>, JevxError> {
@@ -336,9 +370,11 @@ pub async fn evaluate_repeated(
         ));
     }
 
+    let mut repeat_config = config.clone();
+    repeat_config.cache_capacity = 0;
     let mut reports = Vec::with_capacity(run_count);
     for _ in 0..run_count {
-        reports.push(evaluate(fixtures, skills, config, judge).await);
+        reports.push(evaluate(fixtures, skills, &repeat_config, judge).await);
     }
 
     let mut mode_names = BTreeSet::new();
@@ -385,6 +421,10 @@ fn repeat_mode_summary(mode: &str, reports: &[EvaluationReport]) -> RepeatModeSu
                 Some(case.local_rank.discovery_ms),
                 None,
                 None,
+                None,
+                None,
+                None,
+                None,
             )),
             "jevx" => case.jevx.as_ref().map(|jevx| {
                 (
@@ -393,6 +433,12 @@ fn repeat_mode_summary(mode: &str, reports: &[EvaluationReport]) -> RepeatModeSu
                     jevx.total_ms,
                     jevx.input_tokens,
                     jevx.output_tokens,
+                    jevx.fallback
+                        .map(|fallback| if fallback { 1.0 } else { 0.0 }),
+                    jevx.cache_hit
+                        .map(|cache_hit| if cache_hit { 1.0 } else { 0.0 }),
+                    jevx.decision_retries.map(f64::from),
+                    jevx.relative_cost,
                 )
             }),
             _ => None,
@@ -418,6 +464,19 @@ fn repeat_mode_summary(mode: &str, reports: &[EvaluationReport]) -> RepeatModeSu
                 .filter_map(|summary| summary.candidate_miss_rate),
         ),
         error_rate: distribution(run_modes.iter().filter_map(|summary| summary.error_rate)),
+        fallback_rate: distribution(run_modes.iter().filter_map(|summary| summary.fallback_rate)),
+        cache_hit_rate: distribution(
+            run_modes
+                .iter()
+                .filter_map(|summary| summary.cache_hit_rate),
+        ),
+        retry_rate: distribution(run_modes.iter().filter_map(|summary| summary.retry_rate)),
+        average_retries: distribution(
+            run_modes
+                .iter()
+                .filter_map(|summary| summary.average_retries),
+        ),
+        relative_cost: distribution(metric_values.iter().filter_map(|metrics| metrics.8)),
         discovery_ms: distribution(
             metric_values
                 .iter()
@@ -509,6 +568,10 @@ async fn evaluate_jev_case(
                 input_tokens: result.metrics.input_tokens,
                 output_tokens: result.metrics.output_tokens,
                 discovery_ms: Some(result.metrics.discovery_ms),
+                fallback: result.metrics.fallback.unwrap_or(false),
+                cache_hit: result.metrics.cache_hit.unwrap_or(false),
+                retries: result.metrics.decision_retries.unwrap_or_default(),
+                relative_cost: result.metrics.relative_cost,
             };
             let case = JevCaseResult {
                 decision: result.decision,
@@ -518,6 +581,11 @@ async fn evaluate_jev_case(
                 total_ms: Some(result.metrics.total_ms),
                 input_tokens: result.metrics.input_tokens,
                 output_tokens: result.metrics.output_tokens,
+                decision_calls: result.metrics.decision_calls,
+                decision_retries: result.metrics.decision_retries,
+                cache_hit: result.metrics.cache_hit,
+                relative_cost: result.metrics.relative_cost,
+                fallback: result.metrics.fallback,
                 error_code: None,
                 candidate_miss: observation.candidate_miss,
             };
@@ -532,11 +600,17 @@ async fn evaluate_jev_case(
                 input_tokens: None,
                 output_tokens: None,
                 discovery_ms: None,
+                decision_calls: None,
+                decision_retries: None,
+                cache_hit: None,
+                relative_cost: None,
+                fallback: Some(true),
                 error_code: Some(error_code(&error).to_owned()),
                 candidate_miss: false,
             },
             Observation {
                 error: true,
+                fallback: true,
                 ..Observation::default()
             },
         ),
@@ -610,6 +684,26 @@ fn summarize(
         .iter()
         .filter(|observation| observation.error)
         .count();
+    let fallback_count = observations
+        .iter()
+        .filter(|observation| observation.fallback)
+        .count();
+    let cache_hit_count = observations
+        .iter()
+        .filter(|observation| observation.cache_hit)
+        .count();
+    let retry_cases = observations
+        .iter()
+        .filter(|observation| observation.retries > 0)
+        .count();
+    let retries = observations
+        .iter()
+        .map(|observation| observation.retries as f64)
+        .collect::<Vec<_>>();
+    let relative_cost = observations
+        .iter()
+        .filter_map(|observation| observation.relative_cost)
+        .collect::<Vec<_>>();
     let response_times = observations
         .iter()
         .filter_map(|observation| observation.jev_response_ms)
@@ -649,6 +743,11 @@ fn summarize(
             .flatten(),
         errors,
         error_rate: ratio(errors, fixtures.len()),
+        fallback_rate: ratio(fallback_count, fixtures.len()),
+        cache_hit_rate: ratio(cache_hit_count, fixtures.len()),
+        retry_rate: ratio(retry_cases, fixtures.len()),
+        average_retries: average_f64(&retries),
+        average_relative_cost: average_f64(&relative_cost),
         jev_response_ms_p50: percentile(&response_times, 50),
         jev_response_ms_p95: percentile(&response_times, 95),
         total_ms_p50: percentile(&total_times, 50),
@@ -674,6 +773,11 @@ impl ModeSummary {
             candidate_miss_rate: None,
             errors: 0,
             error_rate: None,
+            fallback_rate: None,
+            cache_hit_rate: None,
+            retry_rate: None,
+            average_retries: None,
+            average_relative_cost: None,
             jev_response_ms_p50: None,
             jev_response_ms_p95: None,
             total_ms_p50: None,
@@ -707,6 +811,10 @@ fn average(values: &[u64]) -> Option<f64> {
     (!values.is_empty()).then(|| values.iter().sum::<u64>() as f64 / values.len() as f64)
 }
 
+fn average_f64(values: &[f64]) -> Option<f64> {
+    (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
+}
+
 fn percentile(values: &[u64], percentile: usize) -> Option<u64> {
     if values.is_empty() {
         return None;
@@ -722,6 +830,7 @@ fn error_code(error: &JevxError) -> &'static str {
         JevxError::InvalidInput(_) => "invalid_input",
         JevxError::MissingApiKey => "missing_api_key",
         JevxError::Provider(_) => "provider_error",
+        JevxError::ProviderWithMetrics { .. } => "provider_error",
         JevxError::Timeout => "timeout",
         JevxError::Io(_) => "io_error",
         JevxError::Json(_) => "json_error",

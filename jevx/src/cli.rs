@@ -246,12 +246,26 @@ async fn run_suggest_with_config(args: SuggestArgs, config: Config) -> Result<i3
     }
     let roots = skill_roots(&cwd, &args.skill_dirs);
     let skills = discover_skill_roots(&roots)?;
+    let mut execution_config = config.clone();
+    if args.no_telemetry {
+        execution_config.telemetry_enabled = false;
+    }
 
     let result = if input.explicit_skill.is_some() {
-        suggest_with_optional_judge::<GatewayJudge>(input.clone(), skills, &config, None).await
+        suggest_with_optional_judge::<GatewayJudge>(input.clone(), skills, &execution_config, None)
+            .await
     } else {
-        match GatewayJudge::from_config(&config) {
-            Ok(judge) => suggest_with_judge(input.clone(), skills, &config, &judge).await,
+        match GatewayJudge::from_config(&execution_config) {
+            Ok(judge) => suggest_with_judge(input.clone(), skills, &execution_config, &judge).await,
+            Err(JevxError::MissingApiKey) => {
+                suggest_with_optional_judge::<GatewayJudge>(
+                    input.clone(),
+                    skills,
+                    &execution_config,
+                    None,
+                )
+                .await
+            }
             Err(error) => Err(error),
         }
     };
@@ -752,13 +766,19 @@ fn print_evaluation_human(report: &EvaluationReport) {
     println!("Cases: {}", report.case_count);
     for (mode, summary) in &report.modes {
         println!(
-            "{mode}: status={} cases={} accuracy={} nonePrecision={} errorRate={}",
+            "{mode}: status={} cases={} accuracy={} nonePrecision={} errorRate={} fallbackRate={} cacheHitRate={} retryRate={}",
             summary.status,
             summary.cases,
             format_ratio(summary.accuracy),
             format_ratio(summary.none_precision),
             format_ratio(summary.error_rate),
+            format_ratio(summary.fallback_rate),
+            format_ratio(summary.cache_hit_rate),
+            format_ratio(summary.retry_rate),
         );
+        if let Some(cost) = summary.average_relative_cost {
+            println!("  Relative cost average: {cost:.2}");
+        }
         if let Some(response_ms) = summary.jev_response_ms_p50 {
             println!(
                 "  Jev response: p50={response_ms} ms p95={} ms",
@@ -786,12 +806,17 @@ fn print_repeat_human(report: &jevx::evaluation::RepeatEvaluationReport) {
     println!("Cases per run: {}", report.case_count);
     for (mode, summary) in &report.modes {
         println!(
-            "{mode}: runs={} status={} accuracyMean={} errorRateMean={}",
+            "{mode}: runs={} status={} accuracyMean={} errorRateMean={} fallbackRateMean={} retryRateMean={}",
             summary.runs,
             summary.status,
             format_ratio(summary.accuracy.mean),
             format_ratio(summary.error_rate.mean),
+            format_ratio(summary.fallback_rate.mean),
+            format_ratio(summary.retry_rate.mean),
         );
+        if let Some(cost) = summary.relative_cost.mean {
+            println!("  Relative cost mean: {cost:.2}");
+        }
         if let Some(p95) = summary.discovery_ms.p95 {
             println!("  Local discovery p95: {p95:.0} ms");
         }
@@ -848,6 +873,7 @@ fn error_code(error: &JevxError) -> &'static str {
         JevxError::InvalidInput(_) => "invalid_input",
         JevxError::MissingApiKey => "missing_api_key",
         JevxError::Provider(_) => "provider_error",
+        JevxError::ProviderWithMetrics { .. } => "provider_error",
         JevxError::Timeout => "timeout",
         JevxError::Io(_) => "io_error",
         JevxError::Json(_) => "json_error",
@@ -858,7 +884,7 @@ fn error_code(error: &JevxError) -> &'static str {
 fn error_exit_code(error: &JevxError) -> i32 {
     match error {
         JevxError::InvalidInput(_) | JevxError::MissingApiKey | JevxError::Json(_) => 2,
-        JevxError::Provider(_) | JevxError::Timeout => 3,
+        JevxError::Provider(_) | JevxError::ProviderWithMetrics { .. } | JevxError::Timeout => 3,
         JevxError::Io(_) | JevxError::Yaml(_) => 2,
     }
 }
@@ -1142,6 +1168,11 @@ mod tests {
                 candidate_miss_rate: Some(0.0),
                 errors: 0,
                 error_rate: Some(0.0),
+                fallback_rate: Some(0.0),
+                cache_hit_rate: Some(0.0),
+                retry_rate: Some(0.0),
+                average_retries: Some(0.0),
+                average_relative_cost: Some(0.0),
                 jev_response_ms_p50: Some(12),
                 jev_response_ms_p95: Some(18),
                 total_ms_p50: Some(15),
@@ -1453,6 +1484,11 @@ mod tests {
                 none_precision: p95.clone(),
                 candidate_miss_rate: p95.clone(),
                 error_rate: p95.clone(),
+                fallback_rate: p95.clone(),
+                cache_hit_rate: p95.clone(),
+                retry_rate: p95.clone(),
+                average_retries: p95.clone(),
+                relative_cost: p95.clone(),
                 discovery_ms: p95.clone(),
                 jev_response_ms: p95.clone(),
                 total_ms: p95.clone(),

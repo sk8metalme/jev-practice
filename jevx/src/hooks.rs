@@ -1100,6 +1100,7 @@ fn error_code(error: &JevxError) -> &'static str {
         JevxError::InvalidInput(_) => "invalid_input",
         JevxError::MissingApiKey => "missing_api_key",
         JevxError::Provider(_) => "provider_error",
+        JevxError::ProviderWithMetrics { .. } => "provider_error",
         JevxError::Timeout => "timeout",
         JevxError::Io(_) => "io_error",
         JevxError::Json(_) => "json_error",

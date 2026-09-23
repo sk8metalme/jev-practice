@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -7,10 +8,11 @@ use std::sync::Arc;
 use std::thread;
 
 use async_trait::async_trait;
+use jevx::decision::{DecisionRequest, QuestionSpec};
 use jevx::{
     CandidateDecision, Config, GatewayJudge, Judge, JudgeRequest, JudgeResponse, SkillRecord,
-    SuggestInput, TelemetryEvent, Usage, append_telemetry, read_stats, suggest_with_judge,
-    suggest_with_optional_judge,
+    SuggestInput, TelemetryEvent, Usage, append_telemetry, read_decision_receipts, read_stats,
+    suggest_with_judge, suggest_with_optional_judge,
 };
 use tempfile::tempdir;
 
@@ -462,6 +464,16 @@ fn errors_display_and_from_conversions_are_stable() {
         "provider"
     );
     assert_eq!(
+        jevx::JevxError::ProviderWithMetrics {
+            message: "provider".to_owned(),
+            calls: 2,
+            retries: 1,
+            response_ms: 4,
+        }
+        .to_string(),
+        "provider"
+    );
+    assert_eq!(
         jevx::JevxError::InvalidInput("invalid".to_owned()).to_string(),
         "invalid"
     );
@@ -685,6 +697,194 @@ async fn gateway_judge_parses_successful_gateway_response() {
 }
 
 #[tokio::test]
+async fn gateway_judge_retries_retryable_status_and_reports_retry_count() {
+    let server = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let endpoint = format!("http://{}", server.local_addr().expect("address"));
+    let handle = thread::spawn(move || {
+        let (mut first, _) = server.accept().expect("first accept");
+        read_request(&mut first);
+        write_http_response(
+            &mut first,
+            "429 Too Many Requests",
+            r#"{"error":{"message":"retry"}}"#,
+        );
+        let (mut second, _) = server.accept().expect("second accept");
+        read_request(&mut second);
+        write_http_response(
+            &mut second,
+            "200 OK",
+            r#"{"answers":{"skill":{"choice":"pdf","probabilities":{"pdf":0.9,"none":0.1}}}}"#,
+        );
+    });
+    let mut config = Config::for_test(tempdir().expect("tempdir").path().to_path_buf());
+    config.endpoint = endpoint;
+    config.max_retries = 1;
+    config.retry_backoff_ms = 0;
+    let judge = GatewayJudge::from_config(&config).expect("judge");
+    let response = jevx::Judge::evaluate_with_metrics(
+        &judge,
+        JudgeRequest {
+            state: "{}".to_owned(),
+            candidates: vec![jevx::JudgeCandidate {
+                id: "pdf".to_owned(),
+                name: "pdf".to_owned(),
+                description: "PDF".to_owned(),
+            }],
+        },
+    )
+    .await
+    .expect("retried response");
+    handle.join().expect("server");
+    assert_eq!(response.retries, 1);
+    assert_eq!(response.calls, 2);
+    assert_eq!(response.response.choice.as_deref(), Some("pdf"));
+}
+
+#[tokio::test]
+async fn gateway_retry_failure_preserves_attempt_metrics_in_the_receipt() {
+    let root = tempdir().expect("tempdir");
+    let server = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let endpoint = format!("http://{}", server.local_addr().expect("address"));
+    let handle = thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = server.accept().expect("accept");
+            read_request(&mut stream);
+            write_http_response(
+                &mut stream,
+                "429 Too Many Requests",
+                r#"{"error":{"message":"retry exhausted"}}"#,
+            );
+        }
+    });
+    let mut config = Config::for_test(root.path().join("data"));
+    config.endpoint = endpoint;
+    config.max_retries = 1;
+    config.retry_backoff_ms = 0;
+    config.telemetry_enabled = true;
+    let judge = GatewayJudge::from_config(&config).expect("judge");
+    let result = suggest_with_judge(
+        SuggestInput::new("PDFを確認したい".to_owned(), root.path().to_path_buf()),
+        vec![skill(root.path(), "pdf", "PDF")],
+        &config,
+        &judge,
+    )
+    .await;
+    handle.join().expect("server");
+    assert!(result.is_err());
+    let receipts = read_decision_receipts(&config.decision_receipt_path).expect("receipts");
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].calls, 2);
+    assert_eq!(receipts[0].retries, 1);
+    assert_eq!(receipts[0].error_code.as_deref(), Some("provider_error"));
+}
+
+#[tokio::test]
+async fn gateway_judge_parses_score_predicate_and_rejects_malformed_typed_answers() {
+    let cases = [
+        (
+            QuestionSpec::Score {
+                instructions: "score".to_owned(),
+                criteria: vec!["low".to_owned(), "medium".to_owned(), "high".to_owned()],
+            },
+            r#"{"answers":{"severity":{"score":2.0,"probabilities":{"0":0.1,"1":0.2,"2":0.7},"confidence":0.9}}}"#,
+            true,
+        ),
+        (
+            QuestionSpec::Predicate {
+                instructions: "predicate".to_owned(),
+                criteria: jevx::PredicateCriteria {
+                    true_criteria: "true".to_owned(),
+                    false_criteria: "false".to_owned(),
+                },
+            },
+            r#"{"answers":{"danger":{"noul":0.9}}}"#,
+            true,
+        ),
+        (
+            QuestionSpec::Choice {
+                instructions: "choice".to_owned(),
+                criteria: BTreeMap::from([("pdf".to_owned(), "PDF".to_owned())]),
+            },
+            r#"{"answers":{"skill":{"probabilities":{"pdf":1.0}}}}"#,
+            false,
+        ),
+        (
+            QuestionSpec::Choice {
+                instructions: "choice".to_owned(),
+                criteria: BTreeMap::from([("pdf".to_owned(), "PDF".to_owned())]),
+            },
+            r#"{"answers":{"skill":{"choice":"pdf"}}}"#,
+            false,
+        ),
+        (
+            QuestionSpec::Choice {
+                instructions: "choice".to_owned(),
+                criteria: BTreeMap::from([("pdf".to_owned(), "PDF".to_owned())]),
+            },
+            r#"{"answers":{"skill":{"choice":"pdf","probabilities":{"pdf":0.7,"none":"invalid"}}}}"#,
+            false,
+        ),
+        (
+            QuestionSpec::Score {
+                instructions: "score".to_owned(),
+                criteria: vec!["low".to_owned(), "high".to_owned()],
+            },
+            r#"{"answers":{"severity":{"score":1.0,"confidence":0.9}}}"#,
+            false,
+        ),
+    ];
+    for (question, body, succeeds) in cases {
+        let server = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let endpoint = format!("http://{}", server.local_addr().expect("address"));
+        let body = body.to_owned();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = server.accept().expect("accept");
+            read_request(&mut stream);
+            write_http_response(&mut stream, "200 OK", &body);
+        });
+        let mut config = Config::for_test(tempdir().expect("tempdir").path().to_path_buf());
+        config.endpoint = endpoint;
+        let judge = GatewayJudge::from_config(&config).expect("judge");
+        let question_id = match &question {
+            QuestionSpec::Score { .. } => "severity",
+            QuestionSpec::Predicate { .. } => "danger",
+            QuestionSpec::Choice { .. } => "skill",
+        };
+        let result = jevx::decision::DecisionJudge::evaluate(
+            &judge,
+            DecisionRequest {
+                state: "{}".to_owned(),
+                questions: BTreeMap::from([(question_id.to_owned(), question)]),
+            },
+        )
+        .await;
+        handle.join().expect("server");
+        assert_eq!(result.is_ok(), succeeds);
+    }
+
+    let config = Config::for_test(tempdir().expect("tempdir").path().to_path_buf());
+    let judge = GatewayJudge::from_config(&config).expect("judge");
+    let invalid_question = jevx::decision::DecisionJudge::evaluate(
+        &judge,
+        DecisionRequest {
+            state: "{}".to_owned(),
+            questions: BTreeMap::from([(
+                "severity".to_owned(),
+                QuestionSpec::Score {
+                    instructions: "score".to_owned(),
+                    criteria: vec!["only".to_owned()],
+                },
+            )]),
+        },
+    )
+    .await;
+    assert!(matches!(
+        invalid_question,
+        Err(jevx::JevxError::InvalidInput(message)) if message.contains("2 to 10")
+    ));
+}
+
+#[tokio::test]
 async fn gateway_judge_handles_malformed_and_default_error_payloads() {
     for (status, body, expected) in [
         ("200 OK", "not json", "読み取れませんでした"),
@@ -716,6 +916,36 @@ async fn gateway_judge_handles_malformed_and_default_error_payloads() {
         handle.join().expect("server");
         assert!(error.to_string().contains(expected));
     }
+}
+
+#[tokio::test]
+async fn gateway_judge_records_response_read_failure_as_provider_error() {
+    let server = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let endpoint = format!("http://{}", server.local_addr().expect("address"));
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = server.accept().expect("accept");
+        read_request(&mut stream);
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{}",
+            )
+            .expect("write truncated response");
+    });
+    let mut config = Config::for_test(tempdir().expect("tempdir").path().to_path_buf());
+    config.endpoint = endpoint;
+    let judge = GatewayJudge::from_config(&config).expect("judge");
+    let error = judge
+        .evaluate(JudgeRequest {
+            state: "{}".to_owned(),
+            candidates: vec![],
+        })
+        .await
+        .expect_err("truncated response should fail");
+    handle.join().expect("server");
+    assert!(matches!(
+        error,
+        jevx::JevxError::ProviderWithMetrics { calls: 1, .. }
+    ));
 }
 
 #[tokio::test]
@@ -769,8 +999,11 @@ async fn gateway_judge_rejects_missing_skill_answer() {
 fn binary_reports_missing_key_as_json_error() {
     let binary = env!("CARGO_BIN_EXE_jevx");
     let root = tempdir().expect("tempdir");
+    let eval_skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("evals/skills");
     let output = Command::new(binary)
         .args(["skills", "suggest", "--prompt", "run tests", "--json"])
+        .arg("--skill-dir")
+        .arg(eval_skills)
         .env("AI_GATEWAY_API_KEY", "")
         .env("JEVX_HOME", root.path())
         .output()
@@ -778,6 +1011,12 @@ fn binary_reports_missing_key_as_json_error() {
     assert_eq!(output.status.code(), Some(2));
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
     assert_eq!(json["error"]["code"], "missing_api_key");
+    let receipts = jevx::read_decision_receipts(&root.path().join("decisions.jsonl"))
+        .expect("decision receipts");
+    assert!(receipts.iter().any(|receipt| {
+        receipt.decision == jevx::DecisionStatus::Defer
+            && receipt.fallback == Some(jevx::FallbackReason::MissingApiKey)
+    }));
 }
 
 #[test]

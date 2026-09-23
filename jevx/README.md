@@ -87,7 +87,7 @@ Jevの確信度は「与えられたstateのもとでの判定の確からしさ
 
 ### 3. Decision Contractで問い・結果・安全側挙動を束ねる
 
-今後の縦機能は、個別のJev呼び出しを増やすのではなく、次の概念的なDecision Contractへ寄せる。これは段階的に実装する設計候補であり、現時点で新しいCLIコマンドが追加されたことを意味しない。
+Skill選択の現行実装は、個別のJev呼び出しを増やさず、次のDecision Contractへ寄せている。新しい専用CLIコマンドは増やさず、Rust APIと既存の評価Runnerから利用する。
 
 ```text
 State Builder → redaction / window plan → typed Jev answer
@@ -98,8 +98,8 @@ State Builder → redaction / window plan → typed Jev answer
 
 receiptには、少なくとも次の安全なメタデータを持たせる。prompt本文・Skill本文・Tool結果・APIキー・生のセッション識別子は含めない。
 
-- contract / question / policyのバージョン
-- state digest、候補数、window数、omitted / redactionの理由
+- contract / question / policyのバージョン（policyは閾値を含むdigest付き）
+- state digest、実際のstate bytes、適用したstate/candidate予算、候補数、window数、omitted / redactionの理由
 - 構造化されたanswer、code-side decision、threshold、margin、fallback、reason
 - calls、retry、latency、input / output tokens、相対的なcost、replay ID
 
@@ -127,7 +127,7 @@ Jevありの単発精度だけで導入を決めず、Jevなしのbaseline、遅
 
 | 優先度 | 候補 | 目的 | 受け入れの観点 |
 | --- | --- | --- | --- |
-| P0 | Decision Contract & Recorder | `Choice` / `Score` / predicate、code-side gate、fallback、receipt、replayを共通化 | recorded answerで同じdecisionを再現し、timeout / outageが自動allowにならない |
+| 完了 | Decision Contract & Recorder | `Choice` / `Score` / predicate、code-side gate、fallback、receipt、replayを共通化 | recorded answerで同じdecisionを再現し、timeout / outageが自動allowにならない |
 | P1 | Skill Calibration Packs | Skillごとの代表例、none、境界例、期待answer、閾値、反復分散を評価 | 新Skillをpackなしで本番相当評価へ進めず、miss / none / p95を比較できる |
 | P1 | State Window Planner | token / byte / 候補予算、window、overlap、omitted、degradedを管理 | 同じ入力・予算・版で同じwindowを生成し、候補漏れと遅延を測れる |
 | P2 | Diff Impact / Semantic Review | 変更影響のScoreや意味的矛盾をShadow Modeで提示 | uncertain / missingを安全側で選択し、CI blockingは評価後に判断する |
@@ -190,6 +190,11 @@ export JEVX_TELEMETRY=1
 | `JEVX_REQUEST_TIMEOUT_MS` | `1500` | Jev HTTPリクエストのタイムアウト |
 | `JEVX_HOME` | `$HOME/.jevx` | Telemetry保存先の親ディレクトリ |
 | `JEVX_TELEMETRY` | 有効 | `0` または `off` でTelemetryを無効化 |
+| `JEVX_MAX_STATE_BYTES` | `32000` | 送信stateのbyte上限。超過時はomittedを記録してdegraded |
+| `JEVX_MAX_RETRIES` | `1` | 429/529に対する最大retry回数 |
+| `JEVX_RETRY_BACKOFF_MS` | `25` | retry backoffの基準ミリ秒 |
+| `JEVX_DECISION_CACHE_CAPACITY` | `0` | process-local answer cacheの上限。0は無効 |
+| `JEVX_INPUT_COST_WEIGHT` / `JEVX_OUTPUT_COST_WEIGHT` | `1.0` / `1.0` | token proxyの相対cost重み。通貨ではない |
 
 設定を確認するには、APIキーの値そのものを表示しない `doctor` を使うよ。
 
@@ -378,7 +383,9 @@ Gatewayの構造化レスポンスは、例えば次のようになる。
 
 ## Telemetryと統計
 
-既定では `$JEVX_HOME/events.jsonl`、通常は `~/.jevx/events.jsonl` へ追記する。依頼文そのものではなく、SHA-256、文字数、判定、候補数、速度、Token使用量などのメタデータを保存する設計で、Gatewayの候補probabilityはTelemetry schemaへ保存しない。
+既定では `$JEVX_HOME/events.jsonl` と `$JEVX_HOME/decisions.jsonl`（通常は `~/.jevx/` 配下）へ追記する。前者は既存Telemetry、後者はDecision Contractのreceiptで、依頼文そのものではなく、state digest、契約版、判定、fallback、retry、latency、Token使用量、token proxy costなどの安全なメタデータを保存する。Gatewayの生response本文は保存しない。
+
+receiptは `DecisionReceipt` / `JsonlDecisionRecorder` と `read_decision_receipts` / `replay_receipt` からRust APIとして扱える。`jevx/evals/decision-contract-baseline.jsonl` は秘密情報なしのaccepted/none比較用fixtureで、同じcontract・state digest・recorded answerを使えばJevなしにcode-side decisionを再評価できる。receiptの不一致は`replay_mismatch` / `degraded`となり、成功へ変換しない。
 
 ```bash
 cargo run --locked --manifest-path jevx/Cargo.toml -- stats --json
@@ -653,7 +660,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
   --output /tmp/jevx-repeat.json
 ```
 
-レポートでは正解率・`none` recall（互換キー `nonePrecision`）・エラー率と、`discoveryMs`・`jevResponseMs`・`totalMs` の mean / p50 / p95 などを分けて確認できる。単回`eval --output`のcase JSONLには`id`・`kind`・`expected`・判定・metrics・error codeを保存し、prompt本文・fixtureの`keywords`・Jev response本文を保存しない。`eval-repeat --output`はcase JSONLではなくrun/mode集計だけを保存する。
+レポートでは正解率・`none` recall（互換キー `nonePrecision`）・候補miss・fallback率・cache hit率・retry率・エラー率と、`discoveryMs`・`jevResponseMs`・`totalMs`・相対costの mean / p50 / p95 などを分けて確認できる。単回`eval --output`のcase JSONLには`id`・`kind`・`expected`・判定・metrics・error codeを保存し、prompt本文・fixtureの`keywords`・Jev response本文を保存しない。`eval-repeat --output`はcase JSONLではなくrun/mode集計だけを保存する。
 
 ### Current / Latest baseline（2026-09-22）
 
@@ -687,7 +694,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 ## セキュリティとデータの扱い
 
-- Jevへ送るのは、マスキングしたprompt、rawの作業ディレクトリ、rawの候補Skill ID/name、redactしたdescription。Skill本文、過去会話全文、Tool結果、APIキーは送らない。
+- Jevへ送るのは、マスキングしたprompt、redactした作業ディレクトリ、rawの候補Skill ID/name、redactしたdescription。Skill本文、過去会話全文、Tool結果、APIキーは送らない。
 - `AI_GATEWAY_API_KEY` は環境変数からBearer認証へ使い、レスポンスやTelemetryへ書き出さない。
 - Telemetryはprompt本文やprobabilityではなくハッシュ・文字数・判定・選択時の`selectedSkill`（raw ID）・計測値を保存するため、Skill ID自体を秘密値にしない。
 - Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` / `Authorization: Basic <value>` の認識済み形式で値を保存・送信しない。任意の `Basic` 文言や未知のPIIを除去する完全なDLPではない。
