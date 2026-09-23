@@ -3,6 +3,26 @@
 `jevx` は、Codex CLI の作業を邪魔せずに Jev の有用性と速度を測るための、macOS 向け Rust CLI だよ。
 Skill 選択のコアは **Shadow Mode**。依頼に合いそうな Skill を提案するだけで、Skill 本文の自動ロード・実行や会話の書き換えはしない。Hook と Compaction 補助は、利用者が明示的に登録したときだけ動くオプトイン機能だよ。
 
+## ディレクトリ構成
+
+実利用用のSkillは `skill/`、検証・評価用のfixtureとSkillカタログは `evals/` に分かれています。普段のCodexへ導入するものと、jevx自体を測定するためのものを混ぜない構成です。
+
+```text
+jevx/
+├── skill/
+│   └── SKILL.md               # 実利用用：Codexへ導入するjevx Skill
+├── evals/
+│   ├── README.md              # 検証手順・fixtureの説明
+│   ├── skill-selection.jsonl  # 検証用fixture
+│   └── skills/                # 検証専用のSkillカタログ
+├── src/                       # jevx CLI本体
+├── scripts/
+│   └── setup.sh               # 実利用環境へのセットアップ
+├── tests/                     # 自動テスト
+├── Cargo.toml
+└── README.md
+```
+
 ## できること
 
 ```text
