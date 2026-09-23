@@ -1,5 +1,6 @@
 pub mod compact_assist;
 mod config;
+pub mod cost;
 pub mod data;
 pub mod decision;
 mod discovery;
@@ -11,11 +12,17 @@ pub mod hooks;
 mod ranking;
 pub mod recorder;
 mod redaction;
+pub mod review;
+pub mod route;
 mod storage;
 mod telemetry;
 mod types;
 
 pub use config::Config;
+pub use cost::{
+    CodexUsage, CostAccumulator, CostBasis, CostEstimate, CostStatus, CostSummary, TokenPricing,
+    total_cost,
+};
 pub use decision::{
     DECISION_CONTRACT_VERSION, DecisionCache, DecisionContract, DecisionEvidence,
     DecisionExecution, DecisionExecutionOptions, DecisionFailure, DecisionJudge, DecisionMode,
@@ -34,10 +41,23 @@ pub use recorder::{
     read_decision_receipts, read_decision_stats, replay_receipt,
 };
 pub use redaction::redact;
-pub use telemetry::{Stats, TelemetryEvent, append_telemetry, read_stats};
+pub use review::{
+    CostUnitSummary, FixApplication, FixOperation, FixPlan, FixStatus, REVIEW_CONTRACT_VERSION,
+    REVIEW_SCHEMA_VERSION, ReviewCategory, ReviewFinding, ReviewReceipt, ReviewRequest,
+    ReviewResponse, ReviewStats, ReviewStatus, ReviewTarget, append_review_receipt, apply_fix_plan,
+    fix_operations_from_json, read_review_stats, review_contracts, review_with_optional_judge,
+};
+pub use route::{
+    ModelFamily, ROUTE_SCHEMA_VERSION, ReasoningLevel, RouteDecision, RouteEvidence, RouteStatus,
+    TaskDifficulty, route_contract, route_evidence_from_payload, route_for, route_result,
+};
+pub use telemetry::{
+    Stats, TELEMETRY_SCHEMA_VERSION, TelemetryEvent, append_telemetry, read_stats,
+};
 pub use types::{
     CandidateDecision, CandidateResult, Judge, JudgeCandidate, JudgeEvaluation, JudgeRequest,
-    JudgeResponse, Metrics, SkillRecord, SuggestInput, SuggestionResult, Usage,
+    JudgeResponse, Metrics, SUGGESTION_SCHEMA_VERSION, SkillRecord, SuggestInput, SuggestionResult,
+    Usage,
 };
 
 pub const MODEL_ID: &str = "typesafe-ai/jev";

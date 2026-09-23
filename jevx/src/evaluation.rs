@@ -6,11 +6,12 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::Config;
+use crate::cost::{CostAccumulator, CostEstimate, CostStatus, CostSummary};
 use crate::error::JevxError;
 use crate::ranking::{rank_candidates, suggest_with_judge};
 use crate::types::{CandidateDecision, Judge, SkillRecord, SuggestInput};
 
-const REPORT_SCHEMA_VERSION: u8 = 1;
+const REPORT_SCHEMA_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct EvaluationFixture {
@@ -28,7 +29,10 @@ pub struct EvaluationReport {
     pub schema_version: u8,
     #[serde(rename = "caseCount")]
     pub case_count: usize,
+    #[serde(rename = "baselineMode")]
+    pub baseline_mode: String,
     pub modes: BTreeMap<String, ModeSummary>,
+    pub comparisons: BTreeMap<String, BaselineComparison>,
     pub cases: Vec<EvaluationCaseResult>,
 }
 
@@ -40,7 +44,10 @@ pub struct RepeatEvaluationReport {
     pub run_count: usize,
     #[serde(rename = "caseCount")]
     pub case_count: usize,
+    #[serde(rename = "baselineMode")]
+    pub baseline_mode: String,
     pub modes: BTreeMap<String, RepeatModeSummary>,
+    pub comparisons: BTreeMap<String, RepeatBaselineComparison>,
     pub runs: Vec<RepeatRunSummary>,
 }
 
@@ -48,6 +55,44 @@ pub struct RepeatEvaluationReport {
 pub struct RepeatRunSummary {
     pub run: usize,
     pub modes: BTreeMap<String, ModeSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BaselineComparison {
+    #[serde(rename = "baselineMode")]
+    pub baseline_mode: String,
+    #[serde(rename = "baselineTotalMsP50")]
+    pub baseline_total_ms_p50: Option<u64>,
+    #[serde(rename = "modeTotalMsP50")]
+    pub mode_total_ms_p50: Option<u64>,
+    #[serde(rename = "totalMsDelta")]
+    pub total_ms_delta: Option<f64>,
+    #[serde(rename = "speedupRate")]
+    pub speedup_rate: Option<f64>,
+    #[serde(rename = "baselineTotalCost")]
+    pub baseline_total_cost: Option<f64>,
+    #[serde(rename = "modeTotalCost")]
+    pub mode_total_cost: Option<f64>,
+    #[serde(rename = "additionalCost")]
+    pub additional_cost: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RepeatBaselineComparison {
+    #[serde(rename = "baselineMode")]
+    pub baseline_mode: String,
+    #[serde(rename = "baselineTotalMsP50")]
+    pub baseline_total_ms_p50: DistributionSummary,
+    #[serde(rename = "modeTotalMsP50")]
+    pub mode_total_ms_p50: DistributionSummary,
+    #[serde(rename = "speedupRate")]
+    pub speedup_rate: DistributionSummary,
+    #[serde(rename = "baselineTotalCost")]
+    pub baseline_total_cost: DistributionSummary,
+    #[serde(rename = "modeTotalCost")]
+    pub mode_total_cost: DistributionSummary,
+    #[serde(rename = "additionalCost")]
+    pub additional_cost: DistributionSummary,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -86,6 +131,12 @@ pub struct RepeatModeSummary {
     pub input_tokens: DistributionSummary,
     #[serde(rename = "outputTokens")]
     pub output_tokens: DistributionSummary,
+    #[serde(rename = "jevCost")]
+    pub jev_cost: DistributionSummary,
+    #[serde(rename = "codexCost")]
+    pub codex_cost: DistributionSummary,
+    #[serde(rename = "totalCost")]
+    pub total_cost: DistributionSummary,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -146,6 +197,14 @@ pub struct ModeSummary {
     pub average_input_tokens: Option<f64>,
     #[serde(rename = "averageOutputTokens")]
     pub average_output_tokens: Option<f64>,
+    #[serde(rename = "jevCost")]
+    pub jev_cost: Option<f64>,
+    #[serde(rename = "codexCost")]
+    pub codex_cost: Option<f64>,
+    #[serde(rename = "totalCost")]
+    pub total_cost: Option<f64>,
+    #[serde(rename = "costStatusCounts")]
+    pub cost_status_counts: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -198,6 +257,8 @@ pub struct JevCaseResult {
     pub relative_cost: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost: Option<CostSummary>,
     #[serde(rename = "errorCode", skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
     #[serde(rename = "candidateMiss")]
@@ -218,6 +279,7 @@ struct Observation {
     cache_hit: bool,
     retries: u32,
     relative_cost: Option<f64>,
+    cost: Option<CostSummary>,
 }
 
 pub fn load_fixtures(path: &Path) -> Result<Vec<EvaluationFixture>, JevxError> {
@@ -284,6 +346,7 @@ pub async fn evaluate(
         let local_prediction = local_keyword_prediction(&fixture.prompt, skills);
         local_observations.push(Observation {
             prediction: local_prediction.clone(),
+            cost: Some(CostSummary::no_external_call()),
             ..Observation::default()
         });
 
@@ -302,6 +365,7 @@ pub async fn evaluate(
             candidate_miss: local_rank_candidate_miss,
             discovery_ms: Some(local_ranking.discovery_ms),
             total_ms: Some(local_ranking.discovery_ms),
+            cost: Some(CostSummary::no_external_call()),
             ..Observation::default()
         });
 
@@ -331,7 +395,10 @@ pub async fn evaluate(
 
     let none_observations = fixtures
         .iter()
-        .map(|_| Observation::default())
+        .map(|_| Observation {
+            cost: Some(CostSummary::no_external_call()),
+            ..Observation::default()
+        })
         .collect::<Vec<_>>();
     let mut modes = BTreeMap::new();
     modes.insert(
@@ -355,10 +422,14 @@ pub async fn evaluate(
         },
     );
 
+    let baseline_mode = "local_rank".to_owned();
+    let comparisons = baseline_comparisons(&modes, &baseline_mode);
     EvaluationReport {
         schema_version: REPORT_SCHEMA_VERSION,
         case_count: fixtures.len(),
+        baseline_mode,
         modes,
+        comparisons,
         cases,
     }
 }
@@ -403,11 +474,15 @@ pub async fn evaluate_repeated(
         })
         .collect::<Vec<_>>();
 
+    let baseline_mode = "local_rank".to_owned();
+    let comparisons = repeat_baseline_comparisons(&reports, &baseline_mode);
     Ok(RepeatEvaluationReport {
         schema_version: REPORT_SCHEMA_VERSION,
         run_count,
         case_count: fixtures.len(),
+        baseline_mode,
         modes,
+        comparisons,
         runs,
     })
 }
@@ -509,7 +584,154 @@ fn repeat_mode_summary(mode: &str, reports: &[EvaluationReport]) -> RepeatModeSu
                 .iter()
                 .filter_map(|metrics| metrics.4.map(|value| value as f64)),
         ),
+        jev_cost: distribution(
+            reports
+                .iter()
+                .flat_map(|report| report.cases.iter())
+                .filter_map(|case| {
+                    case.jevx
+                        .as_ref()
+                        .and_then(|jevx| jevx.cost.as_ref())
+                        .and_then(|cost| cost.jev.amount)
+                }),
+        ),
+        codex_cost: distribution(
+            reports
+                .iter()
+                .flat_map(|report| report.cases.iter())
+                .filter_map(|case| {
+                    case.jevx
+                        .as_ref()
+                        .and_then(|jevx| jevx.cost.as_ref())
+                        .and_then(|cost| cost.codex.amount)
+                }),
+        ),
+        total_cost: distribution(
+            reports
+                .iter()
+                .flat_map(|report| report.cases.iter())
+                .filter_map(|case| {
+                    case.jevx
+                        .as_ref()
+                        .and_then(|jevx| jevx.cost.as_ref())
+                        .and_then(|cost| cost.total.amount)
+                }),
+        ),
     }
+}
+
+fn baseline_comparisons(
+    modes: &BTreeMap<String, ModeSummary>,
+    baseline_mode: &str,
+) -> BTreeMap<String, BaselineComparison> {
+    let Some(baseline) = modes.get(baseline_mode) else {
+        return BTreeMap::new();
+    };
+    modes
+        .iter()
+        .map(|(mode, summary)| {
+            (
+                mode.clone(),
+                BaselineComparison {
+                    baseline_mode: baseline_mode.to_owned(),
+                    baseline_total_ms_p50: baseline.total_ms_p50,
+                    mode_total_ms_p50: summary.total_ms_p50,
+                    total_ms_delta: match (baseline.total_ms_p50, summary.total_ms_p50) {
+                        (Some(baseline), Some(mode)) => Some(mode as f64 - baseline as f64),
+                        _ => None,
+                    },
+                    speedup_rate: match (baseline.total_ms_p50, summary.total_ms_p50) {
+                        (Some(baseline), Some(mode)) if baseline > 0 => {
+                            Some((baseline as f64 - mode as f64) / baseline as f64)
+                        }
+                        _ => None,
+                    },
+                    baseline_total_cost: baseline.total_cost,
+                    mode_total_cost: summary.total_cost,
+                    additional_cost: match (baseline.total_cost, summary.total_cost) {
+                        (Some(baseline), Some(mode)) => Some(mode - baseline),
+                        _ => None,
+                    },
+                },
+            )
+        })
+        .collect()
+}
+
+fn repeat_baseline_comparisons(
+    reports: &[EvaluationReport],
+    baseline_mode: &str,
+) -> BTreeMap<String, RepeatBaselineComparison> {
+    let mut modes = BTreeSet::new();
+    for report in reports {
+        modes.extend(report.modes.keys().cloned());
+    }
+    modes
+        .into_iter()
+        .map(|mode| {
+            let mode_name = mode.clone();
+            let baseline_total_ms_p50 = reports.iter().filter_map(|report| {
+                report
+                    .modes
+                    .get(baseline_mode)
+                    .and_then(|summary| summary.total_ms_p50)
+                    .map(|value| value as f64)
+            });
+            let mode_total_ms_p50 = reports.iter().filter_map(|report| {
+                report
+                    .modes
+                    .get(&mode_name)
+                    .and_then(|summary| summary.total_ms_p50)
+                    .map(|value| value as f64)
+            });
+            let speedup_rate = reports.iter().filter_map(|report| {
+                let baseline = report
+                    .modes
+                    .get(baseline_mode)
+                    .and_then(|summary| summary.total_ms_p50)?;
+                let mode_value = report
+                    .modes
+                    .get(&mode_name)
+                    .and_then(|summary| summary.total_ms_p50)?;
+                (baseline > 0).then_some((baseline as f64 - mode_value as f64) / baseline as f64)
+            });
+            let baseline_total_cost = reports.iter().filter_map(|report| {
+                report
+                    .modes
+                    .get(baseline_mode)
+                    .and_then(|summary| summary.total_cost)
+            });
+            let mode_total_cost = reports.iter().filter_map(|report| {
+                report
+                    .modes
+                    .get(&mode_name)
+                    .and_then(|summary| summary.total_cost)
+            });
+            let additional_cost = reports.iter().filter_map(|report| {
+                let baseline = report
+                    .modes
+                    .get(baseline_mode)
+                    .and_then(|summary| summary.total_cost)?;
+                let mode_value = report
+                    .modes
+                    .get(&mode_name)
+                    .and_then(|summary| summary.total_cost)?;
+                Some(mode_value - baseline)
+            });
+            (
+                mode,
+                RepeatBaselineComparison {
+                    baseline_mode: baseline_mode.to_owned(),
+                    baseline_total_ms_p50: distribution(baseline_total_ms_p50),
+                    mode_total_ms_p50: distribution(mode_total_ms_p50),
+                    speedup_rate: distribution(speedup_rate),
+                    baseline_total_cost: distribution(baseline_total_cost),
+                    mode_total_cost: distribution(mode_total_cost),
+                    additional_cost: distribution(additional_cost),
+                },
+            )
+        })
+        .collect()
 }
 
 fn distribution(values: impl IntoIterator<Item = f64>) -> DistributionSummary {
@@ -579,6 +801,7 @@ async fn evaluate_jev_case(
                 cache_hit: result.metrics.cache_hit.unwrap_or(false),
                 retries: result.metrics.decision_retries.unwrap_or_default(),
                 relative_cost: result.metrics.relative_cost,
+                cost: result.metrics.cost.clone(),
             };
             let case = JevCaseResult {
                 decision: result.decision,
@@ -593,6 +816,7 @@ async fn evaluate_jev_case(
                 cache_hit: result.metrics.cache_hit,
                 relative_cost: result.metrics.relative_cost,
                 fallback: result.metrics.fallback,
+                cost: result.metrics.cost,
                 error_code: None,
                 candidate_miss: observation.candidate_miss,
             };
@@ -612,6 +836,7 @@ async fn evaluate_jev_case(
                 cache_hit: None,
                 relative_cost: None,
                 fallback: Some(true),
+                cost: None,
                 error_code: Some(error_code(&error).to_owned()),
                 candidate_miss: false,
             },
@@ -731,6 +956,26 @@ fn summarize(
         .iter()
         .filter_map(|observation| observation.output_tokens)
         .collect::<Vec<_>>();
+    let mut cost_status_counts = BTreeMap::new();
+    for cost in observations
+        .iter()
+        .filter_map(|observation| observation.cost.as_ref())
+    {
+        for (name, estimate) in [
+            ("jev", &cost.jev),
+            ("codex", &cost.codex),
+            ("total", &cost.total),
+        ] {
+            let status = match estimate.status {
+                CostStatus::Available => "available",
+                CostStatus::Unknown => "unknown",
+                CostStatus::Unavailable => "unavailable",
+            };
+            *cost_status_counts
+                .entry(format!("{name}:{status}"))
+                .or_insert(0) += 1;
+        }
+    }
 
     ModeSummary {
         status: status.to_owned(),
@@ -764,7 +1009,28 @@ fn summarize(
         discovery_ms_p95: percentile(&discovery_times, 95),
         average_input_tokens: average(&input_tokens),
         average_output_tokens: average(&output_tokens),
+        jev_cost: average_component_cost(observations, |cost| &cost.jev),
+        codex_cost: average_component_cost(observations, |cost| &cost.codex),
+        total_cost: average_component_cost(observations, |cost| &cost.total),
+        cost_status_counts,
     }
+}
+
+fn average_component_cost<F>(observations: &[Observation], select: F) -> Option<f64>
+where
+    F: Fn(&CostSummary) -> &CostEstimate,
+{
+    if observations.is_empty() {
+        return None;
+    }
+    let mut accumulator = CostAccumulator::default();
+    for observation in observations {
+        let cost = observation.cost.as_ref()?;
+        accumulator.add(select(cost));
+    }
+    accumulator
+        .amount()
+        .map(|amount| amount / observations.len() as f64)
 }
 
 impl ModeSummary {
@@ -795,6 +1061,10 @@ impl ModeSummary {
             discovery_ms_p95: None,
             average_input_tokens: None,
             average_output_tokens: None,
+            jev_cost: None,
+            codex_cost: None,
+            total_cost: None,
+            cost_status_counts: BTreeMap::new(),
         }
     }
 }
@@ -841,6 +1111,7 @@ fn error_code(error: &JevxError) -> &'static str {
         JevxError::Provider(_) => "provider_error",
         JevxError::ProviderWithMetrics { .. } => "provider_error",
         JevxError::Timeout => "timeout",
+        JevxError::TimeoutWithMetrics { .. } => "timeout",
         JevxError::Io(_) => "io_error",
         JevxError::Json(_) => "json_error",
         JevxError::Yaml(_) => "yaml_error",
@@ -926,11 +1197,16 @@ mod tests {
             JevxError::MissingApiKey,
             JevxError::Provider("x".to_owned()),
             JevxError::Timeout,
+            JevxError::TimeoutWithMetrics {
+                calls: 2,
+                retries: 1,
+                response_ms: 10,
+            },
             JevxError::Io(std::io::Error::other("x")),
             JevxError::Json(serde_json::from_str::<serde_json::Value>("{").expect_err("json")),
             JevxError::Yaml(serde_yaml::from_str::<serde_yaml::Value>("[").expect_err("yaml")),
         ];
-        assert_eq!(errors.iter().map(error_code).count(), 7);
+        assert_eq!(errors.iter().map(error_code).count(), 8);
     }
 
     #[test]
@@ -953,5 +1229,76 @@ mod tests {
         assert_eq!(values.p50, Some(20.0));
         assert_eq!(values.p95, Some(30.0));
         assert!(values.stddev.is_some());
+    }
+
+    #[test]
+    fn average_component_cost_rejects_missing_and_mixed_metadata() {
+        assert_eq!(average_component_cost(&[], |cost| &cost.jev), None);
+        assert_eq!(
+            average_component_cost(&[Observation::default()], |cost| &cost.jev),
+            None
+        );
+
+        let priced = |amount: f64, version: &str| CostSummary {
+            jev: CostEstimate::available(amount, Some("USD".to_owned()), Some(version.to_owned())),
+            ..CostSummary::default()
+        };
+        let known = vec![
+            Observation {
+                cost: Some(priced(0.1, "fixture-1")),
+                ..Observation::default()
+            },
+            Observation {
+                cost: Some(priced(0.2, "fixture-1")),
+                ..Observation::default()
+            },
+        ];
+        assert!(
+            (average_component_cost(&known, |cost| &cost.jev).expect("known cost") - 0.15).abs()
+                < 1e-9
+        );
+
+        let mixed = vec![
+            Observation {
+                cost: Some(priced(0.1, "fixture-1")),
+                ..Observation::default()
+            },
+            Observation {
+                cost: Some(priced(0.2, "fixture-2")),
+                ..Observation::default()
+            },
+        ];
+        assert_eq!(average_component_cost(&mixed, |cost| &cost.jev), None);
+    }
+
+    #[test]
+    fn baseline_comparison_is_explicit_when_measurements_exist_or_do_not() {
+        assert!(baseline_comparisons(&BTreeMap::new(), "local_rank").is_empty());
+        let baseline = ModeSummary {
+            total_ms_p50: Some(100),
+            total_cost: Some(0.10),
+            ..ModeSummary::not_run()
+        };
+        let mode = ModeSummary {
+            total_ms_p50: Some(75),
+            total_cost: Some(0.15),
+            ..ModeSummary::not_run()
+        };
+        let comparisons = baseline_comparisons(
+            &BTreeMap::from([
+                ("local_rank".to_owned(), baseline),
+                ("jevx".to_owned(), mode),
+            ]),
+            "local_rank",
+        );
+        assert_eq!(comparisons["jevx"].speedup_rate, Some(0.25));
+        assert!(
+            (comparisons["jevx"]
+                .additional_cost
+                .expect("additional cost")
+                - 0.05)
+                .abs()
+                < 1e-9
+        );
     }
 }

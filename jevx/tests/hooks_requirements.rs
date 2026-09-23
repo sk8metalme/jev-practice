@@ -7,7 +7,7 @@ use jevx::hooks::{
     compact_evaluation, evaluate_conversation_compaction, load_conversation_cases,
     load_hook_records, run_shadow,
 };
-use jevx::{Config, JevxError, Judge, JudgeRequest, JudgeResponse, SkillRecord};
+use jevx::{Config, CostSummary, JevxError, Judge, JudgeRequest, JudgeResponse, SkillRecord};
 use serde_json::json;
 use tempfile::tempdir;
 
@@ -99,6 +99,65 @@ async fn hook_shadow_observes_compaction_events_without_judging() {
     assert_eq!(result.record.trigger.as_deref(), Some("auto"));
     assert_eq!(result.record.selected_skill, None);
     assert!(result.response.continue_running);
+}
+
+#[tokio::test]
+async fn hook_shadow_records_codex_usage_without_treating_missing_total_as_zero() {
+    let input = serde_json::json!({
+        "hook_event_name": "PostCompact",
+        "codexUsage": {
+            "model": "gpt-6-luna",
+            "reasoningEffort": "max",
+            "mainTurns": 1,
+            "subagentCount": 2,
+            "inputTokens": 100,
+            "outputTokens": 20,
+            "reasoningTokens": 40,
+            "additionalInputTokens": 10,
+            "additionalOutputTokens": 3,
+            "additionalReasoningTokens": 5,
+            "elapsedMs": 321,
+            "fallbackStage": "luna",
+            "cost": {
+                "amount": 0.42,
+                "currency": "USD",
+                "priceVersion": "codex-fixture-1",
+                "status": "available"
+            },
+            "additionalCost": {
+                "amount": 0.07,
+                "currency": "USD",
+                "priceVersion": "codex-fixture-1",
+                "status": "available",
+                "basis": "actual"
+            }
+        }
+    });
+    let result = run_shadow(
+        &serde_json::to_string(&input).expect("input json"),
+        None,
+        &[],
+        &Config::for_test(PathBuf::from("/tmp/jevx-hook-test")),
+        None,
+    )
+    .await
+    .expect("codex usage is optional hook metadata");
+    let codex = result.record.codex.as_ref().expect("codex usage");
+    assert_eq!(codex.model.as_deref(), Some("gpt-6-luna"));
+    assert_eq!(codex.reasoning_effort.as_deref(), Some("max"));
+    assert_eq!(codex.subagent_count, Some(2));
+    assert_eq!(codex.additional_input_tokens, Some(10));
+    assert_eq!(codex.additional_output_tokens, Some(3));
+    assert_eq!(codex.additional_reasoning_tokens, Some(5));
+    assert_eq!(codex.cost.amount, Some(0.42));
+    assert_eq!(
+        codex.additional_cost.as_ref().and_then(|cost| cost.amount),
+        Some(0.07)
+    );
+    assert_eq!(result.record.cost.codex.amount, Some(0.42));
+    assert!(result.record.cost.total.amount.is_none());
+    let serialized = serde_json::to_string(&result.record).expect("record json");
+    assert!(!serialized.contains("PRIVATE"));
 }
 
 #[tokio::test]
@@ -318,6 +377,8 @@ fn conversation_case(id: &str, response: &str) -> ConversationCompactionCase {
         pre_compaction_usage: None,
         compaction_usage: None,
         post_compaction_usage: None,
+        post_compaction_cost: None,
+        codex_usage: None,
         observed_events: vec!["contextCompaction".to_owned(), "turn/completed".to_owned()],
     }
 }
@@ -354,6 +415,41 @@ fn conversation_compaction_evaluation_aggregates_without_storing_raw_text() {
     let json = serde_json::to_string(&report).expect("report json");
     assert!(!json.contains("DECOY_DO_NOT_OUTPUT"));
     assert!(!json.contains("goal=keep-context"));
+}
+
+#[test]
+fn conversation_compaction_records_codex_usage_and_fallback_extra_cost() {
+    let mut case = conversation_case("codex-cost", "goal=keep-context\nnext=verify");
+    case.codex_usage = Some(jevx::CodexUsage {
+        model: Some("gpt-5.6-sol".to_owned()),
+        reasoning_effort: Some("high".to_owned()),
+        main_turns: Some(1),
+        subagent_count: Some(2),
+        input_tokens: Some(100),
+        output_tokens: Some(20),
+        reasoning_tokens: Some(10),
+        elapsed_ms: Some(321),
+        fallback_stage: Some("sol-to-terra".to_owned()),
+        cost: jevx::CostEstimate::actual(
+            0.42,
+            Some("USD".to_owned()),
+            Some("codex-fixture-1".to_owned()),
+        ),
+        additional_input_tokens: Some(10),
+        additional_output_tokens: Some(3),
+        additional_reasoning_tokens: Some(5),
+        additional_cost: Some(jevx::CostEstimate::actual(
+            0.07,
+            Some("USD".to_owned()),
+            Some("codex-fixture-1".to_owned()),
+        )),
+    });
+    let report = evaluate_conversation_compaction(&[case]).expect("compaction evaluation");
+    let usage = report.runs[0].codex_usage.as_ref().expect("codex usage");
+    assert_eq!(usage.model.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(usage.additional_output_tokens, Some(3));
+    assert_eq!(report.summary.codex_cost, Some(0.42));
+    assert_eq!(report.summary.fallback_extra_cost, Some(0.07));
 }
 
 #[test]
@@ -658,7 +754,7 @@ fn hook_correlation_loader_rejects_empty_and_secret_echo() {
         })
     };
     for (field, value) in [
-        ("schemaVersion", json!(2)),
+        ("schemaVersion", json!(3)),
         ("hookEventName", json!("Unknown")),
         ("mode", json!("unsafe mode")),
         ("sessionIdSha256", json!("unsafe session")),
@@ -706,7 +802,7 @@ fn append_shadow_record_rejects_untrusted_selected_skill() {
     let root = tempdir().expect("tempdir");
     let path = root.path().join("hook-records.jsonl");
     let record = HookShadowRecord {
-        schema_version: 1,
+        schema_version: 2,
         mode: "shadow".to_owned(),
         hook_event_name: "UserPromptSubmit".to_owned(),
         trigger: None,
@@ -725,6 +821,8 @@ fn append_shadow_record_rejects_untrusted_selected_skill() {
         input_tokens: None,
         output_tokens: None,
         error_code: None,
+        codex: None,
+        cost: CostSummary::default(),
         elapsed_ms: 0,
     };
 

@@ -10,9 +10,10 @@ use std::thread;
 use async_trait::async_trait;
 use jevx::decision::{DecisionRequest, QuestionSpec};
 use jevx::{
-    CandidateDecision, Config, GatewayJudge, Judge, JudgeRequest, JudgeResponse, SkillRecord,
-    SuggestInput, TelemetryEvent, Usage, append_telemetry, read_decision_receipts, read_stats,
-    suggest_with_judge, suggest_with_optional_judge,
+    CandidateDecision, Config, CostEstimate, CostStatus, CostSummary, GatewayJudge, Judge,
+    JudgeRequest, JudgeResponse, SkillRecord, SuggestInput, TelemetryEvent, Usage,
+    append_telemetry, read_decision_receipts, read_stats, suggest_with_judge,
+    suggest_with_optional_judge,
 };
 use tempfile::tempdir;
 
@@ -363,7 +364,7 @@ fn redaction_and_telemetry_do_not_keep_raw_prompt() {
 fn output_json_has_stable_schema_and_response_speed_name() {
     let result = jevx::SuggestionResult::none("none");
     let json = serde_json::to_value(result).expect("json");
-    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["schemaVersion"], 2);
     assert!(json.get("metrics").is_some());
     assert!(json["metrics"].get("jevResponseMs").is_some());
 }
@@ -509,6 +510,37 @@ fn telemetry_is_appendable_and_stats_are_aggregated() {
     assert_eq!(stats.selected, 1);
     assert_eq!(stats.none, 1);
     assert_eq!(stats.average_jev_response_ms, 15.0);
+}
+
+#[test]
+fn telemetry_aggregates_costs_and_keeps_unknown_distinct_from_zero() {
+    let root = tempdir().expect("tempdir");
+    let path = root.path().join("events.jsonl");
+    let cost = CostSummary {
+        jev: CostEstimate::available(0.25, Some("USD".to_owned()), Some("fixture-1".to_owned())),
+        codex: CostEstimate::unknown(Some("USD".to_owned()), Some("fixture-1".to_owned())),
+        total: CostEstimate::unknown(Some("USD".to_owned()), Some("fixture-1".to_owned())),
+    };
+    let event = TelemetryEvent::from_result(
+        "cost-prompt",
+        &CandidateDecision::Selected,
+        None,
+        &jevx::Metrics {
+            cost: Some(cost),
+            ..jevx::Metrics::default()
+        },
+    );
+    append_telemetry(&path, &event).expect("append cost event");
+
+    let stats = read_stats(&path).expect("stats");
+    assert_eq!(stats.jev_cost, Some(0.25));
+    assert_eq!(stats.codex_cost, None);
+    assert_eq!(stats.total_cost, None);
+    assert_eq!(stats.cost_status_counts.get("codex:unknown"), Some(&1));
+    assert_eq!(
+        CostStatus::Unknown,
+        event.metrics.cost.expect("cost").codex.status
+    );
 }
 
 #[test]

@@ -1,0 +1,78 @@
+# jevx費用観測契約
+
+> 状態: 現行仕様。費用上限は設けず、速度・品質と同格の評価軸として記録する。
+
+## 目的
+
+速くなったように見える処理が、Jevの呼び出し、Codexの追加turn、model昇格、retry、fallbackによって高くなっていないかを同じ条件で比較する。費用を取得できないときは金額を推測して0にせず、`unknown`または`unavailable`を保持する。
+
+## 型の意味
+
+各 `CostEstimate` は次を持つ。
+
+- `amount`: 金額。取得不能時は`null`。
+- `currency`: ISO風の通貨ラベル。未設定なら`null`。
+- `priceVersion`: 適用した価格表の版。未設定なら`null`。
+- `status`: `available`、`unknown`、`unavailable`。
+- `basis`: `estimated`（Tokenと価格表から算出）または`actual`（外部から渡された実績値）。
+
+`cache hit`の価格表上の追加呼び出しは、外部呼び出しがないことが確定しているため、`available`かつ0円で記録できる。同様に、baselineのように外部モデルを呼んでいないことをコード側で確定できる観測は既知の0円として扱える。それ以外のusage欠落は0円にしない。JevとCodexの通貨または価格版が一致しない合算は`available`にしない。複数receiptの集計でも、unknown/unavailableや価格メタデータの不一致を既知の金額へ混ぜない。
+
+## 記録項目
+
+### Jev
+
+`DecisionReceipt`、SkillのTelemetry、Review receiptに、calls、input/output Token、retry、fallback、cache hit、latency、price version、currency、Jev costを記録する。Review receiptは1回のbatched requestを基本とし、4カテゴリを候補ごとに個別呼び出ししない。
+
+### Codex
+
+Hook payloadで任意に受け取る `codexUsage` は、model、reasoning、main turn、subagent数、input/output/reasoning Token、elapsed、fallback stage、costを保持する。model昇格やfallbackで追加された`additionalInputTokens`、`additionalOutputTokens`、`additionalReasoningTokens`、`additionalCost`も通常usageと分けて保持する。Skill選択・review・compact・planのどの観測に紐づくかは、対応するreceipt/eventの種類とtask/turn/session hashで区別する。欠落フィールドは欠落のままで、0に補完しない。
+
+### 合算
+
+すべての観測で次を同じ命名で扱う。
+
+| 指標 | 定義 |
+| --- | --- |
+| `jevCost` | Jev componentの金額。全行が同一の価格版・通貨で既知のときだけ合算し、別途statusを数える |
+| `codexCost` | Codex componentの金額 |
+| `totalCost` | 通貨と価格版が一致したJev+Codex。basisは両方actualのときだけactual |
+| task/turn/session | receiptのSHA-256 IDごとのcomponent合計。ID本文は保存しない |
+| baseline delta | 同じfixture・環境・retry条件のbaselineとの差。絶対値と割合を別表示 |
+| speed vs cost | p50/p95短縮率と追加/削減費用を同じ表に置く |
+| fallback extra | 初回段階とfallback段階のcalls、追加Token（`additional*Tokens`）、latency、`additionalCost`の差 |
+| successful review/fix | `Completed`/`None`のreview、`Applied`のfixに紐づくtotalCost。取得不能ならnull |
+
+未知の行を集計から消さず、status count（例: `total:unknown`）に残す。平均値は同一通貨・価格版で対象行の費用がすべて比較可能な場合だけ出し、欠けた行や混在があれば`null`にする。
+
+## 価格設定
+
+現在のJev価格表は設定から読み取る。
+
+```text
+JEVX_JEV_INPUT_PRICE_PER_MILLION
+JEVX_JEV_OUTPUT_PRICE_PER_MILLION
+JEVX_PRICE_CURRENCY       # default USD
+JEVX_PRICE_VERSION        # default unconfigured
+```
+
+価格値がない状態は、usageがあれば`unknown`、usageもなければ`unavailable`。負数・NaN・無限大は警告を出して価格を無効化する。価格設定を変えても費用上限や自動停止は発生しない。
+
+## 保存先とschema
+
+- `events.jsonl`: Skill選択Telemetry。`metrics.cost`にJev/Codex/totalとstatusを持つ。
+- `decisions.jsonl`: Decision Contract receipt。従来schema v1を読み込み、現行v2で費用を記録する。
+- `reviews.jsonl`: Review receipt（schema 2）。本文、Skill本文、Tool結果を含めず、digest・文字数・finding・route・fix・費用を記録する。`review-stats`には追加Token／fallback追加費用も出す。
+- `hooks.jsonl` / `compaction/*`: Hook/Compactionのsafe metadataと任意のCodex usage/cost。
+- `jevx hooks review-stats --input reviews.jsonl --json`: status、latency、calls/retry/cache、Token、追加Token、Jev/Codex/total、fallback追加費用、成功単価、task/turn/session hash単位の集計。
+
+`eval` / `eval-repeat`のレポートschemaはbaseline比較の追加に伴いv2。`baselineMode`は既定で`local_rank`、`comparisons`の各modeに`totalMsDelta`（mode - baseline）、`speedupRate`（baselineからの短縮率）、`additionalCost`（mode - baseline）を出す。値が欠ける場合は`null`で、速度だけを成功扱いしない。`jevx data path/export/purge`のinventory schemaは、review receipt追加に伴いv2。既存のv1データは削除せず読み取り互換を保つ。receiptにprompt本文、会話全文、Skill本文、raw Tool result、API keyを保存しない。
+
+## 評価手順
+
+1. fixture hash、model、reasoning、retry、cache設定、価格版、通貨、環境を固定する。
+2. baseline、Jevのみ、Codex昇格あり、review/fixありを同じ入力で複数回実行する。
+3. p50/p95、品質、fallback/error、`unknown`/`unavailable`件数、Jev/Codex/totalを同じレポートへ出す。
+4. 速度20%以上短縮でも、品質低下、secret漏えい、route未適用のapplied化、費用欠落があれば成功としない。
+
+現行コードは観測と提案を実装している。Codex公式APIや実行wrapperから実費が渡されない経路ではCodex costは`unknown`/`unavailable`のままであり、値を作らない。これが解消されるまで、Jevxは「費用を最適化した」と主張しない。

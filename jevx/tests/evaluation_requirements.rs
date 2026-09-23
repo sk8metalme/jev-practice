@@ -102,6 +102,8 @@ async fn evaluation_reports_baselines_and_does_not_serialize_prompt() {
     assert_eq!(report.modes["none"].accuracy, Some(0.5));
     assert_eq!(report.modes["local_keyword"].accuracy, Some(1.0));
     assert_eq!(report.modes["jevx"].status, "not_run");
+    assert_eq!(report.baseline_mode, "local_rank");
+    assert_eq!(report.comparisons["local_rank"].additional_cost, Some(0.0));
     let json = serde_json::to_string(&report).expect("report json");
     assert!(!json.contains("secret-prompt"));
     assert!(!json.contains("secret-none"));
@@ -155,6 +157,8 @@ async fn evaluation_reports_local_rank_metrics_and_repeat_distribution() {
     assert_eq!(jevx.jev_response_ms.mean, Some(17.0));
     assert_eq!(jevx.input_tokens.mean, Some(31.0));
     assert!(jevx.discovery_ms.p95.is_some());
+    assert_eq!(repeated_jev.baseline_mode, "local_rank");
+    assert!(repeated_jev.comparisons.contains_key("jevx"));
     assert_eq!(judge.requests.lock().expect("requests lock").len(), 2);
     assert!(
         evaluate_repeated(&fixtures, &skills, &config, None, 0)

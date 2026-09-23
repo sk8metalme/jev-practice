@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use crate::Config;
+use crate::cost::{CostEstimate, CostSummary, total_cost};
 use crate::decision::{
     DecisionCache, DecisionContract, DecisionExecution, DecisionExecutionOptions, DecisionJudge,
     DecisionStatus, FallbackReason, InMemoryDecisionCache, LegacyJudgeAdapter, QuestionSpec,
@@ -12,8 +13,8 @@ use crate::error::JevxError;
 use crate::recorder::{DecisionReceipt, DecisionRecorder, JsonlDecisionRecorder};
 use crate::redaction::redact;
 use crate::types::{
-    CandidateDecision, CandidateResult, Judge, JudgeCandidate, Metrics, SkillRecord, SuggestInput,
-    SuggestionResult,
+    CandidateDecision, CandidateResult, Judge, JudgeCandidate, Metrics, SUGGESTION_SCHEMA_VERSION,
+    SkillRecord, SuggestInput, SuggestionResult,
 };
 
 #[derive(Debug, Clone)]
@@ -57,7 +58,7 @@ pub async fn suggest_with_optional_judge<J: Judge + ?Sized>(
         };
         let discovery_ms = elapsed_ms(started);
         return Ok(SuggestionResult {
-            schema_version: 1,
+            schema_version: SUGGESTION_SCHEMA_VERSION,
             decision: CandidateDecision::Explicit,
             selected: Some(CandidateResult::from_skill(skill, 1_000, Some(1.0))),
             candidates: vec![CandidateResult::from_skill(skill, 1_000, Some(1.0))],
@@ -78,7 +79,7 @@ pub async fn suggest_with_optional_judge<J: Judge + ?Sized>(
 
     if candidates.is_empty() {
         return Ok(SuggestionResult {
-            schema_version: 1,
+            schema_version: SUGGESTION_SCHEMA_VERSION,
             decision: CandidateDecision::NoCandidates,
             selected: None,
             candidates: Vec::new(),
@@ -178,6 +179,17 @@ pub async fn suggest_with_optional_judge<J: Judge + ?Sized>(
     let response_ms = execution.response_ms;
     let total_ms = elapsed_ms(started).max(discovery_ms.saturating_add(response_ms));
     let usage = execution.usage;
+    let jev_cost = config.jev_pricing().estimate_two_part(
+        usage.as_ref().map(|usage| usage.input_tokens),
+        usage.as_ref().map(|usage| usage.output_tokens),
+        execution.cache_hit,
+    );
+    let codex_cost = CostEstimate::unavailable();
+    let cost = CostSummary {
+        total: total_cost(&jev_cost, &codex_cost),
+        jev: jev_cost,
+        codex: codex_cost,
+    };
     let relative_cost = if execution.cache_hit {
         Some(0.0)
     } else {
@@ -195,7 +207,7 @@ pub async fn suggest_with_optional_judge<J: Judge + ?Sized>(
             })
     };
     Ok(SuggestionResult {
-        schema_version: 1,
+        schema_version: SUGGESTION_SCHEMA_VERSION,
         decision,
         selected,
         candidates: result_candidates,
@@ -211,6 +223,7 @@ pub async fn suggest_with_optional_judge<J: Judge + ?Sized>(
             cache_hit: Some(execution.cache_hit),
             relative_cost,
             fallback: Some(execution.result.fallback.is_some()),
+            cost: Some(cost),
         },
         reason_code,
         mode: "shadow".to_owned(),
@@ -351,12 +364,13 @@ fn record_execution(
         return Ok(());
     }
     let recorder = JsonlDecisionRecorder::new(config.decision_receipt_path.clone());
-    let receipt = DecisionReceipt::from_execution(
+    let receipt = DecisionReceipt::from_execution_with_pricing(
         contract,
         state,
         execution,
         config.input_cost_weight,
         config.output_cost_weight,
+        &config.jev_pricing(),
     );
     recorder.record(&receipt)
 }

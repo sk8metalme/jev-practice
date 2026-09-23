@@ -4,9 +4,9 @@
 
 ## 先に結論
 
-`jevx`は、Codex CLIのSkill選択を提案し、選択しない `none` も含めて判断結果を計測するmacOS向けRust CLIです。基本動作はShadow Modeで、提案されたSkillを自動でロード・実行したり、会話を書き換えたりしません。
+`jevx`は、Codex CLIのSkill選択、意味レビュー、model/reasoning候補、速度、費用を計測するmacOS向けRust CLIです。基本動作はShadow/Review-onlyで、提案されたSkillを自動でロード・実行したり、会話を書き換えたりしません。
 
-固定fixtureの評価では、記録済みのjevx + Jev snapshotはローカルキーワード方式より高い正解率を示しました。一方で、Jev/Gatewayへの外部通信、Token使用量、応答遅延、Provider errorが追加されます。このため、jevxは「必ず速くなる自動化」ではなく、Skill選択の判断と導入効果を観測可能にする補助線として検討してください。`nonePrecision` は実装上の互換JSONキーで、意味は `expected: none` の正解数を分母にした recall（`noneCorrect / expectedNone`）です。
+固定fixtureの評価では、記録済みのjevx + Jev snapshotはローカルキーワード方式より高い正解率を示しました。一方で、Jev/Gatewayへの外部通信、Token使用量、応答遅延、Provider error、追加費用が発生します。このため、jevxは「必ず速くなる自動化」ではなく、速度・品質・安全性・Jev/Codex費用を同じ条件で観測可能にする補助線として検討してください。`nonePrecision` は実装上の互換JSONキーで、意味は `expected: none` の正解数を分母にした recall（`noneCorrect / expectedNone`）です。
 
 ## jevxの機能
 
@@ -54,6 +54,8 @@ Codex Hookを使う場合は、利用者が明示的に `hooks install` を実�
 - **CodexのHookへ接続したい**：`jevx hooks install --dry-run`で差分を確認してから、明示的に`jevx hooks install`を実行する。外すときは`jevx hooks uninstall`。
 - **長い会話のCompactionを補助したい**：Hook導入後に`jevx hooks compact-assist`を使う。
 - **導入効果や安全性を測りたい**：通常利用とは別に、後半の検証・評価機能を使う。
+- **文章やコードの矛盾を見たい**：`hooks review`をreview-onlyで使い、外部送信が必要な場合だけ`--allow-content`を明示する。
+- **費用を比較したい**：`hooks review-stats`と`stats --json`でJev/Codex/total、推定/実費、unknown/unavailableを確認する。
 
 ### 1. Skill探索・ローカル順位付け・Jev判定
 
@@ -141,6 +143,20 @@ jevx data purge --yes    # 実際に削除
 ```
 
 **境界**：`purge` が消すのはjevxが書いたTelemetry・Hook記録・Compaction checkpointだけです。`.jevx/compact-context.md`、Codexの `hooks.json`、評価で `--output` に指定したファイルには触れません。
+
+### 6. 意味レビューと費用の見方
+
+`hooks review --target prompt|plan|diff|final-answer|turn` は、日本語のわかりにくい表現、文章内の矛盾、コード内の矛盾、コメントと実装の乖離を確認します。本文をJevへ送らないreview-onlyが既定で、送信する場合は明示opt-inが必要です。
+
+```bash
+printf '%s\n' '{"prompt":"適宜対応して","taskId":"task-demo"}' | \
+  jevx hooks review --target prompt
+printf '%s\n' '{"diff":"// always returns true\\nreturn false;"}' | \
+  jevx hooks review --target diff --allow-content
+jevx hooks review-stats --input "${JEVX_HOME:-$HOME/.jevx}/reviews.jsonl" --json
+```
+
+`--auto-fix`は既定無効で、`--yes`、高信頼度、期待hash一致、安全な相対pathが全て必要です。backup/rollbackは作らないため、迷ったらreview-onlyを使ってください。費用が取得できないときは0円ではなく`unknown`または`unavailable`です。価格表からの`estimated`と外部usageの`actual`、通貨、price versionを分けて読みます。詳しくは[費用観測契約](../developers/jevx-cost-observability.md)を参照してください。
 
 ## jevxの検証・評価用機能
 
@@ -298,23 +314,23 @@ Jevへの外部リクエスト境界は次のとおりです。
 
 | データ | Gatewayへ送るか | 実装上の扱い |
 | --- | --- | --- |
-| 現在のprompt | 送る（redact後） | `token` / `api_key` / `secret` / `password` / `authorization` のキーに続く値、単独のBearer値、`sk-` / `tsk-` tokenを固定パターンでredact |
-| `cwd` | 送る（raw） | 作業ディレクトリはハッシュ化せず入力に含める。パス名に秘密を置かない |
+| 現在のprompt | reviewの`--allow-content`時だけ送る（redact後） | `token` / `api_key` / `secret` / `password` / `authorization` のキーに続く値、単独のBearer値、`sk-` / `tsk-` tokenを固定パターンでredact。review-onlyではlocal_contentだけ |
+| `cwd` | 送る場合もredact後 | receiptには本文を保存せずcwd digestだけ |
 | Skill ID / name | 送る（raw） | 候補識別のため送る |
 | Skill description | 送る（redact後） | promptと同じ限定パターンのredaction。Skill本文は送らない |
 | APIキー | 送る（`Authorization: Bearer`ヘッダー） | request bodyやTelemetryには含めない |
-| Skill本文 | 送らない | v1の送信対象外 |
-| 自動取得した過去の会話、Tool結果 | 送らない | v1で自動追加しない。promptへ貼付した内容はredact後のpromptとして送信対象 |
+| Skill本文/設定 | 明示対象として`--allow-content`した場合だけredactして送る | receiptには保存しない |
+| 自動取得した過去の会話、Tool結果 | 送らない | raw Tool resultは常に対象外。promptへ利用者が明示貼付した文字列は選択対象の本文として扱う |
 
 Basic redactionは、`Authorization=Basic <value>`、`Authorization:Basic <value>`、`Authorization: Basic <value>` の認識済み形式を保護します。通常文中の単独の単語 `Basic` は意味を保つためredactしません。未知のPII・ラベルなし秘密まで除去する完全なDLPではないため、送信前に内容を確認してください。
 
 Jevを使う通常の提案では、APIキーはGatewayへの`Authorization: Bearer`認証ヘッダーとして送信されます。request bodyやTelemetryへ保存されるものではありませんが、APIキーを外部Gatewayへ渡せない環境ではJev判定を使わないでください。
 
-会話やTool結果をprompt本文へ利用者が貼り付けた場合、その部分は現在のpromptの一部としてredact後にGatewayへ送信されます。自動取得した履歴やTool結果をjevxが追加することはありません。
+会話やTool結果をprompt本文へ利用者が貼り付けた場合でも、reviewの`--allow-content`を明示しない限りGatewayへ送信しません。raw Tool resultをjevxが追加することもありません。
 
 メールアドレス、電話番号、顧客情報、ラベルのない認証情報など、上記パターンに該当しない機密情報は自動除去されません。外部送信してよい内容だけを入力し、必要に応じて送信前に匿名化してください。
 
-既定Telemetryは `~/.jevx/events.jsonl` に、依頼文そのものではなくハッシュ、文字数、判定（decision）、選択されたSkill ID、候補数、遅延、Token使用量を保存します。Gatewayの回答に含まれる候補確率（probability）はTelemetry schemaへ保存しません。保存を無効にする場合は `--no-telemetry` を使い、集計は `jevx stats --json` で確認します。
+既定Telemetryは `~/.jevx/events.jsonl` に、依頼文そのものではなくハッシュ、文字数、判定（decision）、選択されたSkill ID、候補数、遅延、Token使用量、Jev/Codex/total costを保存します。Gatewayの回答に含まれる候補確率（probability）はTelemetry schemaへ保存しません。保存を無効にする場合は `--no-telemetry` を使い、集計は `jevx stats --json` で確認します。reviewは`~/.jevx/reviews.jsonl`へ本文なしreceiptを保存します。
 
 ```bash
 jevx stats --json

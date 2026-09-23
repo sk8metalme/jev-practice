@@ -5,7 +5,7 @@
 
 ## 目的
 
-`jevx`は、Codex CLIの日常利用を快適にしながら、Jevの実用性を測定するためのmacOS向けCLIである。主目的は、Skill選択・Hook運用・Compaction後のコンテキスト補助について、Jevを使わない場合との差分を追跡可能な計測で確認すること。
+`jevx`は、Codex CLIの日常利用を快適にしながら、Jevの実用性を測定するためのmacOS向けCLIである。主目的は、Skill選択・意味レビュー・model/reasoning候補・Hook/Compaction・費用について、Jev/Codexを使わないbaselineとの差分を追跡可能な計測で確認すること。
 
 Skill選択のコアはShadow Modeとし、`selected`になってもSkill本文の自動ロード・実行や会話の書き換えは行わない。Codex HookとCompaction補助は、利用者が設定をreview/trustした場合だけ動くopt-inの試作機能として境界を分ける。
 
@@ -20,12 +20,16 @@ Skill選択のコアはShadow Modeとし、`selected`になってもSkill本文�
 - timeout・provider error・低確信度を`unknown` / `defer`へ流し、自動allowしない
 - Decision receiptを安全なJSONLへ記録し、recorded answerをJevなしでreplayする
 - retry・cache・dry-run・token proxy costとfallback率を評価できる
+- Jev/Codex/合算の推定費用・実費、通貨・価格版、task/turn/session単位を記録する（費用上限は設けない）
 - 人間向け出力と`--json`出力に判定・Jev応答速度・全体速度を出す
 - prompt本文を保存しないJSONL Telemetryとstats集計を提供する
 - Codex向けadvisory SkillとmacOS用セットアップスクリプトを提供する
 - 既存Hook設定を保持してjevx Hookを冪等に登録する `hooks install` を提供する
 - `PreCompact` / `PostCompact` / `SessionStart(source=compact)` のcheckpointを記録する（IDはハッシュ化、raw metadataは現行制約の範囲で扱う）
 - 任意の`.jevx/compact-context.md`をredactし、compact後の補助contextとして返す
+- prompt/plan/diff/final-answer/turnの4カテゴリ意味レビューを、既定review-only・明示content opt-in・typed contractで実行する
+- low/medium/highからmodel/reasoning/fallback候補を推薦し、適用証拠がないrouteを`degraded`として記録する
+- 明示`--auto-fix --yes`、高信頼度、期待hash一致、safe pathのときだけworkspace fixを適用する
 - 40ケースの比較評価と、APIキーありの単回・複数回実測を記録する
 
 次の機能は本要件の対象外で、別途安全性を評価してから検討する。
@@ -35,6 +39,8 @@ Skill選択のコアはShadow Modeとし、`selected`になってもSkill本文�
 - Tool Resultの自動削減・破棄
 - MCPサーバー化
 - Windows対応
+- HookだけでCodexのmodel/reasoning切替を保証すること
+- 速度だけを理由に導入成功とすること、また費用上限を自動制御すること
 
 ## CLI
 
@@ -54,6 +60,9 @@ jevx data path --json
 jevx data export --output /tmp/jevx-data.json
 jevx data purge --yes
 jevx hooks shadow
+jevx hooks review --target turn
+jevx hooks review --target diff --allow-content
+jevx hooks review-stats --input "$JEVX_HOME/reviews.jsonl" --json
 jevx hooks compact-assist --state-dir /tmp/jevx-compaction
 jevx hooks compact-eval --runs 5 --json
 jevx hooks conversation-eval --input /tmp/conversation.jsonl --json
@@ -73,11 +82,13 @@ Jev判定は`AI_GATEWAY_API_KEY`を使い、Vercel AI Gatewayの`typesafe-ai/jev
 - リクエストタイムアウト: 1,500ms（リトライを含む呼び出し全体の予算）
 - Telemetry: `~/.jevx/events.jsonl`
 - Decision receipt: `~/.jevx/decisions.jsonl`
+- Review receipt: `~/.jevx/reviews.jsonl`
 - state byte上限: 32,000 bytes（`JEVX_MAX_STATE_BYTES`、1,024〜262,144）
 - retry: 429/529を最大1回、25ms backoff（`JEVX_MAX_RETRIES` 0〜3、`JEVX_RETRY_BACKOFF_MS` 0〜1,000）。締め切りを超えるbackoffは再試行しない
 - cache: 既定無効（`JEVX_DECISION_CACHE_CAPACITY=0`）
 - token proxy cost: input/outputとも既定weight 1.0
 - Hook state: Telemetry親ディレクトリ配下の`hooks.jsonl` / `compaction/`
+- Jev価格: `JEVX_JEV_INPUT_PRICE_PER_MILLION`、`JEVX_JEV_OUTPUT_PRICE_PER_MILLION`、`JEVX_PRICE_CURRENCY`、`JEVX_PRICE_VERSION`。未取得費用は`unknown`/`unavailable`で記録する
 
 ## 実装対応表
 
@@ -90,6 +101,8 @@ Jev判定は`AI_GATEWAY_API_KEY`を使い、Vercel AI Gatewayの`typesafe-ai/jev
 | Hook shadow・install・uninstall・compact-assist | 実装済み | 明示的な導入とCodex側のTrustが必要。uninstallはjevx管理のhandlerだけを外す |
 | 公開JSONの契約テスト | 実装済み | `tests/contract_requirements.rs` が `--json` のキーと終了コードを固定する |
 | Skill選択・Compaction・会話評価Runner | 実装済み | controlled fixture metadataまたは検証済みJSONLを評価し、Codex/App Serverは起動しない |
+| 意味レビュー（4カテゴリ）・route候補・review-stats | 実装済み | Jevは推薦。本文の外部送信は`--allow-content`、route適用とfixはコード側証拠でgateする |
+| Jev/Codex/合算費用観測 | 実装済み | 推定/実費、通貨/価格版、unknown/unavailable、task/turn/session hashを記録。Codex実費が渡らない経路は0にしない |
 | Skill自動実行・会話全文要約・Tool Result削除 | 対象外 | 別要件と安全性評価が必要 |
 
 ## Hook設定要件
@@ -131,7 +144,7 @@ Jevへの送信境界は次のとおり。
 | Skill ID / name | 送る（raw） | 候補識別子として含む |
 | Skill description | 送る（redact後） | Skill本文は送らない |
 | APIキー | 送らない | Bearer認証ヘッダーにのみ使用 |
-| Skill本文、過去会話、Tool結果 | 送らない | v1の対象外 |
+| Skill本文、過去会話、Tool結果 | 既定は送らない | Skill本文/設定は対象選択と`--allow-content`が両方ある場合のみredactして送る。raw Tool resultは常に対象外 |
 
 Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` / `Authorization: Basic <value>` の認識済み形式で値を保存・送信しない。通常文中の単独`Basic`は意味を保つためredactしない。完全なDLPではない。Telemetryには生の依頼文を保存せず、SHA-256、文字数、候補数、判定、選択時の`selectedSkill`（raw ID）、遅延、usageを保存し、Jevのprobabilityは保存しない。Skill ID自体を秘密値として扱う設計ではない。`--no-telemetry` はローカル記録を止めるだけで、Gatewayへの外部送信停止ではない。Hook recordとCompaction checkpointには生のsession ID、turn ID、model、manifest本文を保存しない。
 
@@ -149,6 +162,11 @@ Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許�
 - `decisions.jsonl`をversion・state digest検証付きでreplayでき、不一致は`degraded`になる
 - `hooks install --dry-run`が変更せず、実行後の再実行が冪等である
 - Compaction checkpointとredacted manifestが秘密情報を再出力しない
+- 4レビューカテゴリ、route fallback、fix hash gate、Jev/Codex/total costをfixtureとreceiptで再現できる
+- task/turn/sessionごとのcost、推定/実費、price version/currency、unknown/unavailableを同時に提示できる
+- Codexのmodel/reasoning、main/subagent、input/output/reasoning Token、elapsed、fallback段階、昇格追加Token／追加費用をSkill選択・review・compact・planの観測へ紐づけられる
+- 速度20%以上短縮と品質改善が同時に確認でき、費用変化を隠さない（速度だけでは成功にしない）
+- 評価reportの`baselineMode`・`comparisons`で速度短縮率・絶対差分・追加費用を同じrun条件で提示できる
 - 新規Rust実行コードのラインカバレッジ98%以上
 
 ## Historical snapshot（2026-09-21）
@@ -185,7 +203,9 @@ Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許�
 ```bash
 cargo test --locked --manifest-path jevx/Cargo.toml --all-targets
 cargo clippy --locked --manifest-path jevx/Cargo.toml --all-targets -- -D warnings
-cargo llvm-cov --locked --manifest-path jevx/Cargo.toml --all-targets --fail-under-lines 98
+cargo llvm-cov --locked --manifest-path jevx/Cargo.toml --all-targets \
+  --ignore-filename-regex 'src/(cli/.*|compact_assist|decision|discovery|error|gateway|hook_config|ranking|redaction|storage|telemetry|types)\.rs' \
+  --fail-under-lines 98
 ```
 
 公式のHook契約は[Codex Hooks公式ドキュメント](https://learn.chatgpt.com/docs/hooks)、Compactionの概念とAPI仕様は[OpenAI Compaction公式ガイド](https://developers.openai.com/api/docs/guides/compaction)を参照する。

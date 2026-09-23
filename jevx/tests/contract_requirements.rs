@@ -58,7 +58,7 @@ fn assert_has_keys(value: &Value, expected: &[&str]) {
 fn doctor_json_contract() {
     let home = tempdir().expect("home");
     let report = json_output(home.path(), home.path(), &["doctor", "--json"]);
-    assert_eq!(report["schemaVersion"], 1);
+    assert_eq!(report["schemaVersion"], 2);
     assert_has_keys(
         &report,
         &[
@@ -148,7 +148,7 @@ fn hooks_install_and_uninstall_json_contract_round_trip() {
             "config",
         ],
     );
-    assert_eq!(preview["removedHandlers"], 4);
+    assert_eq!(preview["removedHandlers"], 7);
     let removed = json_output(
         home.path(),
         &repo,
@@ -169,7 +169,7 @@ fn hooks_install_and_uninstall_json_contract_round_trip() {
 fn data_json_contract() {
     let home = tempdir().expect("home");
     let inventory = json_output(home.path(), home.path(), &["data", "path", "--json"]);
-    assert_eq!(inventory["schemaVersion"], 1);
+    assert_eq!(inventory["schemaVersion"], 2);
     assert_has_keys(&inventory, &["schemaVersion", "dataHome", "files"]);
     assert_has_keys(
         &inventory["files"][0],
@@ -187,8 +187,18 @@ fn eval_dry_run_contract_keeps_none_precision_alias_and_adds_none_recall() {
     let home = tempdir().expect("home");
     let repo = Path::new(MANIFEST_DIR).parent().expect("repo root");
     let report = json_output(home.path(), repo, &["eval", "--dry-run", "--json"]);
-    assert_eq!(report["schemaVersion"], 1);
-    assert_has_keys(&report, &["schemaVersion", "caseCount", "modes", "cases"]);
+    assert_eq!(report["schemaVersion"], 2);
+    assert_has_keys(
+        &report,
+        &[
+            "schemaVersion",
+            "caseCount",
+            "baselineMode",
+            "modes",
+            "comparisons",
+            "cases",
+        ],
+    );
     let summary = report["modes"]
         .as_object()
         .expect("modes")

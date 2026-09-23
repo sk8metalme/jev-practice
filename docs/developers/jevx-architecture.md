@@ -5,7 +5,7 @@
 
 ## 目的と境界
 
-jevxはCodex CLIの前段に置く「Skill選択とコンテキスト運用の補助線」だよ。依頼から候補Skillを探索し、ローカルの軽量スコアで上位候補を絞ってから、候補を1回のbatched ChoiceとしてJevへ渡す。Hookを明示的に登録した場合は、同じCLIでHook lifecycleとCompaction checkpointも観測する。
+jevxはCodex CLIの前段に置く「速度・意味レビュー・route・コンテキスト運用の補助線」だよ。依頼から対象を決定的に抽出し、必要な場合だけredact済みstateを1回のbatched typed requestとしてJevへ渡す。Hookを明示的に登録した場合は、Hook lifecycle、Compaction checkpoint、費用、route適用証拠も観測する。
 
 Skill選択の通常出力は提案だけで、Skill本文のロード、実行権限の付与、Hookによる自動実行は行わない。`hooks install`は設定変更を伴うためopt-inで、`compact-assist`はLLM要約ではなく決定的なmetadata復元である。
 
@@ -24,6 +24,14 @@ Skill選択の通常出力は提案だけで、Skill本文のロード、実行�
     │       ├─ 条件成立: accepted → selected
     │       └─ それ以外: none / unknown / defer / degraded
     └─ JSON/human出力 + events.jsonl + decisions.jsonl receipt
+
+意味レビュー/route（明示的にreviewまたはinstall --allow-content）
+    │
+    ├─ target（prompt/plan/diff/final-answer/turn）をコードで選ぶ
+    ├─ local_contentはredact済みプロセス内だけ。外部contentはopt-in時だけ
+    ├─ 4 predicate + route scoreを1回のtyped requestへまとめる
+    ├─ code-side status / fallback / route evidence / fix gate
+    └─ reviews.jsonlへ本文なしreceipt + Jev/Codex/total cost
 
 Codex Hook（明示的にinstall）
     │
@@ -46,6 +54,9 @@ Codex Hook（明示的にinstall）
 | `recorder` | safe DecisionReceiptのJSONL追記、stats、replay mismatch検証 | filesystem |
 | `telemetry` | JSONL追記、判定率、p50/p95、Token集計 | filesystem |
 | `evaluation` | fixture読み込み、ベースライン比較、Jev実測、p50/p95集計 | `Judge` trait、filesystem |
+| `cost` | 推定/実費、通貨/価格版、unknown/unavailable、Jev/Codex/合算 | pure functions |
+| `review` | 4カテゴリのlocal finding、typed contract、receipt、task/turn/session集計、safe fix | `DecisionJudge`、filesystem |
+| `route` | difficulty→model/reasoning/fallbackと適用証拠の判定 | pure functions |
 | `hooks` | Codex Hook入力の検証、shadow record、相関集計 | filesystem |
 | `hook_config` | user/project hooks.jsonの既存設定を保持するmerge、backup、冪等化 | filesystem |
 | `compact_assist` | checkpoint、redaction、compact後の補助context | filesystem |
@@ -106,12 +117,13 @@ checkpointへ保存するのはevent名、boundedなtrigger/source、各種SHA-2
 | `cwd` | 送る（redact後） | receiptには本文を保存せずstate digestだけ |
 | Skill ID / name | 送る（raw） | 候補識別に使用 |
 | Skill description | 送る（redact後） | Skill本文は送らない |
-| 会話全文 / Tool結果 / Skill本文 / APIキー | 送らない | v1の対象外 |
+| 会話全文 / raw Tool結果 / APIキー | 送らない | 常に対象外 |
+| reviewで明示選択した本文・Skill本文・設定 | `--allow-content`時だけredactして送る | receiptには本文を保存しない |
 | probability | Gateway応答にはあり得るが送信対象ではない | Telemetry schemaへ保存しない |
 
 Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` / `Authorization: Basic <value>` の認識済み形式で値を保存・送信しない。未知のPIIや任意の `Basic` 文言まで除去するDLPではない。`--no-telemetry` はローカル記録を止めるだけで、Jev/Gatewayへの外部送信停止ではない。
 
-Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否し、既存schema v1のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。
+Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否し、既存schema v1のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。Review receiptも本文を保存せず、task/turn/sessionはhashだけでcostを集計する。
 
 Jev未設定時はローカル推測へフォールバックせず、`missing_api_key`をreceiptへ記録してから同じCLIエラーへ変換する。stateのbyte/candidate window超過はJevを呼ばず、receiptへ`degraded`として記録する。これは「Jevの有用性を測る」目的で、ローカルだけの結果をJev結果と混同しないためだよ。
 
@@ -122,7 +134,7 @@ Jev未設定時はローカル推測へフォールバックせず、`missing_ap
 - デフォルトHTTPタイムアウト: 1,500ms
 - 出力する時刻: `discoveryMs`、`jevResponseMs`、`totalMs`
 - Telemetry集計: 判定率、Jev/total p50・p95、平均input/output tokens、usage event数
-- Decision receipt集計: accepted/none/unknown/defer/degraded、fallback率、cache hit、retry、latency p50/p95、相対cost
+- Decision/review receipt集計: accepted/none/unknown/defer/degraded、fallback率、cache hit、retry、latency p50/p95、Token、Jev/Codex/total cost、成功review/fix単価
 
 Jevの呼び出しは候補ごとに繰り返さず、候補を1つのChoice質問へまとめる。これで候補数に比例したネットワーク往復を避けつつ、速度とtoken usageを測定できる。
 
@@ -155,7 +167,7 @@ Jevの呼び出しは候補ごとに繰り返さず、候補を1つのChoice質�
 
 ## 今後の境界
 
-次は実ユーザーに近い匿名化ケースを増やし、Hookの連続利用遅延、Gateway rate limit、API費用、compact後の再現性を測定する。Skill自動ロード・実行、会話全文のLLM要約、Tool Result削減、MCP化は、権限境界と失敗時の復旧を別要件として定義する。
+次は実ユーザーに近い匿名化ケースを増やし、Hookの連続利用遅延、Gateway rate limit、Jev/Codexの実費、compact後の再現性を測定する。Hookだけでmodel/reasoningを変更できない場合は、App Server/SDK/exec wrapperの境界を別要件として定義する。Skill自動ロード・実行、会話全文のLLM要約、Tool Result削減、MCP化は、権限境界と失敗時の復旧を別要件として定義する。
 
 公式Hook契約は[Codex Hooks公式ドキュメント](https://learn.chatgpt.com/docs/hooks)、Compaction仕様は[OpenAI Compaction公式ガイド](https://developers.openai.com/api/docs/guides/compaction)を参照する。
 

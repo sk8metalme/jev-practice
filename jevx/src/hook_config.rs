@@ -8,6 +8,7 @@ use crate::JevxError;
 
 const JEVX_BINARY_NAME: &str = "jevx";
 const SHADOW_SUBCOMMAND: &str = "shadow";
+const REVIEW_SUBCOMMAND: &str = "review";
 const COMPACT_ASSIST_SUBCOMMAND: &str = "compact-assist";
 const JEVX_MANAGED_FLAG: &str = "--jevx-managed";
 
@@ -26,6 +27,7 @@ pub struct HookInstallOptions {
     pub executable: PathBuf,
     pub records_path: PathBuf,
     pub state_dir: PathBuf,
+    pub allow_review_content: bool,
     pub dry_run: bool,
 }
 
@@ -99,6 +101,7 @@ pub fn install_hooks(options: &HookInstallOptions) -> Result<HookInstallReport, 
         &options.executable,
         &options.records_path,
         &options.state_dir,
+        options.allow_review_content,
     );
     let config = merge_hook_config(existing.as_ref(), &generated)?;
     let changed = existing
@@ -241,7 +244,12 @@ fn write_config(path: &Path, config: &Value) -> Result<(), JevxError> {
     Ok(())
 }
 
-fn generated_config(executable: &Path, records_path: &Path, state_dir: &Path) -> Value {
+fn generated_config(
+    executable: &Path,
+    records_path: &Path,
+    state_dir: &Path,
+    allow_review_content: bool,
+) -> Value {
     let shadow_command = format!(
         "{} hooks shadow --output {} {JEVX_MANAGED_FLAG}",
         shell_quote(executable),
@@ -251,6 +259,23 @@ fn generated_config(executable: &Path, records_path: &Path, state_dir: &Path) ->
         "{} hooks compact-assist --state-dir {} {JEVX_MANAGED_FLAG}",
         shell_quote(executable),
         shell_quote(state_dir)
+    );
+    let review_content_flag = if allow_review_content {
+        " --allow-content"
+    } else {
+        ""
+    };
+    let review_prompt_command = format!(
+        "{} hooks review --target prompt{review_content_flag} {JEVX_MANAGED_FLAG}",
+        shell_quote(executable),
+    );
+    let review_final_command = format!(
+        "{} hooks review --target final-answer{review_content_flag} {JEVX_MANAGED_FLAG}",
+        shell_quote(executable),
+    );
+    let review_diff_command = format!(
+        "{} hooks review --target diff{review_content_flag} {JEVX_MANAGED_FLAG}",
+        shell_quote(executable),
     );
     json!({
         "hooks": {
@@ -279,6 +304,23 @@ fn generated_config(executable: &Path, records_path: &Path, state_dir: &Path) ->
                 "hooks": [command_handler(
                     &shadow_command,
                     "jevx: measuring Skill suggestion",
+                )]
+            }, {
+                "hooks": [command_handler(
+                    &review_prompt_command,
+                    "jevx: reviewing prompt semantics",
+                )]
+            }],
+            "PostToolUse": [{
+                "hooks": [command_handler(
+                    &review_diff_command,
+                    "jevx: reviewing changed-code semantics",
+                )]
+            }],
+            "Stop": [{
+                "hooks": [command_handler(
+                    &review_final_command,
+                    "jevx: reviewing final answer semantics",
                 )]
             }]
         }
@@ -358,6 +400,8 @@ fn is_jevx_handler(handler: &Value) -> bool {
     (is_jevx_binary || is_managed)
         && (arguments == SHADOW_SUBCOMMAND
             || arguments.starts_with(&format!("{SHADOW_SUBCOMMAND} "))
+            || arguments == REVIEW_SUBCOMMAND
+            || arguments.starts_with(&format!("{REVIEW_SUBCOMMAND} "))
             || arguments == COMPACT_ASSIST_SUBCOMMAND
             || arguments.starts_with(&format!("{COMPACT_ASSIST_SUBCOMMAND} ")))
 }
@@ -418,12 +462,13 @@ mod tests {
             Path::new("/new/jevx"),
             Path::new("/events"),
             Path::new("/state"),
+            false,
         );
         let merged = merge_hook_config(Some(&existing), &generated).expect("merge");
         let groups = merged["hooks"]["UserPromptSubmit"]
             .as_array()
             .expect("groups");
-        assert_eq!(groups.len(), 2);
+        assert_eq!(groups.len(), 3);
         assert_eq!(groups[0]["hooks"][0]["command"], "custom");
         assert!(
             groups[1]["hooks"][0]["command"]
@@ -439,6 +484,7 @@ mod tests {
             Path::new("/jevx"),
             Path::new("/events"),
             Path::new("/state"),
+            false,
         );
         let invalid = json!({"hooks": []});
         let error = merge_hook_config(Some(&invalid), &generated).expect_err("invalid hooks");
@@ -464,6 +510,7 @@ mod tests {
             executable: PathBuf::from("/bin/jevx"),
             records_path: root.path().join("data/hooks.jsonl"),
             state_dir: root.path().join("data/compaction"),
+            allow_review_content: false,
             dry_run: false,
         };
         let report = install_hooks(&options).expect("install");
@@ -564,12 +611,13 @@ mod tests {
             executable: PathBuf::from("/bin/jevx"),
             records_path: root.path().join("data/hooks.jsonl"),
             state_dir: root.path().join("data/compaction"),
+            allow_review_content: false,
             dry_run: false,
         })
         .expect("install");
         let report = uninstall_hooks(&uninstall_options(root.path(), false)).expect("uninstall");
         assert!(report.exists);
-        assert_eq!(report.removed_handlers, 4);
+        assert_eq!(report.removed_handlers, 7);
         assert_eq!(report.config, Some(json!({"hooks": {}})));
 
         fs::write(&report.path, r#"{"hooks": []}"#).expect("invalid");

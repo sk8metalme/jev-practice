@@ -6,6 +6,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use crate::DEFAULT_ENDPOINT;
+use crate::cost::TokenPricing;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -24,6 +25,10 @@ pub struct Config {
     pub cache_capacity: usize,
     pub input_cost_weight: f64,
     pub output_cost_weight: f64,
+    pub jev_input_price_per_million: Option<f64>,
+    pub jev_output_price_per_million: Option<f64>,
+    pub price_currency: String,
+    pub price_version: String,
     /// 範囲外などで既定値へ戻した環境変数の説明。`doctor` が表示する。
     pub warnings: Vec<String>,
 }
@@ -129,6 +134,22 @@ impl Config {
                 0.0..=1_000.0,
                 &mut warnings,
             ),
+            jev_input_price_per_million: optional_price(
+                "JEVX_JEV_INPUT_PRICE_PER_MILLION",
+                var("JEVX_JEV_INPUT_PRICE_PER_MILLION").as_deref(),
+                &mut warnings,
+            ),
+            jev_output_price_per_million: optional_price(
+                "JEVX_JEV_OUTPUT_PRICE_PER_MILLION",
+                var("JEVX_JEV_OUTPUT_PRICE_PER_MILLION").as_deref(),
+                &mut warnings,
+            ),
+            price_currency: var("JEVX_PRICE_CURRENCY")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "USD".to_owned()),
+            price_version: var("JEVX_PRICE_VERSION")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "unconfigured".to_owned()),
             warnings,
         }
     }
@@ -150,7 +171,21 @@ impl Config {
             cache_capacity: 0,
             input_cost_weight: 1.0,
             output_cost_weight: 1.0,
+            jev_input_price_per_million: None,
+            jev_output_price_per_million: None,
+            price_currency: "USD".to_owned(),
+            price_version: "test".to_owned(),
             warnings: Vec::new(),
+        }
+    }
+
+    pub fn jev_pricing(&self) -> TokenPricing {
+        TokenPricing {
+            input_per_million: self.jev_input_price_per_million,
+            output_per_million: self.jev_output_price_per_million,
+            reasoning_per_million: None,
+            currency: Some(self.price_currency.clone()),
+            price_version: Some(self.price_version.clone()),
         }
     }
 
@@ -197,6 +232,19 @@ where
     }
 }
 
+fn optional_price(name: &str, raw: Option<&str>, warnings: &mut Vec<String>) -> Option<f64> {
+    let raw = raw?;
+    match raw.trim().parse::<f64>() {
+        Ok(value) if value.is_finite() && value >= 0.0 => Some(value),
+        _ => {
+            warnings.push(format!(
+                "{name} must be a finite non-negative number; cost estimate is unavailable"
+            ));
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::env;
@@ -232,6 +280,10 @@ mod tests {
             "JEVX_DECISION_CACHE_CAPACITY",
             "JEVX_INPUT_COST_WEIGHT",
             "JEVX_OUTPUT_COST_WEIGHT",
+            "JEVX_JEV_INPUT_PRICE_PER_MILLION",
+            "JEVX_JEV_OUTPUT_PRICE_PER_MILLION",
+            "JEVX_PRICE_CURRENCY",
+            "JEVX_PRICE_VERSION",
             "JEVX_MIN_PROBABILITY",
             "JEVX_MIN_MARGIN",
             "JEVX_MAX_CANDIDATES",
@@ -252,6 +304,10 @@ mod tests {
         set_var("JEVX_DECISION_CACHE_CAPACITY", "5");
         set_var("JEVX_INPUT_COST_WEIGHT", "1.5");
         set_var("JEVX_OUTPUT_COST_WEIGHT", "2.5");
+        set_var("JEVX_JEV_INPUT_PRICE_PER_MILLION", "1.25");
+        set_var("JEVX_JEV_OUTPUT_PRICE_PER_MILLION", "4.5");
+        set_var("JEVX_PRICE_CURRENCY", "JPY");
+        set_var("JEVX_PRICE_VERSION", "fixture-2026-09");
         set_var("JEVX_MIN_PROBABILITY", "0.7");
         set_var("JEVX_MIN_MARGIN", "0.05");
         set_var("JEVX_MAX_CANDIDATES", "0");
@@ -275,6 +331,10 @@ mod tests {
         assert_eq!(configured.cache_capacity, 5);
         assert_eq!(configured.input_cost_weight, 1.5);
         assert_eq!(configured.output_cost_weight, 2.5);
+        assert_eq!(configured.jev_input_price_per_million, Some(1.25));
+        assert_eq!(configured.jev_output_price_per_million, Some(4.5));
+        assert_eq!(configured.price_currency, "JPY");
+        assert_eq!(configured.price_version, "fixture-2026-09");
 
         for key in keys {
             remove_var(key);
@@ -294,6 +354,10 @@ mod tests {
         assert_eq!(defaults.cache_capacity, 0);
         assert_eq!(defaults.input_cost_weight, 1.0);
         assert_eq!(defaults.output_cost_weight, 1.0);
+        assert_eq!(defaults.jev_input_price_per_million, None);
+        assert_eq!(defaults.jev_output_price_per_million, None);
+        assert_eq!(defaults.price_currency, "USD");
+        assert_eq!(defaults.price_version, "unconfigured");
         assert!(defaults.warnings.is_empty());
         assert!(!defaults.thresholds_customized());
 
@@ -301,12 +365,14 @@ mod tests {
         set_var("JEVX_TELEMETRY", "custom-value");
         set_var("JEVX_INPUT_COST_WEIGHT", "-1");
         set_var("JEVX_OUTPUT_COST_WEIGHT", "not-a-number");
+        set_var("JEVX_JEV_INPUT_PRICE_PER_MILLION", "-1");
+        set_var("JEVX_JEV_OUTPUT_PRICE_PER_MILLION", "NaN");
         let invalid_timeout = Config::from_env();
         assert_eq!(invalid_timeout.timeout.as_millis(), 1_500);
         assert!(invalid_timeout.telemetry_enabled);
         assert_eq!(invalid_timeout.input_cost_weight, 1.0);
         assert_eq!(invalid_timeout.output_cost_weight, 1.0);
-        assert_eq!(invalid_timeout.warnings.len(), 2, "cost weights warn");
+        assert_eq!(invalid_timeout.warnings.len(), 4, "cost values warn");
 
         set_var("JEVX_MAX_RETRIES", "20");
         set_var("JEVX_RETRY_BACKOFF_MS", "60000");

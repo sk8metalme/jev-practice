@@ -11,6 +11,8 @@ use serde_json::{Map, Value, json};
 
 use crate::JevxError;
 
+pub const DATA_SCHEMA_VERSION: u8 = 2;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DataFile {
     pub kind: &'static str,
@@ -39,12 +41,13 @@ pub struct PurgeReport {
 }
 
 /// jevxが書き込むファイルの種類と、`$JEVX_HOME` からの相対パス。
-const MANAGED_FILES: [(&str, &str); 5] = [
+const MANAGED_FILES: [(&str, &str); 6] = [
     ("telemetry", "events.jsonl"),
     ("hookRecords", "hooks.jsonl"),
     ("compactionRecords", "compaction/hook-records.jsonl"),
     ("compactionCheckpoints", "compaction/checkpoints.jsonl"),
     ("decisionReceipts", "decisions.jsonl"),
+    ("reviewReceipts", "reviews.jsonl"),
 ];
 const MANAGED_DIR: &str = "compaction";
 
@@ -80,7 +83,7 @@ pub fn data_inventory(data_home: &Path) -> Result<DataInventory, JevxError> {
         })
         .collect();
     Ok(DataInventory {
-        schema_version: 1,
+        schema_version: DATA_SCHEMA_VERSION,
         data_home: data_home.to_path_buf(),
         files,
     })
@@ -110,7 +113,7 @@ pub fn export_data(inventory: &DataInventory) -> Result<Value, JevxError> {
         records.insert(file.kind.to_owned(), Value::Array(values));
     }
     Ok(json!({
-        "schemaVersion": 1,
+        "schemaVersion": DATA_SCHEMA_VERSION,
         "dataHome": inventory.data_home,
         "records": records,
     }))
@@ -135,7 +138,7 @@ pub fn purge_data(inventory: &DataInventory, confirmed: bool) -> Result<PurgeRep
         }
     }
     Ok(PurgeReport {
-        schema_version: 1,
+        schema_version: DATA_SCHEMA_VERSION,
         dry_run: !confirmed,
         removed,
     })
@@ -158,7 +161,7 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         seed(root.path());
         let inventory = data_inventory(root.path()).expect("inventory");
-        assert_eq!(inventory.schema_version, 1);
+        assert_eq!(inventory.schema_version, DATA_SCHEMA_VERSION);
         assert_eq!(inventory.data_home, root.path());
         let kinds: Vec<_> = inventory.files.iter().map(|file| file.kind).collect();
         assert_eq!(
@@ -168,7 +171,8 @@ mod tests {
                 "hookRecords",
                 "compactionRecords",
                 "compactionCheckpoints",
-                "decisionReceipts"
+                "decisionReceipts",
+                "reviewReceipts"
             ]
         );
         assert_eq!(inventory.files[0].records, 2);
@@ -187,7 +191,7 @@ mod tests {
         seed(root.path());
         let exported =
             export_data(&data_inventory(root.path()).expect("inventory")).expect("export");
-        assert_eq!(exported["schemaVersion"], 1);
+        assert_eq!(exported["schemaVersion"], DATA_SCHEMA_VERSION);
         assert_eq!(exported["records"]["telemetry"], json!([{"a":1},{"a":2}]));
         assert_eq!(exported["records"]["compactionRecords"], json!([]));
 

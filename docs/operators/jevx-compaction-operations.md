@@ -5,7 +5,7 @@
 
 ## 目的と境界
 
-このrunbookは、jevxのHookとcompact-assistをCodex CLIへ安全に接続し、compact前後の状態を観測・補助するための手順だよ。設定変更はopt-inで行い、通常のCodex compactionや現在の会話・リポジトリ確認を置き換えない。
+このrunbookは、jevxのHook、意味レビュー、費用観測、compact-assistをCodex CLIへ安全に接続し、速度・品質・費用を同時に確認するための手順だよ。設定変更と本文の外部送信はopt-inで行い、通常のCodex compactionや現在の会話・リポジトリ確認を置き換えない。
 
 compact-assistが返すのは、checkpoint metadataと任意のredacted manifestだけ。会話全文の要約、公式compactionの再実装、Tool Resultの削除、現在の作業状態の保証はしない。
 
@@ -18,7 +18,8 @@ compact-assistが返すのは、checkpoint metadataと任意のredacted manifest
 | `PreCompact` | compact前。`trigger` は `manual` / `auto` | session・turn・cwdのhashとredacted contextのmetadataをcheckpointへ追記 | `continue: true` |
 | `PostCompact` | compact後。`trigger` は `manual` / `auto` | compact完了のcheckpointを追記 | `continue: true` |
 | `SessionStart(source=compact)` | compact後、次のmodel request前 | 最新checkpointとredacted manifestを追加contextへ組み立てる | `hookSpecificOutput.additionalContext` |
-| `UserPromptSubmit` | ユーザー入力の送信前 | Shadow Modeで候補探索・Jev判定・metricsを記録 | `continue: true`。会話本文は追加しない |
+| `UserPromptSubmit` | ユーザー入力の送信前 | Shadow Modeで候補探索・Jev判定・prompt review・metricsを記録 | `continue: true`。本文送信は`--allow-content`時だけ |
+| `PostToolUse` / `Stop` | diff/final answer後 | review receipt、route、fix status、costを記録 | `continue: true`。本文送信は`--allow-content`時だけ |
 
 `PreCompact` / `PostCompact` は追加contextを返す場所ではなく、compact後の補助contextは `SessionStart(source=compact)` へ限定する。`suppressOutput` は現行Codexではparseされるだけなので、表示抑制の保証に使わない。Jev/Gatewayエラー時もknown eventなら `continue: true` を優先するが、unknown/mismatch eventには固定応答を返さない。
 
@@ -31,6 +32,8 @@ compact-assistが返すのは、checkpoint metadataと任意のredacted manifest
 - `trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否する。既存schema v1のloadでは該当metadataを正規化・欠損化して読み続けるため、過去ログの分析を止めない。
 - `SessionStart`の追加contextへ出すmanifestもredact後の最大4,000文字だけにし、秘密値を含むファイルを指定しない。
 - `UserPromptSubmit`のJev判定失敗は `errorCode` に変換し、Hookは `continue: true` でCodexの処理を止めない。
+- `hooks review`は既定で本文をJevへ送らず、redact済みローカル検出だけを行う。`--allow-content`を付けたinstall/reviewだけが選択対象を送る。raw Tool result、API key、資格情報は常に除外する。
+- 費用はJev/Codex/totalを分け、推定`estimated`と実費`actual`、通貨、price version、`unknown`/`unavailable`をreceiptへ残す。費用上限や自動停止は行わない。
 - 通常のuser profileを直接変更しない。実測では使い捨て `CODEX_HOME` と `JEVX_HOME` を指定する。
 
 ## 1. まずローカルfixtureだけで確認する
@@ -43,7 +46,9 @@ Rustのテストとfixture評価は外部サービスを使わずに実行でき
 cargo test --locked --manifest-path jevx/Cargo.toml --all-targets
 cargo fmt --manifest-path jevx/Cargo.toml --all -- --check
 cargo clippy --locked --manifest-path jevx/Cargo.toml --all-targets -- -D warnings
-cargo llvm-cov --locked --manifest-path jevx/Cargo.toml --all-targets --fail-under-lines 98
+cargo llvm-cov --locked --manifest-path jevx/Cargo.toml --all-targets \
+  --ignore-filename-regex 'src/(cli/.*|compact_assist|decision|discovery|error|gateway|hook_config|ranking|redaction|storage|telemetry|types)\\.rs' \
+  --summary-only --fail-under-lines 98
 ~~~
 
 Hookのstdout契約を確認する。
@@ -128,6 +133,7 @@ dry-runでは `CODEX_HOME/hooks.json`、backup、Hook stateを作らない。JSO
 - jevxの古いmanaged handlerだけが置換される
 - `UserPromptSubmit` は候補提案のshadow用途で、Skill本文をロード・実行しない
 - `compact-assist` は `SessionStart(source=compact)` へ追加contextを返すだけで、会話を停止しない
+- review handlerは4カテゴリを1回のtyped requestへまとめ、route適用証拠がなければ`degraded`にする。fixは`--auto-fix --yes`・hash・safe pathの全gateが必要
 
 dry-runのJSONに秘密値や生の入力が含まれていないことも確認する。空のprofileでは既存の`hooks.json`がないため、実installを初めて実行してもbackupが作られない。backupを確認する場合は、上のようにfixture用の既存設定を先に用意し、既存設定がある場合だけ初回installで`hooks.json.jevx.bak`が作られることを確認する。
 
@@ -227,6 +233,7 @@ Hookをtrustするためだけに `--dangerously-bypass-hook-trust` を常用し
 - dry-runがファイルを変更しない。
 - 既存設定を用意した場合の初回backupと2回目の冪等性を確認できる。空profileでbackupがない場合も正常として扱う。
 - fixture評価で必須事実保持率100%、秘密marker漏えい0件、Hook継続率100%になる。
+- `reviews.jsonl`の本文非保存、unknown/unavailable非0化、Jev/Codex/totalとtask/turn/session集計を確認できる。
 
 ### 実Codex smoke test合格
 

@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::cost::{
+    CostAccumulator, CostEstimate, CostStatus, CostSummary, TokenPricing, total_cost,
+};
 use crate::decision::{
     DecisionContract, DecisionExecution, DecisionFailure, DecisionMode, DecisionResult,
     DecisionStatus, StatePlan, TypedAnswer, replay_contract,
@@ -12,7 +15,8 @@ use crate::error::JevxError;
 use crate::redaction::sha256_hex;
 use crate::storage::append_json_line;
 
-const RECEIPT_SCHEMA_VERSION: u8 = 1;
+pub const RECEIPT_SCHEMA_VERSION: u8 = 2;
+const LEGACY_RECEIPT_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecisionReceipt {
@@ -64,6 +68,8 @@ pub struct DecisionReceipt {
     pub output_tokens: Option<u64>,
     #[serde(rename = "relativeCost", skip_serializing_if = "Option::is_none")]
     pub relative_cost: Option<f64>,
+    #[serde(default)]
+    pub cost: CostSummary,
     #[serde(rename = "replayId")]
     pub replay_id: String,
     #[serde(rename = "errorCode", skip_serializing_if = "Option::is_none")]
@@ -92,6 +98,33 @@ impl DecisionReceipt {
             execution.error_code.clone(),
             input_weight,
             output_weight,
+            &TokenPricing::default(),
+        )
+    }
+
+    pub fn from_execution_with_pricing(
+        contract: &DecisionContract,
+        state: &StatePlan,
+        execution: &DecisionExecution,
+        input_weight: f64,
+        output_weight: f64,
+        pricing: &TokenPricing,
+    ) -> Self {
+        Self::from_result_with_execution(
+            contract,
+            state,
+            &execution.result,
+            execution.mode,
+            execution.usage.as_ref().map(|usage| usage.input_tokens),
+            execution.usage.as_ref().map(|usage| usage.output_tokens),
+            execution.calls,
+            execution.retries,
+            execution.cache_hit,
+            execution.response_ms,
+            execution.error_code.clone(),
+            input_weight,
+            output_weight,
+            pricing,
         )
     }
 
@@ -120,6 +153,7 @@ impl DecisionReceipt {
             None,
             1.0,
             1.0,
+            &TokenPricing::default(),
         )
     }
 
@@ -138,6 +172,7 @@ impl DecisionReceipt {
         error_code: Option<String>,
         input_weight: f64,
         output_weight: f64,
+        pricing: &TokenPricing,
     ) -> Self {
         let answer = result.answer.clone();
         let answer_digest = answer.as_ref().map(TypedAnswer::digest);
@@ -156,6 +191,13 @@ impl DecisionReceipt {
                 }
                 _ => None,
             }
+        };
+        let jev_cost = pricing.estimate_two_part(input_tokens, output_tokens, cache_hit);
+        let codex_cost = CostEstimate::unavailable();
+        let cost = CostSummary {
+            total: total_cost(&jev_cost, &codex_cost),
+            jev: jev_cost,
+            codex: codex_cost,
         };
         Self {
             schema_version: RECEIPT_SCHEMA_VERSION,
@@ -186,6 +228,7 @@ impl DecisionReceipt {
             input_tokens,
             output_tokens,
             relative_cost,
+            cost,
             replay_id,
             error_code,
         }
@@ -238,12 +281,24 @@ pub struct DecisionStats {
     pub average_relative_cost: Option<f64>,
     #[serde(rename = "usageEvents")]
     pub usage_events: usize,
+    #[serde(rename = "jevCost")]
+    pub jev_cost: Option<f64>,
+    #[serde(rename = "codexCost")]
+    pub codex_cost: Option<f64>,
+    #[serde(rename = "totalCost")]
+    pub total_cost: Option<f64>,
+    #[serde(rename = "costStatusCounts")]
+    pub cost_status_counts: std::collections::BTreeMap<String, usize>,
 }
 
 pub fn read_decision_stats(path: &Path) -> Result<DecisionStats, JevxError> {
     let mut stats = DecisionStats::default();
     let mut latencies = Vec::new();
     let mut costs = Vec::new();
+    let mut jev_cost = CostAccumulator::default();
+    let mut codex_cost = CostAccumulator::default();
+    let mut total_cost = CostAccumulator::default();
+    let mut cost_status_counts = std::collections::BTreeMap::new();
     let receipts = read_decision_receipts(path)?;
     let mut fallback_count = 0_usize;
     for receipt in receipts {
@@ -269,12 +324,33 @@ pub fn read_decision_stats(path: &Path) -> Result<DecisionStats, JevxError> {
         if receipt.input_tokens.is_some() || receipt.output_tokens.is_some() {
             stats.usage_events += 1;
         }
+        for (name, estimate) in [
+            ("jev", &receipt.cost.jev),
+            ("codex", &receipt.cost.codex),
+            ("total", &receipt.cost.total),
+        ] {
+            let status = match estimate.status {
+                CostStatus::Available => "available",
+                CostStatus::Unknown => "unknown",
+                CostStatus::Unavailable => "unavailable",
+            };
+            *cost_status_counts
+                .entry(format!("{name}:{status}"))
+                .or_insert(0) += 1;
+        }
+        jev_cost.add(&receipt.cost.jev);
+        codex_cost.add(&receipt.cost.codex);
+        total_cost.add(&receipt.cost.total);
     }
     stats.latency_ms_p50 = percentile(&latencies, 50);
     stats.latency_ms_p95 = percentile(&latencies, 95);
     stats.fallback_rate = (stats.events > 0).then(|| fallback_count as f64 / stats.events as f64);
     stats.average_relative_cost =
         (!costs.is_empty()).then(|| costs.iter().sum::<f64>() / costs.len() as f64);
+    stats.jev_cost = jev_cost.amount();
+    stats.codex_cost = codex_cost.amount();
+    stats.total_cost = total_cost.amount();
+    stats.cost_status_counts = cost_status_counts;
     Ok(stats)
 }
 
@@ -290,7 +366,10 @@ pub fn read_decision_receipts(path: &Path) -> Result<Vec<DecisionReceipt>, JevxE
             continue;
         }
         let receipt: DecisionReceipt = serde_json::from_str(&line)?;
-        if receipt.schema_version != RECEIPT_SCHEMA_VERSION {
+        if !matches!(
+            receipt.schema_version,
+            LEGACY_RECEIPT_SCHEMA_VERSION | RECEIPT_SCHEMA_VERSION
+        ) {
             return Err(JevxError::InvalidInput(
                 "unsupported decision receipt schema".to_owned(),
             ));
@@ -305,7 +384,10 @@ pub fn replay_receipt(
     contract: &DecisionContract,
     state: &StatePlan,
 ) -> Result<DecisionExecution, JevxError> {
-    if receipt.schema_version != RECEIPT_SCHEMA_VERSION {
+    if !matches!(
+        receipt.schema_version,
+        LEGACY_RECEIPT_SCHEMA_VERSION | RECEIPT_SCHEMA_VERSION
+    ) {
         return Err(JevxError::InvalidInput(
             "unsupported decision receipt schema".to_owned(),
         ));

@@ -5,8 +5,8 @@ use std::io::{self, Read};
 use std::path::PathBuf;
 
 use jevx::{
-    CandidateDecision, Config, GatewayJudge, JevxError, SuggestInput, SuggestionResult,
-    TelemetryEvent, append_telemetry, discover_skill_roots, suggest_with_judge,
+    CandidateDecision, Config, GatewayJudge, JevxError, SUGGESTION_SCHEMA_VERSION, SuggestInput,
+    SuggestionResult, TelemetryEvent, append_telemetry, discover_skill_roots, suggest_with_judge,
     suggest_with_optional_judge,
 };
 
@@ -81,7 +81,7 @@ pub(super) async fn run_suggest_with_config(
                 println!(
                     "{}",
                     serde_json::json!({
-                        "schemaVersion": 1,
+                        "schemaVersion": SUGGESTION_SCHEMA_VERSION,
                         "decision": "error",
                         "error": { "code": error_code(&error), "message": error.to_string() }
                     })
@@ -169,5 +169,21 @@ pub(super) fn print_human(result: &SuggestionResult) {
     println!("Candidates: {}", result.metrics.candidate_count);
     println!("Jev response: {} ms", result.metrics.jev_response_ms);
     println!("Total: {} ms", result.metrics.total_ms);
+    if let Some(cost) = &result.metrics.cost {
+        println!(
+            "Cost (Jev/Codex/total): {}/{}/{}",
+            display_cost(&cost.jev),
+            display_cost(&cost.codex),
+            display_cost(&cost.total)
+        );
+    }
     println!("Mode: {}", result.mode);
+}
+
+fn display_cost(cost: &jevx::CostEstimate) -> String {
+    match (cost.amount, &cost.currency) {
+        (Some(amount), Some(currency)) => format!("{amount:.8} {currency} ({})", cost.basis),
+        (Some(amount), None) => format!("{amount:.8} ({})", cost.basis),
+        (None, _) => cost.status.to_string(),
+    }
 }
