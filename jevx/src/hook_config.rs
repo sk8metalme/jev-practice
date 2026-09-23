@@ -157,6 +157,15 @@ pub fn uninstall_hooks(options: &HookUninstallOptions) -> Result<HookUninstallRe
     Ok(report)
 }
 
+/// `hooks.json` に登録済みのjevx handler数。ファイルがなければ `None`。
+pub fn installed_handler_count(path: &Path) -> Result<Option<usize>, JevxError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let mut config = serde_json::from_str::<Value>(&fs::read_to_string(path)?)?;
+    strip_jevx_handlers(&mut config).map(Some)
+}
+
 fn strip_jevx_handlers(config: &mut Value) -> Result<usize, JevxError> {
     let root = config
         .as_object_mut()

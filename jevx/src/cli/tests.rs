@@ -999,3 +999,82 @@ async fn data_commands_show_export_and_purge_only_after_confirmation() {
     );
     assert!(!data_home.join("events.jsonl").exists());
 }
+
+fn doctor_env(root: &Path) -> DoctorEnv {
+    DoctorEnv {
+        home: Some(root.join("home")),
+        codex_home: None,
+        cwd: root.join("repo"),
+        path_var: Some(std::ffi::OsString::from(root.join("bin"))),
+    }
+}
+
+#[test]
+fn doctor_report_suggests_next_steps_until_setup_is_complete() {
+    let root = tempdir().expect("tempdir");
+    let env = doctor_env(root.path());
+    let mut config = Config::for_test(root.path().join("data"));
+    config.api_key = None;
+    config.warnings = vec!["JEVX_MIN_MARGIN must be between 0 and 1; using default 0.1".to_owned()];
+
+    let report = doctor_report(&config, &env);
+    assert_eq!(report["schemaVersion"], 1);
+    assert_eq!(report["apiKeyConfigured"], false);
+    assert_eq!(report["jevxOnPath"], false);
+    assert_eq!(report["skillInstalled"], false);
+    assert_eq!(
+        report["hooks"]["user"]["installedHandlers"],
+        serde_json::Value::Null
+    );
+    assert_eq!(report["thresholds"]["minProbability"], 0.6);
+    assert_eq!(report["thresholds"]["customized"], false);
+    assert_eq!(report["warnings"][0], config.warnings[0]);
+    let steps = report["nextSteps"].as_array().expect("steps");
+    let text = serde_json::to_string(steps).expect("text");
+    assert!(text.contains("setup.sh --scope user"));
+    assert!(text.contains("AI_GATEWAY_API_KEY"));
+    assert!(text.contains("PATH"));
+
+    fs::create_dir_all(root.path().join("bin")).expect("bin");
+    fs::write(root.path().join("bin/jevx"), "").expect("jevx");
+    fs::create_dir_all(root.path().join("home/.agents/skills/jevx")).expect("skill");
+    fs::write(
+        root.path().join("home/.agents/skills/jevx/SKILL.md"),
+        "---\nname: jevx\n---\n",
+    )
+    .expect("skill file");
+    fs::create_dir_all(root.path().join("home/.codex")).expect("codex");
+    fs::write(
+        root.path().join("home/.codex/hooks.json"),
+        r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"'/bin/jevx' hooks shadow --jevx-managed"}]}]}}"#,
+    )
+    .expect("hooks");
+    fs::create_dir_all(root.path().join("repo/.codex")).expect("project codex");
+    fs::write(root.path().join("repo/.codex/hooks.json"), "not json").expect("invalid hooks");
+    let ready = doctor_report(&Config::for_test(root.path().join("data")), &env);
+    assert_eq!(ready["jevxOnPath"], true);
+    assert_eq!(ready["skillInstalled"], true);
+    assert_eq!(ready["hooks"]["user"]["installedHandlers"], 1);
+    assert!(ready["hooks"]["project"]["error"].is_string());
+    let steps = serde_json::to_string(&ready["nextSteps"]).expect("steps");
+    assert!(steps.contains("skills suggest"));
+    assert!(!steps.contains("setup.sh"));
+    assert!(!steps.contains("Optional"));
+
+    fs::remove_file(root.path().join("home/.codex/hooks.json")).expect("remove user hooks");
+    fs::remove_file(root.path().join("repo/.codex/hooks.json")).expect("remove project hooks");
+    let without_hooks = doctor_report(&Config::for_test(root.path().join("data")), &env);
+    let steps = serde_json::to_string(&without_hooks["nextSteps"]).expect("steps");
+    assert!(steps.contains("Optional: preview Codex hooks"));
+}
+
+#[test]
+fn doctor_command_prints_json_and_human_reports() {
+    let root = tempdir().expect("tempdir");
+    let config = Config::for_test(root.path().join("data"));
+    assert_eq!(run_doctor_with_config(true, &config).expect("json"), 0);
+    assert_eq!(run_doctor_with_config(false, &config).expect("human"), 0);
+    let human = doctor_human_output(&doctor_report(&config, &doctor_env(root.path())));
+    assert!(human.contains("Next steps:"));
+    assert!(human.contains("Thresholds: minProbability=0.6"));
+}
