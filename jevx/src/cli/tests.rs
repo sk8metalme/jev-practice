@@ -932,3 +932,70 @@ async fn hooks_uninstall_command_previews_then_removes_only_jevx_handlers() {
         0
     );
 }
+
+#[tokio::test]
+async fn data_commands_show_export_and_purge_only_after_confirmation() {
+    let root = tempdir().expect("tempdir");
+    let data_home = root.path().join("data");
+    fs::create_dir_all(&data_home).expect("data home");
+    fs::write(data_home.join("events.jsonl"), "{\"schemaVersion\":1}\n").expect("events");
+    let config = Config::for_test(data_home.clone());
+    assert_eq!(data_home_of(&config), data_home);
+
+    let run = |command: DataCommand| {
+        run_inner_with_config(
+            Cli {
+                command: Command::Data { command },
+            },
+            config.clone(),
+        )
+    };
+    assert_eq!(
+        run(DataCommand::Path { json: true })
+            .await
+            .expect("path json"),
+        0
+    );
+    assert_eq!(
+        run(DataCommand::Path { json: false }).await.expect("path"),
+        0
+    );
+    assert_eq!(
+        run(DataCommand::Export { output: None })
+            .await
+            .expect("export"),
+        0
+    );
+    let exported = root.path().join("export.json");
+    assert_eq!(
+        run(DataCommand::Export {
+            output: Some(exported.clone())
+        })
+        .await
+        .expect("export file"),
+        0
+    );
+    let exported: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(exported).expect("read")).expect("json");
+    assert_eq!(exported["records"]["telemetry"][0]["schemaVersion"], 1);
+
+    for json in [true, false] {
+        assert_eq!(
+            run(DataCommand::Purge { yes: false, json })
+                .await
+                .expect("preview"),
+            0
+        );
+    }
+    assert!(data_home.join("events.jsonl").exists());
+    assert_eq!(
+        run(DataCommand::Purge {
+            yes: true,
+            json: false
+        })
+        .await
+        .expect("purge"),
+        0
+    );
+    assert!(!data_home.join("events.jsonl").exists());
+}

@@ -7,12 +7,14 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use jevx::{Config, JevxError, SkillRoot};
 
+mod data;
 mod doctor;
 mod eval;
 mod hooks;
 mod skills;
 mod stats;
 
+use self::data::*;
 use self::doctor::*;
 use self::eval::*;
 use self::hooks::*;
@@ -51,6 +53,32 @@ enum Command {
     Hooks {
         #[command(subcommand)]
         command: HooksCommand,
+    },
+    /// Show, export, or purge the local data jevx has written under $JEVX_HOME.
+    Data {
+        #[command(subcommand)]
+        command: DataCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DataCommand {
+    /// List managed files with their sizes and record counts.
+    Path {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print every stored record as one JSON document.
+    Export {
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Delete managed files. Without --yes, only lists what would be deleted.
+    Purge {
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -242,7 +270,17 @@ pub(super) async fn run_inner_with_config(cli: Cli, config: Config) -> Result<i3
         Command::Eval(args) => run_eval_with_config(args, config).await,
         Command::EvalRepeat(args) => run_eval_repeat_with_config(args, config).await,
         Command::Hooks { command } => run_hooks_with_config(command, config).await,
+        Command::Data { command } => run_data_with_config(command, &config),
     }
+}
+
+/// jevxがローカルデータを書き込むディレクトリ（`$JEVX_HOME`、既定は `~/.jevx`）。
+pub(super) fn data_home_of(config: &Config) -> PathBuf {
+    config
+        .telemetry_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 pub(super) fn skill_roots(cwd: &Path, extra: &[PathBuf]) -> Vec<SkillRoot> {

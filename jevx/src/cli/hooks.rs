@@ -146,11 +146,7 @@ pub(super) fn run_hook_uninstall(args: HookUninstallArgs) -> Result<i32, JevxErr
 }
 
 pub(super) fn run_hook_install(args: HookInstallArgs, config: &Config) -> Result<i32, JevxError> {
-    let data_home = config
-        .telemetry_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let data_home = data_home_of(config);
     let scope = hook_scope(args.scope);
     let (home, codex_home) = resolve_hook_paths(scope, env_path("HOME"), env_path("CODEX_HOME"))?;
     let report = install_hooks(&HookInstallOptions {
