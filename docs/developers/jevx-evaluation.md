@@ -44,7 +44,7 @@ Jevを使う価値を、Skill選択の精度・速度・token usage・安全性�
 | 指標 | 定義 |
 | --- | --- |
 | Top-1 accuracy | `selected`のSkill IDが`expected`と一致する割合 |
-| none recall（互換JSONキー: `nonePrecision`） | `expected: none` のケースを `none` とした割合。`noneCorrect / expectedNone` で計算するため、通常の「none予測全体を分母にするprecision」とは異なる |
+| none recall（JSONキー: `noneRecall`、互換キー: `nonePrecision`） | `expected: none` のケースを `none` とした割合。`noneCorrect / expectedNone` で計算するため、通常の「none予測全体を分母にするprecision」とは異なる |
 | candidate miss rate | 期待SkillがJevへ渡す候補32件に入らなかった割合 |
 | Jev p50/p95 | `metrics.jevResponseMs`の50/95パーセンタイル |
 | total p50/p95 | `metrics.totalMs`の50/95パーセンタイル |

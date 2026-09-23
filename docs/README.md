@@ -4,6 +4,10 @@
 
 現行仕様の正本は `jevx/` のRust CLIとそのCLI helpです。`legacy/jev-triage/` に隔離した旧Node.js Webアプリと画面スクリーンショットはreferenceとして保持していますが、現行の要件・運用対象ではありません。
 
+## 判断の軸
+
+jevxで「何をして、何をしないか」「何を互換性として守るか」の正本は [jevx/PHILOSOPHY.md](../jevx/PHILOSOPHY.md) です。機能追加や要望への回答、レビューはこの文書に照らして判断します。
+
 ## Current / Latest
 
 ここが現行の導入・評価・運用の入口です。値を引用するときは、実行日時・commit・fixture hash・環境を併記し、歴史的なAPIキーあり測定と混ぜないでください。
@@ -11,6 +15,7 @@
 | 用途 | 現行の入口 | 位置付け |
 | --- | --- | --- |
 | 導入 | [users/getting-started.md](users/getting-started.md) | Rust CLIの前提、install root/PATH、データ境界 |
+| コマンド | [developers/jevx-cli-reference.md](developers/jevx-cli-reference.md) | 全コマンド、設定値、Telemetry、データ管理、トラブルシューティング |
 | 評価 | [developers/jevx-evaluation.md](developers/jevx-evaluation.md) | 4モードのdry-run、再現条件、現行baseline |
 | 要件・設計 | [developers/jevx-requirements.md](developers/jevx-requirements.md)、[developers/jevx-architecture.md](developers/jevx-architecture.md) | Rust実装の現行契約 |
 | 運用 | [operators/jevx-compaction-operations.md](operators/jevx-compaction-operations.md) | Hook/Compactionのcanonical runbook（2026-09-22時点） |
@@ -38,6 +43,8 @@
 - [jevx 要件定義と実装状況](developers/jevx-requirements.md): 対象範囲、CLI契約、データ保護、成功条件
 - [jevx アーキテクチャ](developers/jevx-architecture.md): Skill探索、Jev判定、Hook、Compaction補助の境界
 - [jevx 評価計画](developers/jevx-evaluation.md): 指標、fixture、再現コマンド、品質ゲート
+- [jevx CLIリファレンス](developers/jevx-cli-reference.md): 全コマンドの使い方と公開JSONの契約
+- [jevx ロードマップ](developers/jevx-roadmap.md): 今後の候補と、採用するときの基準
 - [TypeSafe APIを直接使う](developers/typesafe-api.md): jevxの現行経路とTypeSafe直接APIを比較する参考資料
 
 ## 運用者向け

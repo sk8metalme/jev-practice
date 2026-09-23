@@ -49,8 +49,9 @@ Codex Hookを使う場合は、利用者が明示的に `hooks install` を実�
 最初から検証コマンドを覚える必要はありません。目的に合わせて、次の順で選べばOKです。
 
 - **Skillを探したい**：`jevx skills list`で候補を確認し、`jevx skills suggest`で依頼に合うSkillを提案させる。
-- **設定や利用状況を確認したい**：`jevx doctor`で設定を、`jevx stats`でTelemetryの集計を確認する。
-- **CodexのHookへ接続したい**：`jevx hooks install --dry-run`で差分を確認してから、明示的に`jevx hooks install`を実行する。
+- **設定や利用状況を確認したい**：`jevx doctor`で設定と次の一手を、`jevx stats`でTelemetryの集計を確認する。
+- **保存されたデータを確認・削除したい**：`jevx data path`で場所を、`jevx data export`で中身を確認し、`jevx data purge --yes`で消す。
+- **CodexのHookへ接続したい**：`jevx hooks install --dry-run`で差分を確認してから、明示的に`jevx hooks install`を実行する。外すときは`jevx hooks uninstall`。
 - **長い会話のCompactionを補助したい**：Hook導入後に`jevx hooks compact-assist`を使う。
 - **導入効果や安全性を測りたい**：通常利用とは別に、後半の検証・評価機能を使う。
 
@@ -102,6 +103,8 @@ user scopeは`$CODEX_HOME/hooks.json`（未設定なら`~/.codex/hooks.json`）�
 
 **境界**：設定変更はopt-inです。導入後はCodex側でHookの内容をreview/trustする必要があり、ファイルを書けたこととHookが発火することは別に確認します。
 
+**やめるとき**：`jevx hooks uninstall --scope user --dry-run --json`で取り除くhandlerを確認してから、`jevx hooks uninstall --scope user`を実行します。jevxが登録したhandlerだけを外し、ほかのHookは残します。
+
 ### 4. Compaction補助（`hooks compact-assist`）
 
 **こんなときに**：Compaction前後で、次に必要な作業や安全なcheckpointが失われていないか確認したいとき。
@@ -123,6 +126,21 @@ printf '%s\n' '{"hook_event_name":"PreCompact","session_id":"demo-session","turn
 ```
 
 **境界**：LLM要約器ではなく、会話全文の復元、公式Compactionの再実装、Tool Resultの削除、現在のリポジトリ状態の保証は行いません。返すのは決定的なcheckpoint metadataとredacted contextです。詳しい発火確認・backup・Trust手順は[Codex CLI compaction実運用runbook](../operators/jevx-compaction-operations.md)を参照してください。
+
+### 5. ローカルデータの確認・書き出し・削除（`data`）
+
+**こんなときに**：jevxが何を保存しているか確かめたいとき、別の場所で分析したいとき、使うのをやめて痕跡を消したいとき。
+
+**利用者にとってのメリット**：保存先は `$JEVX_HOME`（既定 `~/.jevx`）の下だけで、場所・件数・書き出し・削除をコマンド1つで扱えます。
+
+```bash
+jevx data path
+jevx data export --output /tmp/jevx-data.json
+jevx data purge          # 削除対象の表示だけ
+jevx data purge --yes    # 実際に削除
+```
+
+**境界**：`purge` が消すのはjevxが書いたTelemetry・Hook記録・Compaction checkpointだけです。`.jevx/compact-context.md`、Codexの `hooks.json`、評価で `--output` に指定したファイルには触れません。
 
 ## jevxの検証・評価用機能
 
@@ -351,11 +369,14 @@ JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- \
 - [ ] `--no-telemetry` は外部送信停止ではなく、Telemetryのprobabilityも保存されないことを確認した。
 - [ ] Jev送信境界（raw cwd、Skill metadata、redacted prompt/description、非送信の会話・Tool結果）を確認した。
 - [ ] 固定fixtureの結果を自分のケースの保証として扱っていない。
-- [ ] Hook導入前に `hooks install --dry-run --json` を確認した。
+- [ ] Hook導入前に `hooks install --dry-run --json` を確認し、戻すときの `hooks uninstall` を把握した。
+- [ ] `jevx data path` で保存先を確認した。
 - [ ] 実セッションではCodexの `/hooks` でTrustを確認した。
 
 ## 次に読む
 
+- [jevxの設計思想（PHILOSOPHY）](../../jevx/PHILOSOPHY.md)
+- [jevx CLIリファレンス](../developers/jevx-cli-reference.md)
 - [ドキュメント入口](../README.md)
 - [jevx 要件定義と実装状況](../developers/jevx-requirements.md)
 - [jevx アーキテクチャ](../developers/jevx-architecture.md)

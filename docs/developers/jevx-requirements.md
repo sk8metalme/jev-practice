@@ -49,6 +49,10 @@ jevx doctor --json
 jevx eval --dry-run --json
 jevx eval-repeat --runs 5 --dry-run --json
 jevx hooks install --scope user --dry-run --json
+jevx hooks uninstall --scope user --dry-run --json
+jevx data path --json
+jevx data export --output /tmp/jevx-data.json
+jevx data purge --yes
 jevx hooks shadow
 jevx hooks compact-assist --state-dir /tmp/jevx-compaction
 jevx hooks compact-eval --runs 5 --json
@@ -62,9 +66,10 @@ Jev判定は`AI_GATEWAY_API_KEY`を使い、Vercel AI Gatewayの`typesafe-ai/jev
 
 デフォルトの設定は次のとおり。
 
-- 候補上限: 32件
-- 選択確率の下限: 0.60
-- 1位と2位の確率差: 0.10以上
+- 候補上限: 32件（`JEVX_MAX_CANDIDATES`、1〜256）
+- 選択確率の下限: 0.60（`JEVX_MIN_PROBABILITY`、0〜1）
+- 1位と2位の確率差: 0.10以上（`JEVX_MIN_MARGIN`、0〜1）
+- 範囲外の上書き値は既定値へ戻し、`doctor` の `warnings` に出す
 - リクエストタイムアウト: 1,500ms
 - Telemetry: `~/.jevx/events.jsonl`
 - Decision receipt: `~/.jevx/decisions.jsonl`
@@ -80,8 +85,10 @@ Jev判定は`AI_GATEWAY_API_KEY`を使い、Vercel AI Gatewayの`typesafe-ai/jev
 | --- | --- | --- |
 | Skill探索・ローカル順位付け・Jev判定 | 実装済み | Shadow Mode。Skill本文の自動ロード・実行はしない |
 | Decision Contract・StatePlan・Recorder | 実装済み | typed answer、code-side gate、safe status、receipt、replayをRust APIで提供。権限Hookへ自動allowしない |
-| Telemetry・stats・doctor | 実装済み | prompt本文、APIキー、Jevのprobabilityは保存しない |
-| Hook shadow・install・compact-assist | 実装済み | 明示的な導入とCodex側のTrustが必要 |
+| Telemetry・stats・doctor | 実装済み | prompt本文、APIキー、Jevのprobabilityは保存しない。doctorは導入状態と `nextSteps` を返す |
+| ローカルデータの確認・書き出し・削除（`data`） | 実装済み | `$JEVX_HOME` のjevx管理ファイルだけを扱い、`purge` は `--yes` まで削除しない |
+| Hook shadow・install・uninstall・compact-assist | 実装済み | 明示的な導入とCodex側のTrustが必要。uninstallはjevx管理のhandlerだけを外す |
+| 公開JSONの契約テスト | 実装済み | `tests/contract_requirements.rs` が `--json` のキーと終了コードを固定する |
 | Skill選択・Compaction・会話評価Runner | 実装済み | controlled fixture metadataまたは検証済みJSONLを評価し、Codex/App Serverは起動しない |
 | Skill自動実行・会話全文要約・Tool Result削除 | 対象外 | 別要件と安全性評価が必要 |
 

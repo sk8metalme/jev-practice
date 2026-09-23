@@ -49,7 +49,8 @@ Codex Hook（明示的にinstall）
 | `hooks` | Codex Hook入力の検証、shadow record、相関集計 | filesystem |
 | `hook_config` | user/project hooks.jsonの既存設定を保持するmerge、backup、冪等化 | filesystem |
 | `compact_assist` | checkpoint、redaction、compact後の補助context | filesystem |
-| `cli` | 入力形式、出力形式、終了コード、標準入力 | clap |
+| `data` | `$JEVX_HOME` の管理ファイルの一覧・書き出し・削除 | filesystem |
+| `cli`（`cli/mod.rs` と1コマンド1ファイル） | 入力形式、出力形式、終了コード、標準入力、doctorの診断 | clap |
 
 中心の`ranking`は`Judge` traitへ依存するオニオン型の内側に置き、テストではネットワークを使わないStub Judgeへ差し替えられる。HTTP境界はローカルTCPモックで検証し、CLIの成功経路も別テストで確認する。
 
@@ -157,3 +158,74 @@ Jevの呼び出しは候補ごとに繰り返さず、候補を1つのChoice質�
 次は実ユーザーに近い匿名化ケースを増やし、Hookの連続利用遅延、Gateway rate limit、API費用、compact後の再現性を測定する。Skill自動ロード・実行、会話全文のLLM要約、Tool Result削減、MCP化は、権限境界と失敗時の復旧を別要件として定義する。
 
 公式Hook契約は[Codex Hooks公式ドキュメント](https://learn.chatgpt.com/docs/hooks)、Compaction仕様は[OpenAI Compaction公式ガイド](https://developers.openai.com/api/docs/guides/compaction)を参照する。
+
+## Jevを使う設計原則
+
+複数の実装事例を比較すると、Jevを特別な処理の代わりにするのではなく、**決定的なローカルコードと意味判定の境界を狭く保つ**ことが品質・安全性・運用性を作っていた。jevxでは次の原則を共通の設計契約として扱うよ。
+
+#### 実装事例から抽出したパターン
+
+| 観察した設計パターン | 取り入れる観点 | そのまま移植しないもの |
+| --- | --- | --- |
+| 意味的なレビュー | matcherで対象を絞り、意味的な一文のpredicate・fixture・accepted baseline・warning-firstで運用する | parser / type checkerで確定できる欠陥のJev化、いきなりCIをblockingする運用 |
+| 状態分割と予算管理 | stateをwindow化し、overlap・予算・cache・replay・costを明示する | 決定的なsyntax highlightingをJevへ置き換えること |
+| 変更影響のScore評価 | `Score`で影響度を表し、uncertain / missing / dynamicを安全側で選び、runnerのexit codeを保持する | framework固有のrunner差分をjevxの共通契約へ混ぜること |
+| typed policyとreplay | typed answer、atomic predicate、policy gate、transcript / replay、`defer`を一級の結果にする | Jevの確信度を権限やauto-allowへ直結させること |
+
+ここでの比較結果は、jevxの全機能を一度に増やす指示ではなく、共通基盤を先に整えてから小さな縦機能を評価するための設計材料だよ。
+
+#### 1. Jevは意味判定、コードは決定的な仕事
+
+- 構文解析、差分抽出、対象列挙、テスト発見、window分割、redaction、コマンド実行はローカルコードで行う。
+- Jevには「この候補が依頼の文脈に合うか」「この変更がこの対象へどの程度影響するか」のように、コードだけでは書きにくい意味的・文脈的な問いを渡す。
+- 決定的なparserや型検査で確定できる問題をJevへ移さない。Jevを使う必然性を、縦機能ごとに説明できる状態にする。
+
+#### 2. Jevの回答は推薦であり、最終決定ではない
+
+Jevの回答は自由文ではなく、用途に合ったtyped answerとして扱う。現在のSkill選択は`Choice`を使うが、将来の機能では次の型を使い分ける設計候補がある。
+
+| answer type | 向いている問い | 最終判断 |
+| --- | --- | --- |
+| `Choice` | 候補Skillから最も合うもの、または`none` | コード側の確信度・margin gate |
+| ordered `Score` | 変更が各テストへ与える影響の大きさ | コード側のcutoff・unsure判定 |
+| atomic predicate / `Noul` | 条件の成立、policyの構成要素 | コード側の保守的なcomposition |
+
+Jevの確信度は「与えられたstateのもとでの判定の確からしさ」であり、操作が成功することや権限を与えてよいことの証明ではない。`selected`になってもSkillの自動ロード・実行や権限付与へ直結させない。
+
+#### 3. Decision Contractで問い・結果・安全側挙動を束ねる
+
+Skill選択の現行実装は、個別のJev呼び出しを増やさず、次のDecision Contractへ寄せている。新しい専用CLIコマンドは増やさず、Rust APIと既存の評価Runnerから利用する。
+
+```text
+State Builder → redaction / window plan → typed Jev answer
+            → code-side threshold / margin / policy gate
+            → accepted / none / unknown / defer / degraded
+            → safe receipt + replayable evaluation
+```
+
+receiptには、少なくとも次の安全なメタデータを持たせる。prompt本文・Skill本文・Tool結果・APIキー・生のセッション識別子は含めない。
+
+- contract / question / policyのバージョン（policyは閾値を含むdigest付き）
+- state digest、実際のstate bytes、適用したstate/candidate予算、候補数、window数、omitted / redactionの理由
+- 構造化されたanswer、code-side decision、threshold、margin、fallback、reason
+- calls、retry、latency、input / output tokens、相対的なcost、replay ID
+
+この形式にすると、同じfixtureとrecorded answerでJevなしにcode-side decisionを再生でき、質問や閾値を変更したときの差分もレビューできる。
+
+#### 4. 不確実性・状態不足・障害は一級の結果にする
+
+`unknown`、`defer`、`degraded`、`no answer`、`timeout`、`outage`を、成功や自動allowへ変換しない。特に権限Hookや破壊的操作は、必要なら`ask`または`defer`へ流し、fail-closedの挙動を優先する。
+
+状態をtoken / byte / 候補数の上限で分割するときは、window、overlap、omitted項目、redaction理由、予算超過を可視化する。大きな入力を黙って切り捨てたまま、高い確信度だけを信頼しない。
+
+#### 5. 評価・再現性・コストを機能の一部にする
+
+新しいJev利用は、dry-run、fixture、accepted baseline、replay、必要に応じたcacheを用意してから運用へ進める。少なくとも次を同じ入力・候補・ネットワーク条件で比較する。
+
+- Top-1 accuracy、`none` precision、candidate miss、uncertain / fallback率
+- 誤って危険側へ進まない率、誤検出率、反復時のanswer / confidence variance
+- Jev p50 / p95、全体p50 / p95、token、相対cost、retry、error rate
+
+Jevありの単発精度だけで導入を決めず、Jevなしのbaseline、遅延、費用、失敗時の挙動を一緒に見る。既存評価の実行方法は [CLIリファレンスの評価Runner](jevx-cli-reference.md#skill選択の評価runner) を参照してね。
+
+判断の優先順位と「やらないこと」は [jevx/PHILOSOPHY.md](../../jevx/PHILOSOPHY.md) を正本とする。今後の候補は [jevx-roadmap.md](jevx-roadmap.md) を参照。
