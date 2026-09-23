@@ -1,0 +1,189 @@
+lockfile_version: '1'
+apm_version: 0.31.0
+dependencies:
+- repo_url: sk8metalme/oss-design-skill
+  name: oss-design-skill
+  host: github.com
+  resolved_commit: bd6e930f4547d1089d67dcd6e36eed7173cca214
+  resolved_ref: v0.1.0
+  version: 0.1.0
+  package_type: apm_package
+  deployed_files:
+  - .agents/skills/oss-design
+  - .agents/skills/oss-design/SKILL.md
+  - .agents/skills/oss-design/references/catalog.md
+  - .agents/skills/oss-design/references/checklist.md
+  - .agents/skills/oss-design/references/principles.md
+  - .agents/skills/oss-design/templates/AGENTS-section.md
+  - .agents/skills/oss-design/templates/CONTRIBUTING.md
+  - .agents/skills/oss-design/templates/PHILOSOPHY.md
+  - .claude/skills/oss-design
+  - .claude/skills/oss-design/SKILL.md
+  - .claude/skills/oss-design/references/catalog.md
+  - .claude/skills/oss-design/references/checklist.md
+  - .claude/skills/oss-design/references/principles.md
+  - .claude/skills/oss-design/templates/AGENTS-section.md
+  - .claude/skills/oss-design/templates/CONTRIBUTING.md
+  - .claude/skills/oss-design/templates/PHILOSOPHY.md
+  deployed_file_hashes:
+    .agents/skills/oss-design/SKILL.md: sha256:71e28bd6805f4eafe49acbc255a7f7e46de06a3277da33ff912bd0b4f1d16483
+    .agents/skills/oss-design/references/catalog.md: sha256:ea9a7c2875c442559f964dd041e0411fd76c20bb7bd7e8fd2a53197046aa4b26
+    .agents/skills/oss-design/references/checklist.md: sha256:a2cb6ef2c57442f590c2a0d8938190fd4dfdb8403b97fc8176b7d36d331a8d22
+    .agents/skills/oss-design/references/principles.md: sha256:411f241b05eb80bf05a045d90c1ea59fb15f250ca1284541c948c5784e568b7f
+    .agents/skills/oss-design/templates/AGENTS-section.md: sha256:2d3b4c4f6b2bd391e95bd9f5ce21efa5a01630f52c5e342ce020b561ebf43a5a
+    .agents/skills/oss-design/templates/CONTRIBUTING.md: sha256:cdb89b0e0fcd2e1a2b100d7b0405914121cffb5e358ad1f1b521d70a1cc44cb4
+    .agents/skills/oss-design/templates/PHILOSOPHY.md: sha256:90b0c32f9cf9453ff4206975dbe94365395c61217a7149a690b40485605b85a8
+    .claude/skills/oss-design/SKILL.md: sha256:71e28bd6805f4eafe49acbc255a7f7e46de06a3277da33ff912bd0b4f1d16483
+    .claude/skills/oss-design/references/catalog.md: sha256:ea9a7c2875c442559f964dd041e0411fd76c20bb7bd7e8fd2a53197046aa4b26
+    .claude/skills/oss-design/references/checklist.md: sha256:a2cb6ef2c57442f590c2a0d8938190fd4dfdb8403b97fc8176b7d36d331a8d22
+    .claude/skills/oss-design/references/principles.md: sha256:411f241b05eb80bf05a045d90c1ea59fb15f250ca1284541c948c5784e568b7f
+    .claude/skills/oss-design/templates/AGENTS-section.md: sha256:2d3b4c4f6b2bd391e95bd9f5ce21efa5a01630f52c5e342ce020b561ebf43a5a
+    .claude/skills/oss-design/templates/CONTRIBUTING.md: sha256:cdb89b0e0fcd2e1a2b100d7b0405914121cffb5e358ad1f1b521d70a1cc44cb4
+    .claude/skills/oss-design/templates/PHILOSOPHY.md: sha256:90b0c32f9cf9453ff4206975dbe94365395c61217a7149a690b40485605b85a8
+  content_hash: sha256:edf18d8eacdd7a44c5cca6811dba3ad0d712a08eb5d95af88531aedfc98a6394
+  declared_license: MIT
+deployments:
+- kind: project-relative
+  target: claude
+  value: .claude/skills/oss-design
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/oss-design/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: sha256:71e28bd6805f4eafe49acbc255a7f7e46de06a3277da33ff912bd0b4f1d16483
+- kind: project-relative
+  target: claude
+  value: .claude/skills/oss-design/references/catalog.md
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: sha256:ea9a7c2875c442559f964dd041e0411fd76c20bb7bd7e8fd2a53197046aa4b26
+- kind: project-relative
+  target: claude
+  value: .claude/skills/oss-design/references/checklist.md
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: sha256:a2cb6ef2c57442f590c2a0d8938190fd4dfdb8403b97fc8176b7d36d331a8d22
+- kind: project-relative
+  target: claude
+  value: .claude/skills/oss-design/references/principles.md
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: sha256:411f241b05eb80bf05a045d90c1ea59fb15f250ca1284541c948c5784e568b7f
+- kind: project-relative
+  target: claude
+  value: .claude/skills/oss-design/templates/AGENTS-section.md
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: sha256:2d3b4c4f6b2bd391e95bd9f5ce21efa5a01630f52c5e342ce020b561ebf43a5a
+- kind: project-relative
+  target: claude
+  value: .claude/skills/oss-design/templates/CONTRIBUTING.md
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: sha256:cdb89b0e0fcd2e1a2b100d7b0405914121cffb5e358ad1f1b521d70a1cc44cb4
+- kind: project-relative
+  target: claude
+  value: .claude/skills/oss-design/templates/PHILOSOPHY.md
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: sha256:90b0c32f9cf9453ff4206975dbe94365395c61217a7149a690b40485605b85a8
+- kind: project-relative
+  target: codex
+  value: .agents/skills/oss-design
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: null
+- kind: project-relative
+  target: codex
+  value: .agents/skills/oss-design/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: sha256:71e28bd6805f4eafe49acbc255a7f7e46de06a3277da33ff912bd0b4f1d16483
+- kind: project-relative
+  target: codex
+  value: .agents/skills/oss-design/references/catalog.md
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: sha256:ea9a7c2875c442559f964dd041e0411fd76c20bb7bd7e8fd2a53197046aa4b26
+- kind: project-relative
+  target: codex
+  value: .agents/skills/oss-design/references/checklist.md
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: sha256:a2cb6ef2c57442f590c2a0d8938190fd4dfdb8403b97fc8176b7d36d331a8d22
+- kind: project-relative
+  target: codex
+  value: .agents/skills/oss-design/references/principles.md
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: sha256:411f241b05eb80bf05a045d90c1ea59fb15f250ca1284541c948c5784e568b7f
+- kind: project-relative
+  target: codex
+  value: .agents/skills/oss-design/templates/AGENTS-section.md
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: sha256:2d3b4c4f6b2bd391e95bd9f5ce21efa5a01630f52c5e342ce020b561ebf43a5a
+- kind: project-relative
+  target: codex
+  value: .agents/skills/oss-design/templates/CONTRIBUTING.md
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: sha256:cdb89b0e0fcd2e1a2b100d7b0405914121cffb5e358ad1f1b521d70a1cc44cb4
+- kind: project-relative
+  target: codex
+  value: .agents/skills/oss-design/templates/PHILOSOPHY.md
+  runtime: null
+  scope: project
+  owners:
+  - sk8metalme/oss-design-skill
+  active_owner: sk8metalme/oss-design-skill
+  content_hash: sha256:90b0c32f9cf9453ff4206975dbe94365395c61217a7149a690b40485605b85a8
