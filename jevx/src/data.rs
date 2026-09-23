@@ -39,11 +39,12 @@ pub struct PurgeReport {
 }
 
 /// jevxが書き込むファイルの種類と、`$JEVX_HOME` からの相対パス。
-const MANAGED_FILES: [(&str, &str); 4] = [
+const MANAGED_FILES: [(&str, &str); 5] = [
     ("telemetry", "events.jsonl"),
     ("hookRecords", "hooks.jsonl"),
     ("compactionRecords", "compaction/hook-records.jsonl"),
     ("compactionCheckpoints", "compaction/checkpoints.jsonl"),
+    ("decisionReceipts", "decisions.jsonl"),
 ];
 const MANAGED_DIR: &str = "compaction";
 
@@ -166,7 +167,8 @@ mod tests {
                 "telemetry",
                 "hookRecords",
                 "compactionRecords",
-                "compactionCheckpoints"
+                "compactionCheckpoints",
+                "decisionReceipts"
             ]
         );
         assert_eq!(inventory.files[0].records, 2);
@@ -261,5 +263,29 @@ mod tests {
             "the link itself is kept"
         );
         assert!(elsewhere.path().exists());
+    }
+
+    #[test]
+    fn decision_receipts_are_listed_exported_and_purged() {
+        let root = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            root.path().join("decisions.jsonl"),
+            "{\"decision\":\"none\"}\n",
+        )
+        .expect("receipts");
+        let inventory = data_inventory(root.path()).expect("inventory");
+        let receipts = inventory
+            .files
+            .iter()
+            .find(|file| file.kind == "decisionReceipts")
+            .expect("decision receipts are managed");
+        assert_eq!(receipts.records, 1);
+        let exported = export_data(&inventory).expect("export");
+        assert_eq!(
+            exported["records"]["decisionReceipts"][0]["decision"],
+            "none"
+        );
+        purge_data(&inventory, true).expect("purge");
+        assert!(!root.path().join("decisions.jsonl").exists());
     }
 }
