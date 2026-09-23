@@ -57,8 +57,11 @@ pub struct RepeatModeSummary {
     #[serde(rename = "casesPerRun")]
     pub cases_per_run: usize,
     pub accuracy: DistributionSummary,
+    /// 互換のために残すキー。値は `noneRecall` と同じ（`noneCorrect / expectedNone`）。
     #[serde(rename = "nonePrecision")]
     pub none_precision: DistributionSummary,
+    #[serde(rename = "noneRecall")]
+    pub none_recall: DistributionSummary,
     #[serde(rename = "candidateMissRate")]
     pub candidate_miss_rate: DistributionSummary,
     #[serde(rename = "errorRate")]
@@ -105,8 +108,11 @@ pub struct ModeSummary {
     pub expected_none: usize,
     #[serde(rename = "noneCorrect")]
     pub none_correct: usize,
+    /// 互換のために残すキー。値は `noneRecall` と同じ（`noneCorrect / expectedNone`）。
     #[serde(rename = "nonePrecision")]
     pub none_precision: Option<f64>,
+    #[serde(rename = "noneRecall")]
+    pub none_recall: Option<f64>,
     #[serde(rename = "candidateMisses")]
     pub candidate_misses: usize,
     #[serde(rename = "candidateMissRate")]
@@ -458,6 +464,7 @@ fn repeat_mode_summary(mode: &str, reports: &[EvaluationReport]) -> RepeatModeSu
                 .iter()
                 .filter_map(|summary| summary.none_precision),
         ),
+        none_recall: distribution(run_modes.iter().filter_map(|summary| summary.none_recall)),
         candidate_miss_rate: distribution(
             run_modes
                 .iter()
@@ -733,6 +740,7 @@ fn summarize(
         expected_none,
         none_correct,
         none_precision: ratio(none_correct, expected_none),
+        none_recall: ratio(none_correct, expected_none),
         candidate_misses: if include_candidate_miss {
             candidate_misses
         } else {
@@ -769,6 +777,7 @@ impl ModeSummary {
             expected_none: 0,
             none_correct: 0,
             none_precision: None,
+            none_recall: None,
             candidate_misses: 0,
             candidate_miss_rate: None,
             errors: 0,

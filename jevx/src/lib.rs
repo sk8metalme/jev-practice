@@ -1,5 +1,6 @@
 pub mod compact_assist;
 mod config;
+pub mod data;
 pub mod decision;
 mod discovery;
 mod error;

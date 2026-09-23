@@ -2,7 +2,11 @@
 
 このディレクトリは、読む目的ごとに文書を分類しています。導入判断にはユーザー向けガイド、実装・保守には開発者向け文書、Codex CLIへの接続には運用者向けrunbookを使ってください。現行値と歴史値は入口から分けています。
 
-現行仕様の正本は `jevx/` のRust CLIとそのCLI helpです。ルート `src/` の旧Node.js Webアプリと画面スクリーンショットはreferenceとして保持していますが、現行の要件・運用対象ではありません。
+現行仕様の正本は `jevx/` のRust CLIとそのCLI helpです。`legacy/jev-triage/` に隔離した旧Node.js Webアプリと画面スクリーンショットはreferenceとして保持していますが、現行の要件・運用対象ではありません。
+
+## 判断の軸
+
+jevxで「何をして、何をしないか」「何を互換性として守るか」の正本は [jevx/PHILOSOPHY.md](../jevx/PHILOSOPHY.md) です。機能追加や要望への回答、レビューはこの文書に照らして判断します。
 
 ## Current / Latest
 
@@ -11,6 +15,7 @@
 | 用途 | 現行の入口 | 位置付け |
 | --- | --- | --- |
 | 導入 | [users/getting-started.md](users/getting-started.md) | Rust CLIの前提、install root/PATH、データ境界 |
+| コマンド | [developers/jevx-cli-reference.md](developers/jevx-cli-reference.md) | 全コマンド、設定値、Telemetry、データ管理、トラブルシューティング |
 | 評価 | [developers/jevx-evaluation.md](developers/jevx-evaluation.md) | 4モードのdry-run、再現条件、現行baseline |
 | 要件・設計 | [developers/jevx-requirements.md](developers/jevx-requirements.md)、[developers/jevx-architecture.md](developers/jevx-architecture.md) | Rust実装の現行契約 |
 | 運用 | [operators/jevx-compaction-operations.md](operators/jevx-compaction-operations.md) | Hook/Compactionのcanonical runbook（2026-09-22時点） |
@@ -22,7 +27,7 @@
 | 資料 | 位置付け |
 | --- | --- |
 | [TypeSafe APIを直接使う](developers/typesafe-api.md) | TypeSafe直接APIの参考・非現行経路。現行jevxのGateway実装ではない |
-| ルート `src/` のNode.js Webアプリ | 過去のJev検証用reference。現行の要件・運用対象ではない |
+| [`legacy/jev-triage/`](../legacy/jev-triage/README.md) のNode.js Webアプリ | 過去のJev検証用reference。現行の要件・運用対象ではない |
 
 ## 読者別の入口
 
@@ -38,6 +43,8 @@
 - [jevx 要件定義と実装状況](developers/jevx-requirements.md): 対象範囲、CLI契約、データ保護、成功条件
 - [jevx アーキテクチャ](developers/jevx-architecture.md): Skill探索、Jev判定、Hook、Compaction補助の境界
 - [jevx 評価計画](developers/jevx-evaluation.md): 指標、fixture、再現コマンド、品質ゲート
+- [jevx CLIリファレンス](developers/jevx-cli-reference.md): 全コマンドの使い方と公開JSONの契約
+- [jevx ロードマップ](developers/jevx-roadmap.md): 今後の候補と、採用するときの基準
 - [TypeSafe APIを直接使う](developers/typesafe-api.md): jevxの現行経路とTypeSafe直接APIを比較する参考資料
 
 ## 運用者向け

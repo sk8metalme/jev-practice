@@ -44,7 +44,7 @@ Jevを使う価値を、Skill選択の精度・速度・token usage・安全性�
 | 指標 | 定義 |
 | --- | --- |
 | Top-1 accuracy | `selected`のSkill IDが`expected`と一致する割合 |
-| none recall（互換JSONキー: `nonePrecision`） | `expected: none` のケースを `none` とした割合。`noneCorrect / expectedNone` で計算するため、通常の「none予測全体を分母にするprecision」とは異なる |
+| none recall（JSONキー: `noneRecall`、互換キー: `nonePrecision`） | `expected: none` のケースを `none` とした割合。`noneCorrect / expectedNone` で計算するため、通常の「none予測全体を分母にするprecision」とは異なる |
 | candidate miss rate | 期待SkillがJevへ渡す候補32件に入らなかった割合 |
 | Jev p50/p95 | `metrics.jevResponseMs`の50/95パーセンタイル |
 | total p50/p95 | `metrics.totalMs`の50/95パーセンタイル |
@@ -79,24 +79,23 @@ JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- \
   --dry-run --json
 ```
 
-このコマンドが現行fixtureに対する外部送信なしのベースラインの正本である。`eval --dry-run` は `none`、`local_keyword`、`local_rank`、`jevx` の4モードを出力し、Jevモードは `status: not_run` になる。2026-09-22の確認では、`local_keyword` の正解率は0.875、`local_rank` は0.175、`none`は0.1だった。`nonePrecision` は `expectedNone` 分母の recall である。
+このコマンドが現行fixtureに対する外部送信なしのベースラインの正本である。`eval --dry-run` は `none`、`local_keyword`、`local_rank`、`jevx` の4モードを出力し、Jevモードは `status: not_run` になる。2026-09-23の確認では、`local_keyword` の正解率は1.0、`local_rank` は0.2、`none`は0.1だった。`noneRecall`（互換キー `nonePrecision`）は `expectedNone` 分母の recall である。2026-09-23以降の `eval` / `eval-repeat` は `--skill-dir` のカタログだけを使い、project・HOME・CODEX_HOMEのSkill rootを混ぜない。2026-09-22のLatest（`local_keyword` 0.875、`local_rank` 0.175）は既定rootsを含む有効候補14件での環境依存の値で、現行コードでは再現できないためHistoricalとして扱う。
 
 ### 現行baselineの固定条件
 
 | 項目 | 値 |
 | --- | --- |
-| 実行日時 | `2026-09-22T15:00:42+09:00` |
-| 測定時の実装・fixture commit（docs同期前） | `ed0b93c023251400bcbbe2de8cdedd5451f08761` |
+| 実行日時 | `2026-09-23T22:11:53+09:00` |
+| 測定時の実装・fixture commit | `391e18049fe89a0dadcb8d43f6b70e3c6673ddf1` |
 | fixture SHA-256 | `a450a48fac7b49b544002f8c539b961fef0352951cde950f692768b4ea0748fb` |
-| Cargo manifest / lock SHA-256 | `4bebc0eba690c7fb80dee0f4c0c27d50ca97c1f11504c47cf24f6a70ccbc519c` / `2e18a8ddc6e3de35dfa0c27248ed373e52705cef4e2d95acdbf282d7df1bc29b` |
 | Rust / Cargo | `rustc 1.98.1 (48a229cea 2026-09-01)` / `cargo 1.98.1 (797e8a9bc 2026-08-05)` |
 | OS | macOS 26.6.2（build 25G83） |
 | 実行環境 | `JEVX_TELEMETRY=off`、APIキーなし、外部Gateway呼び出しなし |
-| カタログ | fixture 9 Skills + 既定のproject/HOME/CODEX_HOME roots（この実行の有効候補数14）。同じLatest値を再現するには同じrootsを保持 |
+| カタログ | `--skill-dir jevx/evals/skills` の fixture 9 Skills だけ（project/HOME/CODEX_HOMEのrootは使わない） |
 
 このcommitは、現行Rust実装とfixtureでbaselineを測定した時点の記録です。後続のdocs変更だけでは実行コード・fixtureのbaseline値は変わらないため、docsのcommitと同一であることは要求しません。
 
-`eval` は追加の `--skill-dir` を既定rootsへ追加するだけで、既定rootsを置き換えません。project `.agents/skills` / `.codex/skills`、`$HOME/.agents/skills`、`$CODEX_HOME/skills` が混ざります。Latest表の値を再現するときは同じrootsを保持し、fixture-onlyの再現性を確認するときは次のように隔離します。
+`eval` / `eval-repeat` は `--skill-dir` だけをカタログにするため、作業ディレクトリやHOMEにあるSkillは評価に混ざらない。Telemetryやビルドキャッシュまで含めて環境を分けたいときは、次のように一時ディレクトリで実行する。
 
 ```bash
 (
@@ -116,9 +115,9 @@ JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- \
 )
 ```
 
-上の隔離コマンドは9件のfixture Skillをcatalogにして40ケースを評価する再現性チェックで、今回の環境では `local_keyword` 1.0、`local_rank` 0.2 になる。Latest表の0.875 / 0.175は、通常のリポジトリroot・既定rootsを含む有効候補14件で実行した値なので、隔離値と混ぜない。
+上の隔離コマンドも、通常のコマンドと同じ値（`local_keyword` 1.0、`local_rank` 0.2）になる。
 
-Jevを含めた実測は`--dry-run`を外す。評価用Skillカタログは、通常のユーザーSkillと混ざらないよう`jevx/evals/skills`を明示する。ただし `--skill-dir` は既定rootsを置き換えず追加するため、このコマンド単独ではcatalog隔離にならない。隔離して再現する場合は、上の一時 `HOME` / `CODEX_HOME` / 空のproject root手順を使う。
+Jevを含めた実測は`--dry-run`を外す。評価用Skillカタログは、通常のユーザーSkillと混ざらないよう`jevx/evals/skills`を明示する。`--skill-dir` で渡したカタログだけが候補になる。
 
 ```bash
 export AI_GATEWAY_API_KEY="<your-ai-gateway-api-key>"

@@ -49,6 +49,10 @@ jevx doctor --json
 jevx eval --dry-run --json
 jevx eval-repeat --runs 5 --dry-run --json
 jevx hooks install --scope user --dry-run --json
+jevx hooks uninstall --scope user --dry-run --json
+jevx data path --json
+jevx data export --output /tmp/jevx-data.json
+jevx data purge --yes
 jevx hooks shadow
 jevx hooks compact-assist --state-dir /tmp/jevx-compaction
 jevx hooks compact-eval --runs 5 --json
@@ -62,14 +66,15 @@ Jev判定は`AI_GATEWAY_API_KEY`を使い、Vercel AI Gatewayの`typesafe-ai/jev
 
 デフォルトの設定は次のとおり。
 
-- 候補上限: 32件
-- 選択確率の下限: 0.60
-- 1位と2位の確率差: 0.10以上
-- リクエストタイムアウト: 1,500ms
+- 候補上限: 32件（`JEVX_MAX_CANDIDATES`、1〜256）
+- 選択確率の下限: 0.60（`JEVX_MIN_PROBABILITY`、0〜1）
+- 1位と2位の確率差: 0.10以上（`JEVX_MIN_MARGIN`、0〜1）
+- 範囲外の上書き値は既定値へ戻し、`doctor` の `warnings` に出す
+- リクエストタイムアウト: 1,500ms（リトライを含む呼び出し全体の予算）
 - Telemetry: `~/.jevx/events.jsonl`
 - Decision receipt: `~/.jevx/decisions.jsonl`
-- state byte上限: 32,000 bytes
-- retry: 429/529を最大1回、25ms backoff
+- state byte上限: 32,000 bytes（`JEVX_MAX_STATE_BYTES`、1,024〜262,144）
+- retry: 429/529を最大1回、25ms backoff（`JEVX_MAX_RETRIES` 0〜3、`JEVX_RETRY_BACKOFF_MS` 0〜1,000）。締め切りを超えるbackoffは再試行しない
 - cache: 既定無効（`JEVX_DECISION_CACHE_CAPACITY=0`）
 - token proxy cost: input/outputとも既定weight 1.0
 - Hook state: Telemetry親ディレクトリ配下の`hooks.jsonl` / `compaction/`
@@ -80,8 +85,10 @@ Jev判定は`AI_GATEWAY_API_KEY`を使い、Vercel AI Gatewayの`typesafe-ai/jev
 | --- | --- | --- |
 | Skill探索・ローカル順位付け・Jev判定 | 実装済み | Shadow Mode。Skill本文の自動ロード・実行はしない |
 | Decision Contract・StatePlan・Recorder | 実装済み | typed answer、code-side gate、safe status、receipt、replayをRust APIで提供。権限Hookへ自動allowしない |
-| Telemetry・stats・doctor | 実装済み | prompt本文、APIキー、Jevのprobabilityは保存しない |
-| Hook shadow・install・compact-assist | 実装済み | 明示的な導入とCodex側のTrustが必要 |
+| Telemetry・stats・doctor | 実装済み | prompt本文、APIキー、Jevのprobabilityは保存しない。doctorは導入状態と `nextSteps` を返す |
+| ローカルデータの確認・書き出し・削除（`data`） | 実装済み | `$JEVX_HOME` のjevx管理ファイルだけを扱い、`purge` は `--yes` まで削除しない |
+| Hook shadow・install・uninstall・compact-assist | 実装済み | 明示的な導入とCodex側のTrustが必要。uninstallはjevx管理のhandlerだけを外す |
+| 公開JSONの契約テスト | 実装済み | `tests/contract_requirements.rs` が `--json` のキーと終了コードを固定する |
 | Skill選択・Compaction・会話評価Runner | 実装済み | controlled fixture metadataまたは検証済みJSONLを評価し、Codex/App Serverは起動しない |
 | Skill自動実行・会話全文要約・Tool Result削除 | 対象外 | 別要件と安全性評価が必要 |
 
@@ -157,20 +164,17 @@ Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許�
 
 これは固定fixtureの観測であり、利用者入力への精度・性能保証ではない。Jevの外部通信・Token使用量・Gatewayエラーを導入判断のコストとして同時に扱う。
 
-## Current / Latest baseline（2026-09-22）
+## Current / Latest baseline（2026-09-23）
 
-現行コードの外部送信なし確認は、`JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- eval --fixtures jevx/evals/skill-selection.jsonl --skill-dir jevx/evals/skills --dry-run --json` を正本とする。2026-09-22の確認では、`local_keyword` の正解率は87.5%、`local_rank` は17.5%、`none`は10.0%、Jevモードは`not_run`だった。
+現行コードの外部送信なし確認は、`JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- eval --fixtures jevx/evals/skill-selection.jsonl --skill-dir jevx/evals/skills --dry-run --json` を正本とする。評価カタログは `--skill-dir` だけで、project・HOME・CODEX_HOMEのSkillは混ざらない。2026-09-23の確認では、`local_keyword` の正解率は100.0%、`local_rank` は20.0%、`none`は10.0%、Jevモードは`not_run`だった。
 
 | 項目 | 値 |
 | --- | --- |
-| 実行日時 | `2026-09-22T15:00:42+09:00` |
-| 測定時の実装・fixture commit（docs同期前） | `ed0b93c023251400bcbbe2de8cdedd5451f08761` |
+| 実行日時 | `2026-09-23T22:11:53+09:00` |
+| 測定時の実装・fixture commit | `391e18049fe89a0dadcb8d43f6b70e3c6673ddf1` |
 | fixture SHA-256 | `a450a48fac7b49b544002f8c539b961fef0352951cde950f692768b4ea0748fb` |
-| Rust / Cargo | `rustc 1.98.1 (48a229cea 2026-09-01)` / `cargo 1.98.1 (797e8a9bc 2026-08-05)` |
-| OS | macOS 26.6.2（build 25G83） |
-| 依存条件 | APIキーなし、`JEVX_TELEMETRY=off`、外部Gateway呼び出しなし。fixture 9件に既定rootsを加えた有効候補14件 |
 
-evalの既定カタログは project `.agents/skills` / `.codex/skills`、`HOME/.agents/skills`、`CODEX_HOME/skills`、指定 `--skill-dir` の合成であり、`--skill-dir`だけでは隔離にならない。Latest値を再現する場合は記録時と同じrootsを保ち、fixture-only検証では一時HOME・CODEX_HOME・空のproject rootを用意して評価fixtureの `--skill-dir` を絶対パスで指定する（隔離時の値はLatestと異なり得る）。fixtureや実装が変わる場合は、このコマンドと条件を再実行して値を更新する。
+2026-09-22に記録した値（`local_keyword` 87.5%、`local_rank` 17.5%）は、既定のSkill rootが評価カタログに混ざった環境依存の値だったため、Historicalとして扱う。
 
 ## 評価方法
 

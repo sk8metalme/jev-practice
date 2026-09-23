@@ -5,7 +5,7 @@
 
 > 検討日: 2026-09-20
 
-この文書で扱う [`旧Jev Triage実装`](../../src/) は、問い合わせ文を `choice`・`score`・`boolean` の3問で評価し、カテゴリ・緊急度・返金要求をまとめて表示していた旧Node.js Webアプリだよ。現行のサポート対象は `jevx` Rust CLIであり、この文書では過去の実装を候補検討の参考として扱う。以下の候補案は未実装で、現行ロードマップやcanonical runbookではない。
+この文書で扱う [`旧Jev Triage実装`](../../legacy/jev-triage/src/) は、問い合わせ文を `choice`・`score`・`boolean` の3問で評価し、カテゴリ・緊急度・返金要求をまとめて表示していた旧Node.js Webアプリだよ。現行のサポート対象は `jevx` Rust CLIであり、この文書では過去の実装を候補検討の参考として扱う。以下の候補案は未実装で、現行ロードマップやcanonical runbookではない。
 
 公開事例・GitHub実装・ブログ・SNSまで横断した詳細調査は、[Jev活用アイデア徹底調査レポート](jev-research.md) にまとめているよ。候補を広く比較したいときや、質問設計・評価方法まで確認したいときはこちらを見てね。
 
@@ -176,4 +176,4 @@ Jevの評価だけでマージ可否を決めない。既存のCI、CODEOWNERS�
 
 - [Vercel AI Gateway Evaluation](https://vercel.com/docs/ai-gateway/modalities/evaluation)
 - [Jev API, Pricing & Playground](https://vercel.com/ai-gateway/models/jev)
-- [旧Jev Triage実装](../../src/)
+- [旧Jev Triage実装](../../legacy/jev-triage/src/)

@@ -741,6 +741,54 @@ async fn gateway_judge_retries_retryable_status_and_reports_retry_count() {
 }
 
 #[tokio::test]
+async fn gateway_retries_stay_within_the_request_timeout_budget() {
+    let server = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let endpoint = format!("http://{}", server.local_addr().expect("address"));
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = server.accept().expect("accept");
+        read_request(&mut stream);
+        write_http_response(
+            &mut stream,
+            "429 Too Many Requests",
+            r#"{"error":{"message":"slow down"}}"#,
+        );
+    });
+    let mut config = Config::for_test(tempdir().expect("tempdir").path().to_path_buf());
+    config.endpoint = endpoint;
+    config.max_retries = 3;
+    config.retry_backoff_ms = 1_000;
+    config.timeout = std::time::Duration::from_millis(300);
+    let judge = GatewayJudge::from_config(&config).expect("judge");
+    let started = std::time::Instant::now();
+    let error = jevx::Judge::evaluate_with_metrics(
+        &judge,
+        JudgeRequest {
+            state: "{}".to_owned(),
+            candidates: vec![jevx::JudgeCandidate {
+                id: "pdf".to_owned(),
+                name: "pdf".to_owned(),
+                description: "PDF".to_owned(),
+            }],
+        },
+    )
+    .await
+    .expect_err("retry would exceed the deadline");
+    handle.join().expect("server");
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(900),
+        "the whole call must respect the request timeout, took {:?}",
+        started.elapsed()
+    );
+    match error {
+        jevx::JevxError::ProviderWithMetrics { calls, retries, .. } => {
+            assert_eq!(calls, 1);
+            assert_eq!(retries, 0);
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn gateway_retry_failure_preserves_attempt_metrics_in_the_receipt() {
     let root = tempdir().expect("tempdir");
     let server = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -1006,6 +1054,8 @@ fn binary_reports_missing_key_as_json_error() {
         .arg(eval_skills)
         .env("AI_GATEWAY_API_KEY", "")
         .env("JEVX_HOME", root.path())
+        // Receipts are written only when telemetry is on; do not depend on the caller's environment.
+        .env("JEVX_TELEMETRY", "1")
         .output()
         .expect("run binary");
     assert_eq!(output.status.code(), Some(2));

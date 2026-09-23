@@ -49,8 +49,9 @@ Codex Hookを使う場合は、利用者が明示的に `hooks install` を実�
 最初から検証コマンドを覚える必要はありません。目的に合わせて、次の順で選べばOKです。
 
 - **Skillを探したい**：`jevx skills list`で候補を確認し、`jevx skills suggest`で依頼に合うSkillを提案させる。
-- **設定や利用状況を確認したい**：`jevx doctor`で設定を、`jevx stats`でTelemetryの集計を確認する。
-- **CodexのHookへ接続したい**：`jevx hooks install --dry-run`で差分を確認してから、明示的に`jevx hooks install`を実行する。
+- **設定や利用状況を確認したい**：`jevx doctor`で設定と次の一手を、`jevx stats`でTelemetryの集計を確認する。
+- **保存されたデータを確認・削除したい**：`jevx data path`で場所を、`jevx data export`で中身を確認し、`jevx data purge --yes`で消す。
+- **CodexのHookへ接続したい**：`jevx hooks install --dry-run`で差分を確認してから、明示的に`jevx hooks install`を実行する。外すときは`jevx hooks uninstall`。
 - **長い会話のCompactionを補助したい**：Hook導入後に`jevx hooks compact-assist`を使う。
 - **導入効果や安全性を測りたい**：通常利用とは別に、後半の検証・評価機能を使う。
 
@@ -102,6 +103,8 @@ user scopeは`$CODEX_HOME/hooks.json`（未設定なら`~/.codex/hooks.json`）�
 
 **境界**：設定変更はopt-inです。導入後はCodex側でHookの内容をreview/trustする必要があり、ファイルを書けたこととHookが発火することは別に確認します。
 
+**やめるとき**：`jevx hooks uninstall --scope user --dry-run --json`で取り除くhandlerを確認してから、`jevx hooks uninstall --scope user`を実行します。jevxが登録したhandlerだけを外し、ほかのHookは残します。
+
 ### 4. Compaction補助（`hooks compact-assist`）
 
 **こんなときに**：Compaction前後で、次に必要な作業や安全なcheckpointが失われていないか確認したいとき。
@@ -123,6 +126,21 @@ printf '%s\n' '{"hook_event_name":"PreCompact","session_id":"demo-session","turn
 ```
 
 **境界**：LLM要約器ではなく、会話全文の復元、公式Compactionの再実装、Tool Resultの削除、現在のリポジトリ状態の保証は行いません。返すのは決定的なcheckpoint metadataとredacted contextです。詳しい発火確認・backup・Trust手順は[Codex CLI compaction実運用runbook](../operators/jevx-compaction-operations.md)を参照してください。
+
+### 5. ローカルデータの確認・書き出し・削除（`data`）
+
+**こんなときに**：jevxが何を保存しているか確かめたいとき、別の場所で分析したいとき、使うのをやめて痕跡を消したいとき。
+
+**利用者にとってのメリット**：保存先は `$JEVX_HOME`（既定 `~/.jevx`）の下だけで、場所・件数・書き出し・削除をコマンド1つで扱えます。
+
+```bash
+jevx data path
+jevx data export --output /tmp/jevx-data.json
+jevx data purge          # 削除対象の表示だけ
+jevx data purge --yes    # 実際に削除
+```
+
+**境界**：`purge` が消すのはjevxが書いたTelemetry・Hook記録・Compaction checkpointだけです。`.jevx/compact-context.md`、Codexの `hooks.json`、評価で `--output` に指定したファイルには触れません。
 
 ## jevxの検証・評価用機能
 
@@ -210,26 +228,26 @@ Skill選択の評価計画と、入力・出力スキーマの詳細は[jevx評�
 
 ## 現行baseline（Latest）
 
-次の値は、外部送信なしの `eval --dry-run --json` を2026-09-22に実行した現行baselineです。`nonePrecision` は上記のとおり `expectedNone` 分母の recall であり、通常の「noneを予測した全件を分母にするprecision」ではありません。
+次の値は、外部送信なしの `eval --dry-run --json` を2026-09-23に実行した現行baselineです。`noneRecall`（互換キー `nonePrecision`）は `expectedNone` 分母の recall であり、通常の「noneを予測した全件を分母にするprecision」ではありません。
 
 | 項目 | 値 |
 | --- | --- |
-| 実行日時 | `2026-09-22T15:00:42+09:00` |
-| commit | `ed0b93c023251400bcbbe2de8cdedd5451f08761` |
+| 実行日時 | `2026-09-23T22:11:53+09:00` |
+| commit | `391e18049fe89a0dadcb8d43f6b70e3c6673ddf1` |
 | fixture SHA-256 | `a450a48fac7b49b544002f8c539b961fef0352951cde950f692768b4ea0748fb` |
 | Rust / Cargo | `rustc 1.98.1 (48a229cea 2026-09-01)` / `cargo 1.98.1 (797e8a9bc 2026-08-05)` |
 | OS | macOS 26.6.2（build 25G83） |
-| 実行条件 | `JEVX_TELEMETRY=off`、APIキーなし、fixture 9 Skill + 既定roots（有効候補14）、外部Gateway呼び出しなし |
-| カタログ条件 | 評価用 `--skill-dir jevx/evals/skills` を指定。Latest値の再現は同じHOME/CODEX_HOME/project roots、fixture-only再現は隔離root |
+| 実行条件 | `JEVX_TELEMETRY=off`、APIキーなし、外部Gateway呼び出しなし |
+| カタログ条件 | `--skill-dir jevx/evals/skills` の9 Skillだけ。project・HOME・CODEX_HOMEのSkillは評価に混ざらない |
 
-| 方式 | cases | 正解率 | `nonePrecision`（`expectedNone` 分母の recall） | 外部通信 |
+| 方式 | cases | 正解率 | `noneRecall`（`expectedNone` 分母の recall） | 外部通信 |
 | --- | ---: | ---: | ---: | --- |
 | `none` | 40 | 10.0% | 100.0%（4/4） | なし |
-| `local_keyword` | 40 | 87.5% | 75.0%（3/4） | なし |
-| `local_rank` | 40 | 17.5% | 75.0%（3/4） | なし |
+| `local_keyword` | 40 | 100.0% | 100.0%（4/4） | なし |
+| `local_rank` | 40 | 20.0% | 75.0%（3/4） | なし |
 | `jevx` | 0 | — | — | `not_run`（dry-run） |
 
-再現コマンドは次のとおりです。
+再現コマンドは次のとおりです（リポジトリのルートで実行）。
 
 ```bash
 JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- \
@@ -239,7 +257,7 @@ JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- \
   --dry-run --json
 ```
 
-このLatest baselineは実行時のSkillカタログ、OS、Rust/Cargo、fixture、環境変数に依存します。とくにevalはproject `.agents/skills` / `.codex/skills`、`HOME/.agents/skills`、`CODEX_HOME/skills`も探索するため、Latest値を再現するには記録時と同じrootsを保持してください。一時HOME・CODEX_HOME・空のproject rootと明示したfixture Skill rootは、fixture-onlyの隔離再現に使います（値はLatestと異なり得ます）。手順は[評価計画](../developers/jevx-evaluation.md)にあります。
+`local_keyword` の100%は、fixtureと同梱の9 Skillだけを相手にした値です。実際のSkillカタログや依頼文での精度を保証するものではありません。2026-09-22に記録していた値（`local_keyword` 87.5%、`local_rank` 17.5%）は、当時の `eval` が作業ディレクトリやHOMEのSkillも評価カタログに混ぜていたための環境依存の値で、現在はHistoricalとして扱います。手順の詳細は[評価計画](../developers/jevx-evaluation.md)にあります。
 
 ## Historical snapshot（2026-09-21）
 
@@ -351,11 +369,14 @@ JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- \
 - [ ] `--no-telemetry` は外部送信停止ではなく、Telemetryのprobabilityも保存されないことを確認した。
 - [ ] Jev送信境界（raw cwd、Skill metadata、redacted prompt/description、非送信の会話・Tool結果）を確認した。
 - [ ] 固定fixtureの結果を自分のケースの保証として扱っていない。
-- [ ] Hook導入前に `hooks install --dry-run --json` を確認した。
+- [ ] Hook導入前に `hooks install --dry-run --json` を確認し、戻すときの `hooks uninstall` を把握した。
+- [ ] `jevx data path` で保存先を確認した。
 - [ ] 実セッションではCodexの `/hooks` でTrustを確認した。
 
 ## 次に読む
 
+- [jevxの設計思想（PHILOSOPHY）](../../jevx/PHILOSOPHY.md)
+- [jevx CLIリファレンス](../developers/jevx-cli-reference.md)
 - [ドキュメント入口](../README.md)
 - [jevx 要件定義と実装状況](../developers/jevx-requirements.md)
 - [jevx アーキテクチャ](../developers/jevx-architecture.md)

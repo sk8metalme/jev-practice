@@ -1,0 +1,34 @@
+name: jevx
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: macos-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt, llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: jevx
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Format
+        run: cargo fmt --manifest-path jevx/Cargo.toml -- --check
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path jevx/Cargo.toml --all-targets -- -D warnings
+      - name: Test with coverage (lines >= 98%)
+        run: cargo llvm-cov --locked --manifest-path jevx/Cargo.toml --summary-only --fail-under-lines 98 < /dev/null
+      - name: Evaluation smoke test (no external calls)
+        env:
+          JEVX_TELEMETRY: "off"
+        run: cargo run --locked --manifest-path jevx/Cargo.toml -- eval --dry-run --json > /dev/null
