@@ -232,12 +232,34 @@ fn eval_outside_repository_explains_how_to_pass_fixture_paths() {
 #[test]
 fn suggest_error_exit_codes_are_stable() {
     let home = tempdir().expect("home");
+    let catalog = Path::new(MANIFEST_DIR).join("evals/skills");
+    let catalog = catalog.to_str().expect("utf8");
+
+    // With candidates but no API key, the decision cannot complete: exit 2 and a missing_api_key error.
     let missing_key = jevx(
+        home.path(),
+        home.path(),
+        &[
+            "skills",
+            "suggest",
+            "--prompt",
+            "PDFを結合したい",
+            "--json",
+            "--skill-dir",
+            catalog,
+        ],
+    );
+    assert_eq!(missing_key.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&missing_key.stdout).contains("missing_api_key"));
+
+    // With no candidates, Jev is not needed: a normal no_candidates result.
+    let no_candidates = json_output(
         home.path(),
         home.path(),
         &["skills", "suggest", "--prompt", "test", "--json"],
     );
-    assert_eq!(missing_key.status.code(), Some(2));
+    assert_eq!(no_candidates["decision"], "no_candidates");
+
     let no_input = jevx(home.path(), home.path(), &["skills", "suggest", "--json"]);
     assert_eq!(no_input.status.code(), Some(2));
 }
