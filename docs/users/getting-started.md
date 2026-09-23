@@ -232,8 +232,8 @@ Skill選択の評価計画と、入力・出力スキーマの詳細は[jevx評�
 
 | 項目 | 値 |
 | --- | --- |
-| 実行日時 | `2026-09-23T20:48:29+09:00` |
-| commit | `1899a02be3f6b98fc98ba930efd35e0bf7b65fe5` |
+| 実行日時 | `2026-09-23T22:11:53+09:00` |
+| commit | `391e18049fe89a0dadcb8d43f6b70e3c6673ddf1` |
 | fixture SHA-256 | `a450a48fac7b49b544002f8c539b961fef0352951cde950f692768b4ea0748fb` |
 | Rust / Cargo | `rustc 1.98.1 (48a229cea 2026-09-01)` / `cargo 1.98.1 (797e8a9bc 2026-08-05)` |
 | OS | macOS 26.6.2（build 25G83） |

@@ -82,7 +82,7 @@ APIキーがなくても、`jevx skills list`、`jevx doctor`、`jevx eval --dry
 
 - Skillの自動ロード・自動実行、権限の自動付与
 - 会話の要約・書き換え、Codex公式Compactionの代替
-- 設定オプションを増やすこと（閾値は `JEVX_MIN_PROBABILITY` / `JEVX_MIN_MARGIN` / `JEVX_MAX_CANDIDATES` で上書きできますが、既定値の改善を優先します）
+- 設定オプションを増やすこと（閾値3つとDecision Contractの実行上限6つは環境変数で上書きできますが、範囲外は既定値に戻り、既定値の改善を優先します。一覧は[CLIリファレンス](../docs/developers/jevx-cli-reference.md#apiキーと設定)）
 
 理由と代替手段は [PHILOSOPHY.md](PHILOSOPHY.md#やらないことnon-goals) にあります。
 

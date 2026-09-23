@@ -70,11 +70,11 @@ Jev判定は`AI_GATEWAY_API_KEY`を使い、Vercel AI Gatewayの`typesafe-ai/jev
 - 選択確率の下限: 0.60（`JEVX_MIN_PROBABILITY`、0〜1）
 - 1位と2位の確率差: 0.10以上（`JEVX_MIN_MARGIN`、0〜1）
 - 範囲外の上書き値は既定値へ戻し、`doctor` の `warnings` に出す
-- リクエストタイムアウト: 1,500ms
+- リクエストタイムアウト: 1,500ms（リトライを含む呼び出し全体の予算）
 - Telemetry: `~/.jevx/events.jsonl`
 - Decision receipt: `~/.jevx/decisions.jsonl`
-- state byte上限: 32,000 bytes
-- retry: 429/529を最大1回、25ms backoff
+- state byte上限: 32,000 bytes（`JEVX_MAX_STATE_BYTES`、1,024〜262,144）
+- retry: 429/529を最大1回、25ms backoff（`JEVX_MAX_RETRIES` 0〜3、`JEVX_RETRY_BACKOFF_MS` 0〜1,000）。締め切りを超えるbackoffは再試行しない
 - cache: 既定無効（`JEVX_DECISION_CACHE_CAPACITY=0`）
 - token proxy cost: input/outputとも既定weight 1.0
 - Hook state: Telemetry親ディレクトリ配下の`hooks.jsonl` / `compaction/`
@@ -170,8 +170,8 @@ Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許�
 
 | 項目 | 値 |
 | --- | --- |
-| 実行日時 | `2026-09-23T20:48:29+09:00` |
-| 測定時の実装・fixture commit | `1899a02be3f6b98fc98ba930efd35e0bf7b65fe5` |
+| 実行日時 | `2026-09-23T22:11:53+09:00` |
+| 測定時の実装・fixture commit | `391e18049fe89a0dadcb8d43f6b70e3c6673ddf1` |
 | fixture SHA-256 | `a450a48fac7b49b544002f8c539b961fef0352951cde950f692768b4ea0748fb` |
 
 2026-09-22に記録した値（`local_keyword` 87.5%、`local_rank` 17.5%）は、既定のSkill rootが評価カタログに混ざった環境依存の値だったため、Historicalとして扱う。

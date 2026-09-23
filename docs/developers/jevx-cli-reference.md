@@ -57,19 +57,19 @@ export JEVX_TELEMETRY=1
 | --- | --- | --- |
 | `AI_GATEWAY_API_KEY` | なし | Vercel AI Gateway へのBearer認証。Jev判定時だけ必要 |
 | `JEVX_GATEWAY_ENDPOINT` | `https://ai-gateway.vercel.sh/v1/evaluate` | Jev評価APIの送信先。モックサーバー検証にも使える |
-| `JEVX_REQUEST_TIMEOUT_MS` | `1500` | Jev HTTPリクエストのタイムアウト |
+| `JEVX_REQUEST_TIMEOUT_MS` | `1500` | Jev呼び出し全体の予算（リトライを含む）。締め切りを超えるbackoffは再試行しない |
 | `JEVX_HOME` | `$HOME/.jevx` | Telemetry保存先の親ディレクトリ |
 | `JEVX_TELEMETRY` | 有効 | `0` または `off` でTelemetryを無効化 |
-| `JEVX_MAX_STATE_BYTES` | `32000` | 送信stateのbyte上限。超過時はomittedを記録してdegraded |
-| `JEVX_MAX_RETRIES` | `1` | 429/529に対する最大retry回数 |
-| `JEVX_RETRY_BACKOFF_MS` | `25` | retry backoffの基準ミリ秒 |
-| `JEVX_DECISION_CACHE_CAPACITY` | `0` | process-local answer cacheの上限。0は無効 |
-| `JEVX_INPUT_COST_WEIGHT` / `JEVX_OUTPUT_COST_WEIGHT` | `1.0` / `1.0` | token proxyの相対cost重み。通貨ではない |
+| `JEVX_MAX_STATE_BYTES` | `32000` | 送信stateのbyte上限（1,024〜262,144）。超過時はomittedを記録してdegraded |
+| `JEVX_MAX_RETRIES` | `1` | 429/529に対する最大retry回数（0〜3） |
+| `JEVX_RETRY_BACKOFF_MS` | `25` | retry backoffの基準ミリ秒（0〜1,000）。n回目は基準×2^(n-1) |
+| `JEVX_DECISION_CACHE_CAPACITY` | `0` | process-local answer cacheの上限（0〜10,000）。0は無効 |
+| `JEVX_INPUT_COST_WEIGHT` / `JEVX_OUTPUT_COST_WEIGHT` | `1.0` / `1.0` | token proxyの相対cost重み（0〜1,000）。通貨ではない |
 | `JEVX_MIN_PROBABILITY` | `0.60` | `selected` に必要なJev確率の下限（0〜1） |
 | `JEVX_MIN_MARGIN` | `0.10` | 1位と次点の確率差の下限（0〜1） |
 | `JEVX_MAX_CANDIDATES` | `32` | Jevへ送る候補数の上限（1〜256） |
 
-閾値の3つは逃げ道として用意している。既定値は評価fixtureで決めた値なので、変える前に `eval` / `eval-repeat` で同じ条件の比較を取ってね。範囲外や数値でない値は既定値へ戻り、`doctor` が警告を出す。新しい設定項目は原則増やさない（[PHILOSOPHY.md](../../jevx/PHILOSOPHY.md)）。
+閾値3つ（`JEVX_MIN_PROBABILITY` / `JEVX_MIN_MARGIN` / `JEVX_MAX_CANDIDATES`）とDecision Contractの実行上限6つ（`JEVX_MAX_STATE_BYTES` / `JEVX_MAX_RETRIES` / `JEVX_RETRY_BACKOFF_MS` / `JEVX_DECISION_CACHE_CAPACITY` / `JEVX_INPUT_COST_WEIGHT` / `JEVX_OUTPUT_COST_WEIGHT`）は、最後の逃げ道として用意している。既定値は評価で決めた値なので、変える前に `eval` / `eval-repeat` で同じ条件の比較を取ってね。範囲外・数値でない値・`NaN` / `inf` は既定値へ戻り、`doctor` が警告を出す。新しい設定項目は増やさない（[PHILOSOPHY.md](../../jevx/PHILOSOPHY.md)）。
 
 ### 診断と次の一手（`doctor`）
 
@@ -86,6 +86,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- doctor --json
 | `skillInstalled` | project / user のSkill rootに `jevx/SKILL.md` があるか |
 | `hooks.user` / `hooks.project` | `hooks.json` のパスと登録済みjevx handler数（ファイルがなければ `null`、壊れていれば `error`） |
 | `thresholds` | 有効な閾値と、既定値から変えているか（`customized`） |
+| `limits` | 有効なタイムアウト・state上限・retry・cache・cost重みと、既定値から変えているか（`customized`） |
 | `warnings` | 既定値へ戻した環境変数の説明 |
 | `nextSteps` | 次に実行するとよいコマンド |
 
@@ -326,6 +327,7 @@ jevxがローカルに書くデータは、すべて `$JEVX_HOME`（既定 `~/.j
 | `hookRecords` | `hooks.jsonl` | `hooks install` で登録した `UserPromptSubmit` Hook |
 | `compactionRecords` | `compaction/hook-records.jsonl` | `hooks compact-assist` |
 | `compactionCheckpoints` | `compaction/checkpoints.jsonl` | `hooks compact-assist` |
+| `decisionReceipts` | `decisions.jsonl` | `skills suggest` / `hooks shadow`（Decision Contractのreceipt。Telemetry有効時） |
 
 ```bash
 jevx data path            # 場所・サイズ・レコード数（--jsonあり）
@@ -334,7 +336,7 @@ jevx data purge           # 削除対象を表示するだけ
 jevx data purge --yes     # 実際に削除する
 ```
 
-`purge` が消すのは上の4ファイルと、空になった `compaction/` だけ。利用者が作る `.jevx/compact-context.md`、Codexの `hooks.json` と `hooks.json.jevx.bak`、`--output` で指定した評価レポートには触れない。`export` は壊れた行があると、その内容を表示せずにファイル名と行番号だけを返す。
+`purge` が消すのは上の5ファイルと、空になった `compaction/` だけ。利用者が作る `.jevx/compact-context.md`、Codexの `hooks.json` と `hooks.json.jevx.bak`、`--output` で指定した評価レポートには触れない。`export` は壊れた行があると、その内容を表示せずにファイル名と行番号だけを返す。
 
 ## Codex Skillとしてセットアップする
 
@@ -585,7 +587,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 ### Current / Latest baseline（2026-09-23）
 
-`JEVX_TELEMETRY=off` の外部送信なし確認（`eval --dry-run --json`）の結果。測定時の実装 commit `1899a02be3f6b98fc98ba930efd35e0bf7b65fe5`、fixture SHA-256 `a450a48fac7b49b544002f8c539b961fef0352951cde950f692768b4ea0748fb`、`rustc/cargo 1.98.1`、macOS 26.6.2（build 25G83）、APIキーなし、カタログは `jevx/evals/skills` の9件だけ。実行日時 `2026-09-23T20:48:29+09:00`。
+`JEVX_TELEMETRY=off` の外部送信なし確認（`eval --dry-run --json`）の結果。測定時の実装 commit `391e18049fe89a0dadcb8d43f6b70e3c6673ddf1`、fixture SHA-256 `a450a48fac7b49b544002f8c539b961fef0352951cde950f692768b4ea0748fb`、`rustc/cargo 1.98.1`、macOS 26.6.2（build 25G83）、APIキーなし、カタログは `jevx/evals/skills` の9件だけ。実行日時 `2026-09-23T22:11:53+09:00`。
 
 | モード | cases | accuracy | `noneRecall`（互換キー `nonePrecision`） | 外部通信 |
 | --- | ---: | ---: | ---: | --- |
@@ -635,7 +637,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 ### `timeout` / `provider_error`
 
-Gatewayへの接続、HTTPステータス、JSON形状を確認する。`JEVX_REQUEST_TIMEOUT_MS` は既定1,500msで、`jevResponseMs` はアプリ側のHTTP往復時間。
+Gatewayへの接続、HTTPステータス、JSON形状を確認する。`JEVX_REQUEST_TIMEOUT_MS` は既定1,500msで、リトライを含めた呼び出し全体の予算。`jevResponseMs` はアプリ側のHTTP往復時間。
 
 ### `no_candidates`
 
