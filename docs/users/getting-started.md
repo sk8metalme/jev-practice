@@ -144,6 +144,8 @@ printf '%s\n' '{"hook_event_name":"UserPromptSubmit","prompt":"PDFを結合し�
   jevx hooks shadow --event UserPromptSubmit --output /tmp/jevx-hooks.jsonl
 ```
 
+この例は、`AI_GATEWAY_API_KEY` が設定されていると `UserPromptSubmit` のpromptをredact後にGatewayへ送信します。外部送信を避ける導入前確認では、秘密を含まない合成入力を使い、APIキーを未設定にして実行してください。実データを流す場合は、送信境界を確認したうえで実行します。
+
 受け付けるknown eventは`SessionStart`、`PreCompact`、`PostCompact`、`UserPromptSubmit`です。未知event、event不一致、壊れたJSONはエラーになります。
 
 **境界**：`hooks shadow`はCodexの設定を変更せず、Skill本文や追加の会話contextを返しません。`hooks install`後の通常利用ではHookから呼び出されるため、手動実行は導入確認や不具合切り分けのときだけ行います。
