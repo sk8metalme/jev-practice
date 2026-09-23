@@ -33,6 +33,14 @@ pub const DEFAULT_MAX_CANDIDATES: usize = 32;
 pub const DEFAULT_MIN_PROBABILITY: f64 = 0.60;
 pub const DEFAULT_MIN_MARGIN: f64 = 0.10;
 
+/// Decision Contract (#21) の実行上限。閾値と同じく最後の逃げ道で、範囲外は既定値へ戻す。
+/// リトライは `JEVX_REQUEST_TIMEOUT_MS` の予算内でだけ行う（`gateway` 参照）。
+pub const DEFAULT_MAX_STATE_BYTES: usize = 32_000;
+pub const DEFAULT_MAX_RETRIES: usize = 1;
+pub const DEFAULT_RETRY_BACKOFF_MS: u64 = 25;
+pub const DEFAULT_CACHE_CAPACITY: usize = 0;
+pub const DEFAULT_COST_WEIGHT: f64 = 1.0;
+
 impl Config {
     pub fn from_env() -> Self {
         let home = env::var_os("HOME")
@@ -79,24 +87,48 @@ impl Config {
                 .map(|value| value != "0" && value != "off")
                 .unwrap_or(true),
             decision_receipt_path: data_home.join("decisions.jsonl"),
-            max_state_bytes: env::var("JEVX_MAX_STATE_BYTES")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(32_000),
-            max_retries: env::var("JEVX_MAX_RETRIES")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(1),
-            retry_backoff_ms: env::var("JEVX_RETRY_BACKOFF_MS")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(25),
-            cache_capacity: env::var("JEVX_DECISION_CACHE_CAPACITY")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(0),
-            input_cost_weight: cost_weight("JEVX_INPUT_COST_WEIGHT"),
-            output_cost_weight: cost_weight("JEVX_OUTPUT_COST_WEIGHT"),
+            max_state_bytes: bounded(
+                "JEVX_MAX_STATE_BYTES",
+                var("JEVX_MAX_STATE_BYTES").as_deref(),
+                DEFAULT_MAX_STATE_BYTES,
+                1_024..=262_144,
+                &mut warnings,
+            ),
+            max_retries: bounded(
+                "JEVX_MAX_RETRIES",
+                var("JEVX_MAX_RETRIES").as_deref(),
+                DEFAULT_MAX_RETRIES,
+                0..=3,
+                &mut warnings,
+            ),
+            retry_backoff_ms: bounded(
+                "JEVX_RETRY_BACKOFF_MS",
+                var("JEVX_RETRY_BACKOFF_MS").as_deref(),
+                DEFAULT_RETRY_BACKOFF_MS,
+                0..=1_000,
+                &mut warnings,
+            ),
+            cache_capacity: bounded(
+                "JEVX_DECISION_CACHE_CAPACITY",
+                var("JEVX_DECISION_CACHE_CAPACITY").as_deref(),
+                DEFAULT_CACHE_CAPACITY,
+                0..=10_000,
+                &mut warnings,
+            ),
+            input_cost_weight: bounded(
+                "JEVX_INPUT_COST_WEIGHT",
+                var("JEVX_INPUT_COST_WEIGHT").as_deref(),
+                DEFAULT_COST_WEIGHT,
+                0.0..=1_000.0,
+                &mut warnings,
+            ),
+            output_cost_weight: bounded(
+                "JEVX_OUTPUT_COST_WEIGHT",
+                var("JEVX_OUTPUT_COST_WEIGHT").as_deref(),
+                DEFAULT_COST_WEIGHT,
+                0.0..=1_000.0,
+                &mut warnings,
+            ),
             warnings,
         }
     }
@@ -120,6 +152,15 @@ impl Config {
             output_cost_weight: 1.0,
             warnings: Vec::new(),
         }
+    }
+
+    pub fn limits_customized(&self) -> bool {
+        self.max_state_bytes != DEFAULT_MAX_STATE_BYTES
+            || self.max_retries != DEFAULT_MAX_RETRIES
+            || self.retry_backoff_ms != DEFAULT_RETRY_BACKOFF_MS
+            || self.cache_capacity != DEFAULT_CACHE_CAPACITY
+            || self.input_cost_weight != DEFAULT_COST_WEIGHT
+            || self.output_cost_weight != DEFAULT_COST_WEIGHT
     }
 
     pub fn thresholds_customized(&self) -> bool {
@@ -154,14 +195,6 @@ where
             default
         }
     }
-}
-
-fn cost_weight(key: &str) -> f64 {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.parse::<f64>().ok())
-        .filter(|value| value.is_finite() && *value >= 0.0)
-        .unwrap_or(1.0)
 }
 
 #[cfg(test)]
@@ -273,6 +306,33 @@ mod tests {
         assert!(invalid_timeout.telemetry_enabled);
         assert_eq!(invalid_timeout.input_cost_weight, 1.0);
         assert_eq!(invalid_timeout.output_cost_weight, 1.0);
+        assert_eq!(invalid_timeout.warnings.len(), 2, "cost weights warn");
+
+        set_var("JEVX_MAX_RETRIES", "20");
+        set_var("JEVX_RETRY_BACKOFF_MS", "60000");
+        set_var("JEVX_MAX_STATE_BYTES", "10");
+        set_var("JEVX_DECISION_CACHE_CAPACITY", "-1");
+        set_var("JEVX_INPUT_COST_WEIGHT", "NaN");
+        set_var("JEVX_OUTPUT_COST_WEIGHT", "inf");
+        let out_of_range = Config::from_env();
+        assert_eq!(out_of_range.max_retries, DEFAULT_MAX_RETRIES);
+        assert_eq!(out_of_range.retry_backoff_ms, DEFAULT_RETRY_BACKOFF_MS);
+        assert_eq!(out_of_range.max_state_bytes, DEFAULT_MAX_STATE_BYTES);
+        assert_eq!(out_of_range.cache_capacity, 0);
+        assert_eq!(out_of_range.input_cost_weight, 1.0);
+        assert_eq!(out_of_range.output_cost_weight, 1.0);
+        let joined = out_of_range.warnings.join("\n");
+        for key in [
+            "JEVX_MAX_RETRIES",
+            "JEVX_RETRY_BACKOFF_MS",
+            "JEVX_MAX_STATE_BYTES",
+            "JEVX_DECISION_CACHE_CAPACITY",
+            "JEVX_INPUT_COST_WEIGHT",
+            "JEVX_OUTPUT_COST_WEIGHT",
+        ] {
+            assert!(joined.contains(key), "{key} should warn: {joined}");
+        }
+        assert!(!out_of_range.limits_customized());
 
         for (key, value) in original {
             if let Some(value) = value {

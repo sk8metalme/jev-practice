@@ -113,6 +113,16 @@ pub(super) fn doctor_report(config: &Config, env: &DoctorEnv) -> Value {
             "maxCandidates": config.max_candidates,
             "customized": config.thresholds_customized(),
         },
+        "limits": {
+            "requestTimeoutMs": u64::try_from(config.timeout.as_millis()).unwrap_or(u64::MAX),
+            "maxStateBytes": config.max_state_bytes,
+            "maxRetries": config.max_retries,
+            "retryBackoffMs": config.retry_backoff_ms,
+            "decisionCacheCapacity": config.cache_capacity,
+            "inputCostWeight": config.input_cost_weight,
+            "outputCostWeight": config.output_cost_weight,
+            "customized": config.limits_customized(),
+        },
         "warnings": config.warnings,
         "nextSteps": next_steps,
     })
@@ -166,6 +176,16 @@ pub(super) fn doctor_human_output(report: &Value) -> String {
             thresholds["customized"]
         ),
     ];
+    let limits = &report["limits"];
+    lines.push(format!(
+        "Limits: requestTimeoutMs={} maxStateBytes={} maxRetries={} retryBackoffMs={} decisionCacheCapacity={} customized={}",
+        limits["requestTimeoutMs"],
+        limits["maxStateBytes"],
+        limits["maxRetries"],
+        limits["retryBackoffMs"],
+        limits["decisionCacheCapacity"],
+        limits["customized"]
+    ));
     for warning in report["warnings"].as_array().into_iter().flatten() {
         lines.push(format!("Warning: {}", text(warning)));
     }

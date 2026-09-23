@@ -52,13 +52,16 @@ impl GatewayJudge {
             "state": request.state,
             "questions": questions,
         });
+        // `timeout` はリトライを含む呼び出し全体の予算。Hook（5秒）の中でも上限を超えない。
+        let deadline = started + self.timeout;
         let mut attempts = 0_u32;
         loop {
             attempts += 1;
+            let remaining = deadline.saturating_duration_since(Instant::now());
             let response = match self
                 .client
                 .post(&self.endpoint)
-                .timeout(self.timeout)
+                .timeout(remaining.max(Duration::from_millis(1)))
                 .bearer_auth(self.api_key.trim())
                 .json(&body)
                 .send()
@@ -85,8 +88,10 @@ impl GatewayJudge {
                 let backoff = self
                     .retry_backoff
                     .saturating_mul(2_u32.saturating_pow(attempts - 1));
-                sleep(backoff).await;
-                continue;
+                if Instant::now() + backoff < deadline {
+                    sleep(backoff).await;
+                    continue;
+                }
             }
             let payload: GatewayPayload = serde_json::from_str(&text).map_err(|_| {
                 provider_failure(

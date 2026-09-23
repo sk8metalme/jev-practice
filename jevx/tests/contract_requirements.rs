@@ -72,6 +72,7 @@ fn doctor_json_contract() {
             "skillInstalled",
             "hooks",
             "thresholds",
+            "limits",
             "warnings",
             "nextSteps",
         ],
@@ -80,6 +81,20 @@ fn doctor_json_contract() {
         &report["thresholds"],
         &["minProbability", "minMargin", "maxCandidates", "customized"],
     );
+    assert_has_keys(
+        &report["limits"],
+        &[
+            "requestTimeoutMs",
+            "maxStateBytes",
+            "maxRetries",
+            "retryBackoffMs",
+            "decisionCacheCapacity",
+            "inputCostWeight",
+            "outputCostWeight",
+            "customized",
+        ],
+    );
+    assert_eq!(report["limits"]["customized"], false);
 }
 
 #[test]
