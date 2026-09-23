@@ -228,10 +228,12 @@ async fn evaluation_records_provider_errors_without_stopping_the_run() {
     let mode = &report.modes["jevx"];
     assert_eq!(mode.errors, 1);
     assert_eq!(mode.error_rate, Some(1.0));
+    assert_eq!(mode.fallback_rate, Some(1.0));
     assert_eq!(
         report.cases[0].jevx.as_ref().unwrap().error_code.as_deref(),
         Some("provider_error")
     );
+    assert_eq!(report.cases[0].jevx.as_ref().unwrap().fallback, Some(true));
 }
 
 #[test]

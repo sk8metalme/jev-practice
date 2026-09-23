@@ -411,6 +411,49 @@ async fn execution_replay_and_cache_never_call_jev_for_replay_or_hit() {
     assert_eq!(replay.result.status, first.result.status);
     assert_eq!(replay.mode, DecisionMode::Replay);
     assert_eq!(replay.calls, 0);
+    let stricter = DecisionContract::choice(
+        "skill",
+        "skill-choice.v1",
+        BTreeMap::from([
+            ("pdf".to_owned(), "PDF work".to_owned()),
+            ("testing".to_owned(), "Test work".to_owned()),
+            ("none".to_owned(), "No candidate fits".to_owned()),
+        ]),
+        0.95,
+        0.10,
+    );
+    assert_ne!(contract.policy_version, stricter.policy_version);
+    assert_eq!(
+        replay_receipt(&receipt, &stricter, &state)
+            .expect("policy mismatch replay")
+            .result
+            .status,
+        DecisionStatus::Degraded
+    );
+    let mut unsupported_schema = receipt.clone();
+    unsupported_schema.schema_version = 99;
+    assert!(matches!(
+        replay_receipt(&unsupported_schema, &contract, &state),
+        Err(JevxError::InvalidInput(message)) if message.contains("schema")
+    ));
+    let mut invalid_digest = receipt.clone();
+    invalid_digest.answer_digest = Some("tampered-answer".to_owned());
+    assert_eq!(
+        replay_receipt(&invalid_digest, &contract, &state)
+            .expect("answer digest mismatch replay")
+            .result
+            .status,
+        DecisionStatus::Degraded
+    );
+    let mut invalid_result = receipt.clone();
+    invalid_result.reason = "tampered-reason".to_owned();
+    assert_eq!(
+        replay_receipt(&invalid_result, &contract, &state)
+            .expect("result mismatch replay")
+            .result
+            .status,
+        DecisionStatus::Degraded
+    );
     let mismatch = replay_receipt(
         &receipt,
         &contract,
@@ -487,6 +530,27 @@ async fn execution_modes_fail_closed_and_legacy_adapter_rejects_unsupported_ques
     )
     .await;
     assert_eq!(missing.result.fallback, Some(FallbackReason::MissingApiKey));
+    let missing_receipt = DecisionReceipt::from_execution(&contract, &state, &missing, 1.0, 1.0);
+    let missing_replay =
+        replay_receipt(&missing_receipt, &contract, &state).expect("missing key replay");
+    assert_eq!(missing_replay.result.status, DecisionStatus::Defer);
+    assert_eq!(
+        missing_replay.result.fallback,
+        Some(FallbackReason::MissingApiKey)
+    );
+    assert_eq!(
+        missing_replay.error_code.as_deref(),
+        Some("missing_api_key")
+    );
+    let mut accepted_without_answer = missing_receipt.clone();
+    accepted_without_answer.decision = DecisionStatus::Accepted;
+    assert_eq!(
+        replay_receipt(&accepted_without_answer, &contract, &state)
+            .expect("invalid failure receipt replay")
+            .result
+            .status,
+        DecisionStatus::Degraded
+    );
     let degraded_state =
         StatePlan::from_value(json!({"prompt":"bounded"}), 0, 0, Vec::new(), Vec::new())
             .expect("degraded state");
@@ -641,6 +705,9 @@ async fn ranking_records_safe_receipts_and_uses_process_cache() {
     assert_eq!(receipts.len(), 2);
     assert!(receipts[1].cache_hit);
     assert_eq!(receipts[0].relative_cost, Some(12.0));
+    assert!(receipts[0].state_bytes > 0);
+    assert_eq!(receipts[0].max_state_bytes, Some(32_000));
+    assert_eq!(receipts[0].candidate_limit, Some(32));
     let json = std::fs::read_to_string(&config.decision_receipt_path).expect("receipt jsonl");
     assert!(!json.contains("secret-value"));
     assert!(!json.contains("skill-secret"));

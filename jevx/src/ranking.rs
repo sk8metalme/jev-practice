@@ -309,7 +309,8 @@ fn build_state_plan(
         omitted,
         redaction_reasons,
     )
-    .expect("redacted StatePlan payload must serialize");
+    .expect("redacted StatePlan payload must serialize")
+    .with_budgets(config.max_state_bytes, config.max_candidates);
     if plan.state_bytes > config.max_state_bytes {
         plan.omitted.push("state_bytes_limit".to_owned());
         plan.payload = serde_json::json!({

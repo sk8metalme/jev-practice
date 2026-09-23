@@ -55,7 +55,7 @@ Jevを使う価値を、Skill選択の精度・速度・token usage・安全性�
 | retry rate / average retries | retryが発生した実行の割合と実行あたりのretry平均 |
 | relative cost | input/output tokenへ設定weightを掛けたproxy cost。価格そのものではない |
 
-Decision Contractの実行結果は`decisions.jsonl`へ安全なreceiptとして記録する。`DecisionReceipt`はcontract/question/policy version、state digest、候補window、omitted/redaction理由、typed answer digest、status、fallback、calls/retry、latency、usage、relative cost、replay IDを持つが、prompt本文・Skill本文・Tool結果・APIキーを持たない。`read_decision_receipts`で読み込み、`replay_receipt`でversionとstate digestを検証する。不一致は成功へ変換せず`degraded`として扱う。`jevx/evals/decision-contract-baseline.jsonl`はこのschemaを確認する秘密情報なしのaccepted/none fixtureである。
+Decision Contractの実行結果は`decisions.jsonl`へ安全なreceiptとして記録する。`DecisionReceipt`はcontract/question/policy version（policy閾値を含むdigest付き）、state digest、実際のstate bytes、適用したstate/candidate予算、候補window、omitted/redaction理由、typed answer digest、status、fallback、calls/retry、latency、usage、relative cost、replay IDを持つが、prompt本文・Skill本文・Tool結果・APIキーを持たない。`read_decision_receipts`で読み込み、`replay_receipt`でversion、state metadata、recorded answerとcode-side resultを検証する。不一致は成功へ変換せず`degraded`として扱う。`jevx/evals/decision-contract-baseline.jsonl`はこのschemaを確認する秘密情報なしのaccepted/none fixtureである。
 
 ## 実行手順
 

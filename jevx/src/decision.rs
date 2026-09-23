@@ -261,6 +261,8 @@ pub struct StatePlan {
     pub window_count: usize,
     pub omitted: Vec<String>,
     pub redaction_reasons: Vec<String>,
+    pub max_state_bytes: Option<usize>,
+    pub candidate_limit: Option<usize>,
 }
 
 impl StatePlan {
@@ -281,7 +283,15 @@ impl StatePlan {
             window_count,
             omitted,
             redaction_reasons,
+            max_state_bytes: None,
+            candidate_limit: None,
         })
+    }
+
+    pub fn with_budgets(mut self, max_state_bytes: usize, candidate_limit: usize) -> Self {
+        self.max_state_bytes = Some(max_state_bytes);
+        self.candidate_limit = Some(candidate_limit);
+        self
     }
 
     pub fn is_degraded(&self) -> bool {
@@ -425,6 +435,11 @@ impl DecisionContract {
         min_probability: f64,
         min_margin: f64,
     ) -> Self {
+        let policy = DecisionPolicy::Choice {
+            min_probability,
+            min_margin,
+            severity: Severity::Advisory,
+        };
         Self {
             contract_version: DECISION_CONTRACT_VERSION.to_owned(),
             question_id: question_id.to_owned(),
@@ -433,12 +448,8 @@ impl DecisionContract {
                 instructions: "Select the best matching option.".to_owned(),
                 criteria,
             },
-            policy_version: format!("{question_version}.policy.v1"),
-            policy: DecisionPolicy::Choice {
-                min_probability,
-                min_margin,
-                severity: Severity::Advisory,
-            },
+            policy_version: policy_version(question_version, &policy),
+            policy,
         }
     }
 
@@ -449,6 +460,11 @@ impl DecisionContract {
         min_score: f64,
         min_confidence: f64,
     ) -> Self {
+        let policy = DecisionPolicy::Score {
+            min_score,
+            min_confidence,
+            severity: Severity::Advisory,
+        };
         Self {
             contract_version: DECISION_CONTRACT_VERSION.to_owned(),
             question_id: question_id.to_owned(),
@@ -457,12 +473,8 @@ impl DecisionContract {
                 instructions: "Score the state using the ordered levels.".to_owned(),
                 criteria,
             },
-            policy_version: format!("{question_version}.policy.v1"),
-            policy: DecisionPolicy::Score {
-                min_score,
-                min_confidence,
-                severity: Severity::Advisory,
-            },
+            policy_version: policy_version(question_version, &policy),
+            policy,
         }
     }
 
@@ -474,6 +486,11 @@ impl DecisionContract {
         true_threshold: f64,
         false_threshold: f64,
     ) -> Self {
+        let policy = DecisionPolicy::Predicate {
+            true_threshold,
+            false_threshold,
+            severity: Severity::Advisory,
+        };
         Self {
             contract_version: DECISION_CONTRACT_VERSION.to_owned(),
             question_id: question_id.to_owned(),
@@ -485,12 +502,8 @@ impl DecisionContract {
                     false_criteria: false_criteria.to_owned(),
                 },
             },
-            policy_version: format!("{question_version}.policy.v1"),
-            policy: DecisionPolicy::Predicate {
-                true_threshold,
-                false_threshold,
-                severity: Severity::Advisory,
-            },
+            policy_version: policy_version(question_version, &policy),
+            policy,
         }
     }
 
@@ -746,6 +759,11 @@ impl DecisionContract {
     pub fn severity(&self) -> Severity {
         self.policy.severity()
     }
+}
+
+fn policy_version(question_version: &str, policy: &DecisionPolicy) -> String {
+    let digest_input = serde_json::to_string(policy).unwrap_or_else(|_| format!("{policy:?}"));
+    format!("{question_version}.policy.v1.{}", sha256_hex(&digest_input))
 }
 
 #[derive(Debug, Clone, Serialize)]

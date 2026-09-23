@@ -29,8 +29,14 @@ pub struct DecisionReceipt {
     pub policy_version: String,
     #[serde(rename = "stateDigest")]
     pub state_digest: String,
+    #[serde(rename = "stateBytes", default)]
+    pub state_bytes: usize,
+    #[serde(rename = "maxStateBytes", skip_serializing_if = "Option::is_none")]
+    pub max_state_bytes: Option<usize>,
     #[serde(rename = "candidateCount")]
     pub candidate_count: usize,
+    #[serde(rename = "candidateLimit", skip_serializing_if = "Option::is_none")]
+    pub candidate_limit: Option<usize>,
     #[serde(rename = "windowCount")]
     pub window_count: usize,
     pub omitted: Vec<String>,
@@ -135,14 +141,7 @@ impl DecisionReceipt {
     ) -> Self {
         let answer = result.answer.clone();
         let answer_digest = answer.as_ref().map(TypedAnswer::digest);
-        let replay_id = sha256_hex(&format!(
-            "{}:{}:{}:{}:{}",
-            contract.contract_version,
-            contract.question_id,
-            contract.policy_version,
-            state.state_digest,
-            answer_digest.as_deref().unwrap_or("none")
-        ));
+        let replay_id = replay_id(contract, state, answer_digest.as_deref());
         let relative_cost = match (input_tokens, output_tokens) {
             (Some(input), Some(output))
                 if input_weight.is_finite()
@@ -162,7 +161,10 @@ impl DecisionReceipt {
             question_version: contract.question_version.clone(),
             policy_version: contract.policy_version.clone(),
             state_digest: state.state_digest.clone(),
+            state_bytes: state.state_bytes,
+            max_state_bytes: state.max_state_bytes,
             candidate_count: state.candidate_count,
+            candidate_limit: state.candidate_limit,
             window_count: state.window_count,
             omitted: state.omitted.clone(),
             redaction_reasons: state.redaction_reasons.clone(),
@@ -299,25 +301,101 @@ pub fn replay_receipt(
     contract: &DecisionContract,
     state: &StatePlan,
 ) -> Result<DecisionExecution, JevxError> {
+    if receipt.schema_version != RECEIPT_SCHEMA_VERSION {
+        return Err(JevxError::InvalidInput(
+            "unsupported decision receipt schema".to_owned(),
+        ));
+    }
     if receipt.contract_version != contract.contract_version
         || receipt.question_id != contract.question_id
         || receipt.question_version != contract.question_version
         || receipt.policy_version != contract.policy_version
         || receipt.state_digest != state.state_digest
+        || (receipt.state_bytes != 0 && receipt.state_bytes != state.state_bytes)
+        || receipt.candidate_count != state.candidate_count
+        || receipt.window_count != state.window_count
+        || receipt.omitted != state.omitted
+        || receipt.redaction_reasons != state.redaction_reasons
+        || (receipt.max_state_bytes.is_some() && receipt.max_state_bytes != state.max_state_bytes)
+        || (receipt.candidate_limit.is_some() && receipt.candidate_limit != state.candidate_limit)
     {
-        return Ok(DecisionExecution {
-            result: contract.failure(DecisionFailure::StateDegraded),
-            mode: DecisionMode::Replay,
-            response_ms: 0,
-            usage: None,
-            calls: 0,
-            retries: 0,
-            cache_hit: false,
-            error_code: Some("replay_mismatch".to_owned()),
-            error_message: None,
-        });
+        return Ok(replay_mismatch(contract));
     }
-    Ok(replay_contract(contract, state, receipt.answer.clone()))
+    let answer_digest = receipt.answer.as_ref().map(TypedAnswer::digest);
+    if receipt.answer_digest != answer_digest
+        || receipt.replay_id != replay_id(contract, state, answer_digest.as_deref())
+    {
+        return Ok(replay_mismatch(contract));
+    }
+
+    if receipt.answer.is_some() {
+        let execution = replay_contract(contract, state, receipt.answer.clone());
+        let recorded_result = DecisionResult {
+            status: receipt.decision,
+            answer: receipt.answer.clone(),
+            evidence: receipt.evidence.clone(),
+            fallback: receipt.fallback,
+            reason: receipt.reason.clone(),
+        };
+        if execution.result != recorded_result || execution.error_code.is_some() {
+            return Ok(replay_mismatch(contract));
+        }
+        return Ok(execution);
+    }
+
+    if !matches!(
+        receipt.decision,
+        DecisionStatus::Unknown | DecisionStatus::Defer | DecisionStatus::Degraded
+    ) || receipt.fallback.is_none()
+    {
+        return Ok(replay_mismatch(contract));
+    }
+    Ok(DecisionExecution {
+        result: DecisionResult {
+            status: receipt.decision,
+            answer: None,
+            evidence: receipt.evidence.clone(),
+            fallback: receipt.fallback,
+            reason: receipt.reason.clone(),
+        },
+        mode: DecisionMode::Replay,
+        response_ms: 0,
+        usage: None,
+        calls: 0,
+        retries: 0,
+        cache_hit: false,
+        error_code: receipt.error_code.clone(),
+        error_message: None,
+    })
+}
+
+fn replay_id(
+    contract: &DecisionContract,
+    state: &StatePlan,
+    answer_digest: Option<&str>,
+) -> String {
+    sha256_hex(&format!(
+        "{}:{}:{}:{}:{}",
+        contract.contract_version,
+        contract.question_id,
+        contract.policy_version,
+        state.state_digest,
+        answer_digest.unwrap_or("none")
+    ))
+}
+
+fn replay_mismatch(contract: &DecisionContract) -> DecisionExecution {
+    DecisionExecution {
+        result: contract.failure(DecisionFailure::StateDegraded),
+        mode: DecisionMode::Replay,
+        response_ms: 0,
+        usage: None,
+        calls: 0,
+        retries: 0,
+        cache_hit: false,
+        error_code: Some("replay_mismatch".to_owned()),
+        error_message: None,
+    }
 }
 
 fn percentile(values: &[u64], percentile: usize) -> Option<u64> {

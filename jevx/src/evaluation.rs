@@ -602,12 +602,13 @@ async fn evaluate_jev_case(
                 decision_retries: None,
                 cache_hit: None,
                 relative_cost: None,
-                fallback: None,
+                fallback: Some(true),
                 error_code: Some(error_code(&error).to_owned()),
                 candidate_miss: false,
             },
             Observation {
                 error: true,
+                fallback: true,
                 ..Observation::default()
             },
         ),

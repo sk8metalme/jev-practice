@@ -148,7 +148,7 @@ Jevの呼び出しは候補ごとに繰り返さず、候補を1つのChoice質�
 | タイムアウト | `timeout` | 3 |
 | ファイル・YAMLエラー | `io_error` / `yaml_error` | 2 |
 
-判定結果の詳細は`decisions.jsonl`へ安全なメタデータとして記録する。receiptにはcontract/question/policy version、state digest、候補/window/omitted/redaction理由、typed answer digest、evidence、fallback、calls/retry、latency、token proxy cost、replay IDを含めるが、prompt本文、Skill本文、Tool結果、APIキー、生session IDは含めない。`replay_receipt`はversionとstate digestを検証し、不一致を`degraded`として返す。
+判定結果の詳細は`decisions.jsonl`へ安全なメタデータとして記録する。receiptにはcontract/question/policy version（policy閾値を含むdigest付き）、state digest、実際のstate bytes、適用したstate/candidate予算、候補/window/omitted/redaction理由、typed answer digest、evidence、fallback、calls/retry、latency、token proxy cost、replay IDを含めるが、prompt本文、Skill本文、Tool結果、APIキー、生session IDは含めない。`replay_receipt`はversion、state digest、recorded answerとcode-side resultを検証し、不一致を`degraded`として返す。
 
 既知Hook event（`SessionStart`、`PreCompact`、`PostCompact`、`UserPromptSubmit`）を受理した場合だけ、shadowは `{"continue":true,"suppressOutput":true}` の固定応答を返す。既知eventでJevが失敗しても現行recordと`continue: true`を優先する。不明event、event不一致、壊れた設定は固定応答を返さず入力契約違反としてエラーにする。
 

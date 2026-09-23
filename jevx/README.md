@@ -98,8 +98,8 @@ State Builder → redaction / window plan → typed Jev answer
 
 receiptには、少なくとも次の安全なメタデータを持たせる。prompt本文・Skill本文・Tool結果・APIキー・生のセッション識別子は含めない。
 
-- contract / question / policyのバージョン
-- state digest、候補数、window数、omitted / redactionの理由
+- contract / question / policyのバージョン（policyは閾値を含むdigest付き）
+- state digest、実際のstate bytes、適用したstate/candidate予算、候補数、window数、omitted / redactionの理由
 - 構造化されたanswer、code-side decision、threshold、margin、fallback、reason
 - calls、retry、latency、input / output tokens、相対的なcost、replay ID
 
