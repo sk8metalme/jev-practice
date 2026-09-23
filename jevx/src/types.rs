@@ -108,7 +108,7 @@ pub struct Usage {
     pub output_tokens: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Metrics {
     #[serde(rename = "discoveryMs")]
     pub discovery_ms: u64,
@@ -122,6 +122,16 @@ pub struct Metrics {
     pub input_tokens: Option<u64>,
     #[serde(rename = "outputTokens", skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
+    #[serde(rename = "decisionCalls", skip_serializing_if = "Option::is_none")]
+    pub decision_calls: Option<u32>,
+    #[serde(rename = "decisionRetries", skip_serializing_if = "Option::is_none")]
+    pub decision_retries: Option<u32>,
+    #[serde(rename = "cacheHit", skip_serializing_if = "Option::is_none")]
+    pub cache_hit: Option<bool>,
+    #[serde(rename = "relativeCost", skip_serializing_if = "Option::is_none")]
+    pub relative_cost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -172,6 +182,13 @@ pub struct JudgeResponse {
     pub usage: Option<Usage>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct JudgeEvaluation {
+    pub response: JudgeResponse,
+    pub calls: u32,
+    pub retries: u32,
+}
+
 impl JudgeResponse {
     pub fn selected(
         choice: &str,
@@ -196,4 +213,16 @@ impl JudgeResponse {
 #[async_trait]
 pub trait Judge: Send + Sync {
     async fn evaluate(&self, request: JudgeRequest) -> Result<JudgeResponse, JevxError>;
+
+    async fn evaluate_with_metrics(
+        &self,
+        request: JudgeRequest,
+    ) -> Result<JudgeEvaluation, JevxError> {
+        let response = self.evaluate(request).await?;
+        Ok(JudgeEvaluation {
+            response,
+            calls: 1,
+            retries: 0,
+        })
+    }
 }

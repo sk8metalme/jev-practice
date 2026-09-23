@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -7,6 +8,7 @@ use std::sync::Arc;
 use std::thread;
 
 use async_trait::async_trait;
+use jevx::decision::{DecisionRequest, QuestionSpec};
 use jevx::{
     CandidateDecision, Config, GatewayJudge, Judge, JudgeRequest, JudgeResponse, SkillRecord,
     SuggestInput, TelemetryEvent, Usage, append_telemetry, read_stats, suggest_with_judge,
@@ -682,6 +684,148 @@ async fn gateway_judge_parses_successful_gateway_response() {
     handle.join().expect("server");
     assert_eq!(response.choice.as_deref(), Some("pdf"));
     assert_eq!(response.usage.expect("usage").input_tokens, 5);
+}
+
+#[tokio::test]
+async fn gateway_judge_retries_retryable_status_and_reports_retry_count() {
+    let server = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let endpoint = format!("http://{}", server.local_addr().expect("address"));
+    let handle = thread::spawn(move || {
+        let (mut first, _) = server.accept().expect("first accept");
+        read_request(&mut first);
+        write_http_response(
+            &mut first,
+            "429 Too Many Requests",
+            r#"{"error":{"message":"retry"}}"#,
+        );
+        let (mut second, _) = server.accept().expect("second accept");
+        read_request(&mut second);
+        write_http_response(
+            &mut second,
+            "200 OK",
+            r#"{"answers":{"skill":{"choice":"pdf","probabilities":{"pdf":0.9,"none":0.1}}}}"#,
+        );
+    });
+    let mut config = Config::for_test(tempdir().expect("tempdir").path().to_path_buf());
+    config.endpoint = endpoint;
+    config.max_retries = 1;
+    config.retry_backoff_ms = 0;
+    let judge = GatewayJudge::from_config(&config).expect("judge");
+    let response = jevx::Judge::evaluate_with_metrics(
+        &judge,
+        JudgeRequest {
+            state: "{}".to_owned(),
+            candidates: vec![jevx::JudgeCandidate {
+                id: "pdf".to_owned(),
+                name: "pdf".to_owned(),
+                description: "PDF".to_owned(),
+            }],
+        },
+    )
+    .await
+    .expect("retried response");
+    handle.join().expect("server");
+    assert_eq!(response.retries, 1);
+    assert_eq!(response.calls, 2);
+    assert_eq!(response.response.choice.as_deref(), Some("pdf"));
+}
+
+#[tokio::test]
+async fn gateway_judge_parses_score_predicate_and_rejects_malformed_typed_answers() {
+    let cases = [
+        (
+            QuestionSpec::Score {
+                instructions: "score".to_owned(),
+                criteria: vec!["low".to_owned(), "medium".to_owned(), "high".to_owned()],
+            },
+            r#"{"answers":{"severity":{"score":2.0,"probabilities":{"0":0.1,"1":0.2,"2":0.7},"confidence":0.9}}}"#,
+            true,
+        ),
+        (
+            QuestionSpec::Predicate {
+                instructions: "predicate".to_owned(),
+                criteria: jevx::PredicateCriteria {
+                    true_criteria: "true".to_owned(),
+                    false_criteria: "false".to_owned(),
+                },
+            },
+            r#"{"answers":{"danger":{"noul":0.9}}}"#,
+            true,
+        ),
+        (
+            QuestionSpec::Choice {
+                instructions: "choice".to_owned(),
+                criteria: BTreeMap::from([("pdf".to_owned(), "PDF".to_owned())]),
+            },
+            r#"{"answers":{"skill":{"probabilities":{"pdf":1.0}}}}"#,
+            false,
+        ),
+        (
+            QuestionSpec::Choice {
+                instructions: "choice".to_owned(),
+                criteria: BTreeMap::from([("pdf".to_owned(), "PDF".to_owned())]),
+            },
+            r#"{"answers":{"skill":{"choice":"pdf"}}}"#,
+            false,
+        ),
+        (
+            QuestionSpec::Score {
+                instructions: "score".to_owned(),
+                criteria: vec!["low".to_owned(), "high".to_owned()],
+            },
+            r#"{"answers":{"severity":{"score":1.0,"confidence":0.9}}}"#,
+            false,
+        ),
+    ];
+    for (question, body, succeeds) in cases {
+        let server = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let endpoint = format!("http://{}", server.local_addr().expect("address"));
+        let body = body.to_owned();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = server.accept().expect("accept");
+            read_request(&mut stream);
+            write_http_response(&mut stream, "200 OK", &body);
+        });
+        let mut config = Config::for_test(tempdir().expect("tempdir").path().to_path_buf());
+        config.endpoint = endpoint;
+        let judge = GatewayJudge::from_config(&config).expect("judge");
+        let question_id = match &question {
+            QuestionSpec::Score { .. } => "severity",
+            QuestionSpec::Predicate { .. } => "danger",
+            QuestionSpec::Choice { .. } => "skill",
+        };
+        let result = jevx::decision::DecisionJudge::evaluate(
+            &judge,
+            DecisionRequest {
+                state: "{}".to_owned(),
+                questions: BTreeMap::from([(question_id.to_owned(), question)]),
+            },
+        )
+        .await;
+        handle.join().expect("server");
+        assert_eq!(result.is_ok(), succeeds);
+    }
+
+    let config = Config::for_test(tempdir().expect("tempdir").path().to_path_buf());
+    let judge = GatewayJudge::from_config(&config).expect("judge");
+    let invalid_question = jevx::decision::DecisionJudge::evaluate(
+        &judge,
+        DecisionRequest {
+            state: "{}".to_owned(),
+            questions: BTreeMap::from([(
+                "severity".to_owned(),
+                QuestionSpec::Score {
+                    instructions: "score".to_owned(),
+                    criteria: vec!["only".to_owned()],
+                },
+            )]),
+        },
+    )
+    .await;
+    assert!(matches!(
+        invalid_question,
+        Err(jevx::JevxError::InvalidInput(message)) if message.contains("2 to 10")
+    ));
 }
 
 #[tokio::test]

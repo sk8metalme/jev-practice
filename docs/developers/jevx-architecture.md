@@ -17,12 +17,13 @@ Skill選択の通常出力は提案だけで、Skill本文のロード、実行�
     ├─ 入力検証・秘密らしいtokenのマスキング
     ├─ .agents/skills / .codex/skills を探索
     ├─ name・descriptionのローカルスコアリング
-    ├─ 上位32件へ縮約
-    ├─ 1回のJev Choice（候補 + none）
-    ├─ probability >= 0.60 かつ margin >= 0.10 を確認
-    │       ├─ 条件成立: selected
-    │       └─ それ以外: none（理由コード付き）
-    └─ JSON/human出力 + メタデータTelemetry
+    ├─ 上位32件へ縮約（超過はcandidate_window_overflow）
+    ├─ redaction / byte budget / windowをStatePlanへ固定
+    ├─ DecisionContractのChoice（候補 + none）を1回送信
+    ├─ code-side probability / margin gate
+    │       ├─ 条件成立: accepted → selected
+    │       └─ それ以外: none / unknown / defer / degraded
+    └─ JSON/human出力 + events.jsonl + decisions.jsonl receipt
 
 Codex Hook（明示的にinstall）
     │
@@ -39,8 +40,10 @@ Codex Hook（明示的にinstall）
 | モジュール | 責務 | 外部依存 |
 | --- | --- | --- |
 | `discovery` | Skillの探索、Frontmatterの検証、優先順位重複排除 | filesystem |
-| `ranking` | ローカル候補順位、Jev結果の閾値判定、計測 | `Judge` trait |
-| `gateway` | Vercel AI GatewayへのHTTPリクエストとレスポンス変換 | reqwest |
+| `decision` | typed Question/Answer、policy gate、safe status、cache、live/dry-run/replay実行 | serde / async-trait |
+| `ranking` | ローカル候補順位、StatePlan、Choice adapter、結果互換変換 | `Judge` trait、Decision Contract |
+| `gateway` | typed questionのHTTPリクエスト、429/529 retry、レスポンス変換 | reqwest |
+| `recorder` | safe DecisionReceiptのJSONL追記、stats、replay mismatch検証 | filesystem |
 | `telemetry` | JSONL追記、判定率、p50/p95、Token集計 | filesystem |
 | `evaluation` | fixture読み込み、ベースライン比較、Jev実測、p50/p95集計 | `Judge` trait、filesystem |
 | `hooks` | Codex Hook入力の検証、shadow record、相関集計 | filesystem |
@@ -88,7 +91,7 @@ checkpointへ保存するのはevent名、boundedなtrigger/source、各種SHA-2
 
 ## Jevへ渡すデータ
 
-渡すデータは、認識済みパターンをredactした依頼文、rawの作業ディレクトリ、候補SkillのID・名前、redactした説明だけ。`cwd` とSkill ID/nameはrawで、promptとdescriptionのredactionは限定的なsecret patternに過ぎない。次のデータはv1で渡さない。
+渡すデータは、認識済みパターンをredactした依頼文、redactした作業ディレクトリ、候補SkillのID・名前、redactした説明だけ。prompt・cwd・descriptionのredactionは限定的なsecret patternに過ぎない。次のデータはv1で渡さない。
 
 - Skill本文
 - 過去の会話全文
@@ -99,7 +102,7 @@ checkpointへ保存するのはevent名、boundedなtrigger/source、各種SHA-2
 | データ | Gatewayへ送るか | 保存境界 |
 | --- | --- | --- |
 | prompt | 送る（redact後） | Telemetryには本文を保存せずSHA-256・文字数だけ |
-| `cwd` | 送る（raw） | Telemetry/Hook recordでは生値を保存しない |
+| `cwd` | 送る（redact後） | receiptには本文を保存せずstate digestだけ |
 | Skill ID / name | 送る（raw） | 候補識別に使用 |
 | Skill description | 送る（redact後） | Skill本文は送らない |
 | 会話全文 / Tool結果 / Skill本文 / APIキー | 送らない | v1の対象外 |
@@ -109,7 +112,7 @@ Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>`
 
 Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否し、既存schema v1のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。
 
-Jev未設定時はローカル推測へフォールバックせず、`missing_api_key`を返す。これは「Jevの有用性を測る」目的で、ローカルだけの結果をJev結果と混同しないためだよ。
+Jev未設定時はローカル推測へフォールバックせず、`missing_api_key`を返す。stateのbyte/candidate window超過はJevを呼ばず、receiptへ`degraded`として記録する。これは「Jevの有用性を測る」目的で、ローカルだけの結果をJev結果と混同しないためだよ。
 
 ## レイテンシ設計
 
@@ -118,18 +121,21 @@ Jev未設定時はローカル推測へフォールバックせず、`missing_ap
 - デフォルトHTTPタイムアウト: 1,500ms
 - 出力する時刻: `discoveryMs`、`jevResponseMs`、`totalMs`
 - Telemetry集計: 判定率、Jev/total p50・p95、平均input/output tokens、usage event数
+- Decision receipt集計: accepted/none/unknown/defer/degraded、fallback率、cache hit、retry、latency p50/p95、相対cost
 
 Jevの呼び出しは候補ごとに繰り返さず、候補を1つのChoice質問へまとめる。これで候補数に比例したネットワーク往復を避けつつ、速度とtoken usageを測定できる。
 
 ## 安全側の判定
 
-次の場合は`selected`を返さず`none`にする。
+次の場合は`selected`を返さず安全側のstatusへ流す。
 
 - Jevが`none`を選ぶ
 - choiceが欠落する
 - 未知のSkill IDを返す
 - 1位の確率が0.60未満
 - 1位とrunner-upの確率差が0.10未満
+- state不足・window超過は`degraded`
+- timeout、provider error、空回答、低確信度は`defer`または`unknown`
 
 明示的な`--skill`指定はJevを呼ばず、`explicit`として返す。利用者の明示指定をモデルの推測で上書きしないためだよ。
 
@@ -141,6 +147,8 @@ Jevの呼び出しは候補ごとに繰り返さず、候補を1つのChoice質�
 | Jev接続失敗、Jev応答エラー | `provider_error` | 3 |
 | タイムアウト | `timeout` | 3 |
 | ファイル・YAMLエラー | `io_error` / `yaml_error` | 2 |
+
+判定結果の詳細は`decisions.jsonl`へ安全なメタデータとして記録する。receiptにはcontract/question/policy version、state digest、候補/window/omitted/redaction理由、typed answer digest、evidence、fallback、calls/retry、latency、token proxy cost、replay IDを含めるが、prompt本文、Skill本文、Tool結果、APIキー、生session IDは含めない。`replay_receipt`はversionとstate digestを検証し、不一致を`degraded`として返す。
 
 既知Hook event（`SessionStart`、`PreCompact`、`PostCompact`、`UserPromptSubmit`）を受理した場合だけ、shadowは `{"continue":true,"suppressOutput":true}` の固定応答を返す。既知eventでJevが失敗しても現行recordと`continue: true`を優先する。不明event、event不一致、壊れた設定は固定応答を返さず入力契約違反としてエラーにする。
 

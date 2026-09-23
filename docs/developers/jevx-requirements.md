@@ -14,7 +14,12 @@ Skill選択のコアはShadow Modeとし、`selected`になってもSkill本文�
 - Rust製CLIを`jevx/`に提供する
 - プロジェクトSkillとユーザー共通Skillを探索する
 - ローカル候補絞り込みとJevのChoice判定を行う
+- `Choice` / `Score` / `noul`を共通のDecision Contractとして扱い、最終statusをコード側で決める
+- redaction・候補window・byte budgetを`StatePlan`へ固定し、欠落時は`degraded`として扱う
 - `none`による未推薦と確率・marginの安全側閾値を持つ
+- timeout・provider error・低確信度を`unknown` / `defer`へ流し、自動allowしない
+- Decision receiptを安全なJSONLへ記録し、recorded answerをJevなしでreplayする
+- retry・cache・dry-run・token proxy costとfallback率を評価できる
 - 人間向け出力と`--json`出力に判定・Jev応答速度・全体速度を出す
 - prompt本文を保存しないJSONL Telemetryとstats集計を提供する
 - Codex向けadvisory SkillとmacOS用セットアップスクリプトを提供する
@@ -62,6 +67,11 @@ Jev判定は`AI_GATEWAY_API_KEY`を使い、Vercel AI Gatewayの`typesafe-ai/jev
 - 1位と2位の確率差: 0.10以上
 - リクエストタイムアウト: 1,500ms
 - Telemetry: `~/.jevx/events.jsonl`
+- Decision receipt: `~/.jevx/decisions.jsonl`
+- state byte上限: 32,000 bytes
+- retry: 429/529を最大1回、25ms backoff
+- cache: 既定無効（`JEVX_DECISION_CACHE_CAPACITY=0`）
+- token proxy cost: input/outputとも既定weight 1.0
 - Hook state: Telemetry親ディレクトリ配下の`hooks.jsonl` / `compaction/`
 
 ## 実装対応表
@@ -69,6 +79,7 @@ Jev判定は`AI_GATEWAY_API_KEY`を使い、Vercel AI Gatewayの`typesafe-ai/jev
 | 領域 | 現状 | 境界 |
 | --- | --- | --- |
 | Skill探索・ローカル順位付け・Jev判定 | 実装済み | Shadow Mode。Skill本文の自動ロード・実行はしない |
+| Decision Contract・StatePlan・Recorder | 実装済み | typed answer、code-side gate、safe status、receipt、replayをRust APIで提供。権限Hookへ自動allowしない |
 | Telemetry・stats・doctor | 実装済み | prompt本文、APIキー、Jevのprobabilityは保存しない |
 | Hook shadow・install・compact-assist | 実装済み | 明示的な導入とCodex側のTrustが必要 |
 | Skill選択・Compaction・会話評価Runner | 実装済み | controlled fixture metadataまたは検証済みJSONLを評価し、Codex/App Serverは起動しない |
@@ -109,7 +120,7 @@ Jevへの送信境界は次のとおり。
 | データ | Gatewayへ送るか | 実装上の扱い |
 | --- | --- | --- |
 | 現在のprompt | 送る（redact後） | 認識済みのsecret assignment、Bearer / Basic、`sk-` / `tsk-`をredact |
-| `cwd` | 送る（raw） | 依頼の作業ディレクトリをそのまま含む |
+| `cwd` | 送る（redact後） | stateへ含める前にredactし、receiptにはstate digestだけ保存 |
 | Skill ID / name | 送る（raw） | 候補識別子として含む |
 | Skill description | 送る（redact後） | Skill本文は送らない |
 | APIキー | 送らない | Bearer認証ヘッダーにのみ使用 |
@@ -127,6 +138,8 @@ Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許�
 - Jev未設定・タイムアウト時に明示エラーを返し、Hook shadowはCodex処理を継続する
 - 既存のローカルキーワード方式との精度・遅延・Token usage比較が可能
 - `nonePrecision` が `expectedNone` 分母の recall として解釈でき、local_keyword / local_rankを含む4モードを比較できる
+- fallback率、cache hit率、retry率、平均retry、relative cost、receiptのstatus別件数を比較できる
+- `decisions.jsonl`をversion・state digest検証付きでreplayでき、不一致は`degraded`になる
 - `hooks install --dry-run`が変更せず、実行後の再実行が冪等である
 - Compaction checkpointとredacted manifestが秘密情報を再出力しない
 - 新規Rust実行コードのラインカバレッジ98%以上

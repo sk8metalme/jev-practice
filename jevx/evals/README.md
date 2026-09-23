@@ -5,7 +5,7 @@
 - `synthetic`: 30件の合成ケース
 - `anonymized-template`: 10件の匿名化形式テンプレートケース
 
-ケースは正解ラベルを含むので、Jev requestからはfixtureの`id`・`kind`・`expected`・`keywords`を除外する。`prompt`はredact後、raw `cwd`と候補Skill metadataはrequestへ送る。`keywords` はfixture作成者の注釈・期待根拠として読み込まれるが、現行 `local_keyword` の計算には使われず、Skill ID/name/descriptionから作られるローカル一致とは別物である。単回`eval --output`のcase JSONLには`id`・`kind`・`expected`・判定・metrics・error codeを保存するが、prompt本文・keywords・Jev response本文は保存しない。
+ケースは正解ラベルを含むので、Jev requestからはfixtureの`id`・`kind`・`expected`・`keywords`を除外する。`prompt`と`cwd`はredact後、候補Skill metadataはrequestへ送る。`keywords` はfixture作成者の注釈・期待根拠として読み込まれるが、現行 `local_keyword` の計算には使われず、Skill ID/name/descriptionから作られるローカル一致とは別物である。単回`eval --output`のcase JSONLには`id`・`kind`・`expected`・判定・metrics・error codeを保存するが、prompt本文・keywords・Jev response本文は保存しない。
 
 JSONLの検証:
 
@@ -50,7 +50,9 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
   --output /tmp/jevx-eval-results.jsonl
 ```
 
-標準出力のレポートにはモード別の正解率、`none` recall（互換キー `nonePrecision`）、候補取りこぼし率、エラー率、Jev応答時間・全体時間のp50/p95、token平均が含まれる。単回`eval --output`のcase JSONLは`id`・`kind`・`expected`・判定・metrics・error codeを保存し、`prompt`・`keywords`・Jev response本文は保存しない。Telemetry schemaにもGatewayのprobabilityを保存しない。
+標準出力のレポートにはモード別の正解率、`none` recall（互換キー `nonePrecision`）、候補取りこぼし率、エラー率、fallback率、cache hit率、retry率、平均retry、Jev応答時間・全体時間のp50/p95、token平均、relative costが含まれる。単回`eval --output`のcase JSONLは`id`・`kind`・`expected`・判定・metrics・error codeを保存し、`prompt`・`keywords`・Jev response本文は保存しない。Telemetry schemaにもGatewayのprobabilityを保存しない。
+
+Decision Contractの安全なreceipt schemaを確認するfixtureは [`decision-contract-baseline.jsonl`](decision-contract-baseline.jsonl) である。これは実APIの応答ログではなく、秘密情報を含まないaccepted/noneの記録例で、prompt本文・Skill本文・Tool結果・APIキーを含めない。実行時のreceiptは通常 `$JEVX_HOME/decisions.jsonl` に追記される。
 
 同一条件で分散を確認するには`eval-repeat`を使う。以下はAPIキーありで5回、合計200ケースを測定する例。
 

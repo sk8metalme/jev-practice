@@ -28,7 +28,7 @@ Jevを使う価値を、Skill選択の精度・速度・token usage・安全性�
 | `expected` | 期待するSkill ID。不要なら`none` |
 | `keywords` | fixture作成者が残す注釈・期待根拠。現行 `local_keyword` の計算には使われない |
 
-`keywords` はJSONLから読み込まれますが、現行実装の `local_keyword` はSkillのID・名前・説明から語を作り、fixtureの `keywords` を参照しません。したがってキーワードを編集しても現行local_keywordの予測は変わらず、注釈・レビュー用に保持されるだけです。ケースの `id` / `kind` / `expected` / `keywords` はJev requestへ含めず、redact後の`prompt`・raw `cwd`・候補Skill metadataだけを送ります。ケース追加時は、期待ラベルの根拠をレビュー可能にし、実際のAPIキー・個人情報・リポジトリ固有の秘密を入れない。
+`keywords` はJSONLから読み込まれますが、現行実装の `local_keyword` はSkillのID・名前・説明から語を作り、fixtureの `keywords` を参照しません。したがってキーワードを編集しても現行local_keywordの予測は変わらず、注釈・レビュー用に保持されるだけです。ケースの `id` / `kind` / `expected` / `keywords` はJev requestへ含めず、redact後の`prompt`・redact後の`cwd`・候補Skill metadataだけを送ります。ケース追加時は、期待ラベルの根拠をレビュー可能にし、実際のAPIキー・個人情報・リポジトリ固有の秘密を入れない。
 
 ### Requestと保存レポートの境界
 
@@ -50,6 +50,12 @@ Jevを使う価値を、Skill選択の精度・速度・token usage・安全性�
 | total p50/p95 | `metrics.totalMs`の50/95パーセンタイル |
 | input/output tokens | Gateway usageの分布と平均 |
 | error rate | timeout/provider/errorの割合 |
+| fallback rate | `accepted`以外へ安全側に流れたreceiptの割合 |
+| cache hit rate | 同一contract・policy・state digestでcacheを再利用した割合 |
+| retry rate / average retries | retryが発生した実行の割合と実行あたりのretry平均 |
+| relative cost | input/output tokenへ設定weightを掛けたproxy cost。価格そのものではない |
+
+Decision Contractの実行結果は`decisions.jsonl`へ安全なreceiptとして記録する。`DecisionReceipt`はcontract/question/policy version、state digest、候補window、omitted/redaction理由、typed answer digest、status、fallback、calls/retry、latency、usage、relative cost、replay IDを持つが、prompt本文・Skill本文・Tool結果・APIキーを持たない。`read_decision_receipts`で読み込み、`replay_receipt`でversionとstate digestを検証する。不一致は成功へ変換せず`degraded`として扱う。`jevx/evals/decision-contract-baseline.jsonl`はこのschemaを確認する秘密情報なしのaccepted/none fixtureである。
 
 ## 実行手順
 
@@ -140,7 +146,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 APIキーありで5回測定した結果は[複数回・APIキーあり実測レポート](../research/evaluations/jevx-variance-evaluation-2026-09-21.md)に記録している。jevxは5回×40ケースで正解率平均98.0%、Jev p50/p95 427/610ms、total p50/p95 429/612ms、ローカル探索p95 2msだった。Codex Hookのshadow測定とcompaction相当fixtureの結果は[Codex Hook shadow / compaction評価](../research/evaluations/jevx-codex-hooks-evaluation.md)に分けている。
 
-標準出力のレポートは次のような構造になる。以下の `jevx` 数値は2026-09-21のHistorical exampleであり、現行dry-runの値ではない。
+標準出力のレポートは次のような構造になる。以下の `jevx` 数値は2026-09-21のHistorical exampleであり、現行dry-runの値ではない。現行実装では各mode summaryへfallback/cache/retry/relative costの集計も含まれる。
 
 ```json
 {
@@ -201,6 +207,8 @@ v1のリリース判断では、次を同時に満たすことを目安にする
 - `none`を許容し、低確信度の誤推薦を増やさない
 - `jevResponseMs`が全成功結果に存在する
 - APIキー・Skill本文・生プロンプト・probabilityがTelemetryへ出ない
+- state byte/window超過、timeout、provider error、低確信度が`accepted`や自動allowへ変換されない
+- recorded answerをJevなしで同じcode-side decisionへ再現できる
 - 新規Rust実行コードのラインカバレッジ >= 98%
 
 この評価は、精度が良くても遅すぎる・情報を送りすぎる場合を合格にしないためのものだよ。
