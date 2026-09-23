@@ -11,7 +11,8 @@ use tempfile::tempdir;
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
 fn jevx(home: &Path, cwd: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_jevx"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_jevx"));
+    command
         .args(args)
         .current_dir(cwd)
         .env_clear()
@@ -19,9 +20,12 @@ fn jevx(home: &Path, cwd: &Path, args: &[&str]) -> Output {
         .env("JEVX_HOME", home.join(".jevx"))
         .env("JEVX_TELEMETRY", "off")
         .env("PATH", "/usr/bin:/bin")
-        .stdin(Stdio::null())
-        .output()
-        .expect("run jevx")
+        .stdin(Stdio::null());
+    // Keep coverage instrumentation writing to cargo-llvm-cov's profile directory.
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        command.env("LLVM_PROFILE_FILE", profile);
+    }
+    command.output().expect("run jevx")
 }
 
 fn json_output(home: &Path, cwd: &Path, args: &[&str]) -> Value {
