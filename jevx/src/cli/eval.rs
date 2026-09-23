@@ -1,15 +1,23 @@
 //! `jevx eval` / `jevx eval-repeat`: Skill選択の評価Runner。
 
-use std::env;
 use std::path::{Path, PathBuf};
 
 use jevx::evaluation::{
     EvaluationReport, evaluate, evaluate_repeated, load_fixtures, write_case_results,
     write_repeat_report,
 };
-use jevx::{Config, GatewayJudge, JevxError, discover_skill_roots};
+use jevx::{Config, GatewayJudge, JevxError, SkillRoot, discover_skill_roots};
 
 use super::*;
+
+/// 評価はfixtureと同梱カタログだけで再現できるよう、cwdやHOMEのSkill rootを混ぜない。
+pub(super) fn eval_skill_roots(skill_dirs: &[PathBuf]) -> Vec<SkillRoot> {
+    skill_dirs
+        .iter()
+        .enumerate()
+        .map(|(offset, path)| SkillRoot::new(path.clone(), "extra".to_owned(), 10 + offset))
+        .collect()
+}
 
 /// 既定のfixtureはリポジトリ相対なので、見つからないときは黙って空評価にせず指定方法を示す。
 pub(super) fn require_eval_inputs(
@@ -31,16 +39,12 @@ pub(super) fn require_eval_inputs(
 }
 
 pub(super) async fn run_eval_with_config(
-    mut args: EvalArgs,
+    args: EvalArgs,
     mut config: Config,
 ) -> Result<i32, JevxError> {
-    let cwd = args
-        .cwd
-        .take()
-        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     require_eval_inputs(&args.fixtures, &args.skill_dirs)?;
     let fixtures = load_fixtures(&args.fixtures)?;
-    let skills = discover_skill_roots(&skill_roots(&cwd, &args.skill_dirs))?;
+    let skills = discover_skill_roots(&eval_skill_roots(&args.skill_dirs))?;
     config.telemetry_enabled = false;
 
     let report = if args.dry_run {
@@ -61,16 +65,12 @@ pub(super) async fn run_eval_with_config(
 }
 
 pub(super) async fn run_eval_repeat_with_config(
-    mut args: EvalRepeatArgs,
+    args: EvalRepeatArgs,
     mut config: Config,
 ) -> Result<i32, JevxError> {
-    let cwd = args
-        .cwd
-        .take()
-        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     require_eval_inputs(&args.fixtures, &args.skill_dirs)?;
     let fixtures = load_fixtures(&args.fixtures)?;
-    let skills = discover_skill_roots(&skill_roots(&cwd, &args.skill_dirs))?;
+    let skills = discover_skill_roots(&eval_skill_roots(&args.skill_dirs))?;
     config.telemetry_enabled = false;
     let report = if args.dry_run {
         evaluate_repeated(&fixtures, &skills, &config, None, args.runs).await?

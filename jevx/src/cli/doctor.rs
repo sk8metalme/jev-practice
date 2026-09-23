@@ -86,8 +86,10 @@ pub(super) fn doctor_report(config: &Config, env: &DoctorEnv) -> Value {
             "Try it: jevx skills suggest --prompt \"PDFを結合して内容を確認したい\" --json"
                 .to_owned(),
         );
-        if user_hooks["installedHandlers"].is_null() && project_hooks["installedHandlers"].is_null()
-        {
+        let no_hooks = |status: &Value| {
+            status.get("error").is_none() && status["installedHandlers"].as_u64().unwrap_or(0) == 0
+        };
+        if no_hooks(&user_hooks) && no_hooks(&project_hooks) {
             next_steps.push(
                 "Optional: preview Codex hooks with jevx hooks install --scope user --dry-run --json"
                     .to_owned(),

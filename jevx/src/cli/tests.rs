@@ -926,7 +926,7 @@ async fn hooks_uninstall_command_previews_then_removes_only_jevx_handlers() {
     let remaining: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&hooks_path).expect("after")).expect("json");
     assert_eq!(remaining, serde_json::json!({"hooks": {}}));
-    assert!(hooks_path.with_file_name("hooks.json.jevx.bak").exists());
+    assert!(!hooks_path.with_file_name("hooks.json.jevx.bak").exists());
 
     assert_eq!(
         run_hook_uninstall(uninstall(false, false)).expect("no-op"),
@@ -1095,4 +1095,12 @@ fn doctor_command_prints_json_and_human_reports() {
     let human = doctor_human_output(&report);
     assert!(human.contains("Warning: JEVX_MIN_MARGIN"));
     assert!(human.contains("Endpoint: null"));
+}
+
+#[test]
+fn eval_skill_roots_use_only_the_explicit_catalog() {
+    let root = tempdir().expect("tempdir");
+    let roots = eval_skill_roots(&[root.path().join("catalog")]);
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].path, root.path().join("catalog"));
 }

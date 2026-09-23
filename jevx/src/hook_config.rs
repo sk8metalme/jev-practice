@@ -64,8 +64,6 @@ pub struct HookUninstallReport {
     pub dry_run: bool,
     #[serde(rename = "removedHandlers")]
     pub removed_handlers: usize,
-    #[serde(rename = "backupPath", skip_serializing_if = "Option::is_none")]
-    pub backup_path: Option<PathBuf>,
     pub config: Option<Value>,
 }
 
@@ -140,7 +138,6 @@ pub fn uninstall_hooks(options: &HookUninstallOptions) -> Result<HookUninstallRe
         changed: false,
         dry_run: options.dry_run,
         removed_handlers: 0,
-        backup_path: None,
         config: None,
     };
     if !report.path.exists() {
@@ -150,8 +147,10 @@ pub fn uninstall_hooks(options: &HookUninstallOptions) -> Result<HookUninstallRe
     let mut config = serde_json::from_str::<Value>(&fs::read_to_string(&report.path)?)?;
     report.removed_handlers = strip_jevx_handlers(&mut config)?;
     report.changed = report.removed_handlers > 0;
+    // Uninstall only removes jevx handlers, so it writes without a backup: a backup taken here
+    // would contain jevx hooks and restoring it would bring them back.
     if report.changed && !options.dry_run {
-        report.backup_path = write_with_backup(&report.path, &config)?;
+        write_config(&report.path, &config)?;
     }
     report.config = Some(config);
     Ok(report)
@@ -179,9 +178,10 @@ fn strip_jevx_handlers(config: &mut Value) -> Result<usize, JevxError> {
     let mut removed = 0;
     let mut emptied_events = Vec::new();
     for (event, groups) in hooks.iter_mut() {
-        let groups = groups
-            .as_array_mut()
-            .ok_or_else(|| JevxError::InvalidInput(format!("hooks.{event} must be an array")))?;
+        // jevxが書かない形のeventは、壊さずにそのまま残す。
+        let Some(groups) = groups.as_array_mut() else {
+            continue;
+        };
         let mut removed_in_event = 0;
         groups.retain_mut(|group| {
             let count = count_jevx_handlers(group);
@@ -212,7 +212,7 @@ fn count_jevx_handlers(group: &Value) -> usize {
         .unwrap_or(0)
 }
 
-/// Writes the config and keeps the first pre-jevx copy as `<name>.jevx.bak`.
+/// Writes the config and keeps the first copy before jevx changed it as `<name>.jevx.bak`.
 fn write_with_backup(path: &Path, config: &Value) -> Result<Option<PathBuf>, JevxError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -230,10 +230,15 @@ fn write_with_backup(path: &Path, config: &Value) -> Result<Option<PathBuf>, Jev
             backup_path = Some(backup);
         }
     }
+    write_config(path, config)?;
+    Ok(backup_path)
+}
+
+fn write_config(path: &Path, config: &Value) -> Result<(), JevxError> {
     let mut content = serde_json::to_vec_pretty(config)?;
     content.push(b'\n');
     fs::write(path, content)?;
-    Ok(backup_path)
+    Ok(())
 }
 
 fn generated_config(executable: &Path, records_path: &Path, state_dir: &Path) -> Value {
@@ -520,7 +525,6 @@ mod tests {
         assert!(preview.dry_run);
         assert!(preview.changed);
         assert_eq!(preview.removed_handlers, 2);
-        assert!(preview.backup_path.is_none());
         let untouched: Value =
             serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
         assert_eq!(untouched, existing, "dry run must not write");
@@ -528,10 +532,7 @@ mod tests {
         let report = uninstall_hooks(&uninstall_options(root.path(), false)).expect("uninstall");
         assert!(report.changed);
         assert_eq!(report.removed_handlers, 2);
-        assert_eq!(
-            report.backup_path.as_deref(),
-            Some(path.with_file_name("hooks.json.jevx.bak").as_path())
-        );
+        assert!(!path.with_file_name("hooks.json.jevx.bak").exists());
         let written: Value =
             serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
         assert_eq!(written["custom"], true);
@@ -577,9 +578,15 @@ mod tests {
         fs::write(&report.path, r#"[]"#).expect("invalid root");
         let error = uninstall_hooks(&uninstall_options(root.path(), false)).expect_err("root");
         assert!(error.to_string().contains("root must be an object"));
-        fs::write(&report.path, r#"{"hooks": {"Stop": {}}}"#).expect("invalid event");
-        let error = uninstall_hooks(&uninstall_options(root.path(), false)).expect_err("event");
-        assert!(error.to_string().contains("must be an array"));
+        fs::write(
+            &report.path,
+            r#"{"hooks": {"Stop": {}, "UserPromptSubmit": [{"hooks": [{"type":"command","command":"/bin/jevx hooks shadow --jevx-managed"}]}]}}"#,
+        )
+        .expect("foreign event shape");
+        let skipped = uninstall_hooks(&uninstall_options(root.path(), false))
+            .expect("events that are not arrays are left untouched");
+        assert_eq!(skipped.removed_handlers, 1);
+        assert_eq!(skipped.config.expect("config")["hooks"]["Stop"], json!({}));
         fs::write(&report.path, r#"{"other": 1}"#).expect("no hooks");
         let none = uninstall_hooks(&uninstall_options(root.path(), false)).expect("no hooks");
         assert!(!none.changed);

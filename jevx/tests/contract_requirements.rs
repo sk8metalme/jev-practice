@@ -194,6 +194,25 @@ fn eval_dry_run_contract_keeps_none_precision_alias_and_adds_none_recall() {
         ],
     );
     assert_eq!(summary["noneRecall"], summary["nonePrecision"]);
+
+    // Skills under the working directory or HOME must not leak into the evaluation catalog.
+    let elsewhere = tempdir().expect("elsewhere");
+    let fixtures = repo.join("jevx/evals/skill-selection.jsonl");
+    let catalog = repo.join("jevx/evals/skills");
+    let isolated = json_output(
+        home.path(),
+        elsewhere.path(),
+        &[
+            "eval",
+            "--dry-run",
+            "--json",
+            "--fixtures",
+            fixtures.to_str().expect("utf8"),
+            "--skill-dir",
+            catalog.to_str().expect("utf8"),
+        ],
+    );
+    assert_eq!(report["modes"], isolated["modes"]);
 }
 
 #[test]

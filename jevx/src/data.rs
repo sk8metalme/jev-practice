@@ -52,28 +52,32 @@ pub fn data_inventory(data_home: &Path) -> Result<DataInventory, JevxError> {
         .iter()
         .map(|(kind, relative)| {
             let path = data_home.join(relative);
-            if !path.is_file() {
-                return Ok(DataFile {
+            // symlink_metadata: 最後の要素がリンクでもリンク自体を管理対象として扱う。
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                return DataFile {
                     kind,
                     path,
                     exists: false,
                     bytes: 0,
                     records: 0,
-                });
-            }
-            let content = fs::read_to_string(&path)?;
-            Ok(DataFile {
+                };
+            };
+            // 壊れた・UTF-8でないファイルでも一覧と削除ができるよう、読めなければ0件として扱う。
+            let records = fs::read(&path).map_or(0, |bytes| {
+                bytes
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| line.iter().any(|byte| !byte.is_ascii_whitespace()))
+                    .count()
+            });
+            DataFile {
                 kind,
                 exists: true,
-                bytes: fs::metadata(&path)?.len(),
-                records: content
-                    .lines()
-                    .filter(|line| !line.trim().is_empty())
-                    .count(),
+                bytes: metadata.len(),
+                records,
                 path,
-            })
+            }
         })
-        .collect::<Result<Vec<_>, JevxError>>()?;
+        .collect();
     Ok(DataInventory {
         schema_version: 1,
         data_home: data_home.to_path_buf(),
@@ -87,7 +91,8 @@ pub fn export_data(inventory: &DataInventory) -> Result<Value, JevxError> {
     for file in &inventory.files {
         let mut values = Vec::new();
         if file.exists {
-            for (index, line) in fs::read_to_string(&file.path)?.lines().enumerate() {
+            let content = String::from_utf8_lossy(&fs::read(&file.path)?).into_owned();
+            for (index, line) in content.lines().enumerate() {
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -123,7 +128,8 @@ pub fn purge_data(inventory: &DataInventory, confirmed: bool) -> Result<PurgeRep
             fs::remove_file(path)?;
         }
         let dir = inventory.data_home.join(MANAGED_DIR);
-        if dir.is_dir() && fs::read_dir(&dir)?.next().is_none() {
+        let is_real_dir = fs::symlink_metadata(&dir).is_ok_and(|metadata| metadata.is_dir());
+        if is_real_dir && fs::read_dir(&dir)?.next().is_none() {
             fs::remove_dir(&dir)?;
         }
     }
@@ -224,5 +230,36 @@ mod tests {
         fs::write(root.path().join("compaction/notes.md"), "mine").expect("foreign");
         purge_data(&data_inventory(root.path()).expect("inventory"), true).expect("purge");
         assert!(root.path().join("compaction/notes.md").exists());
+    }
+
+    #[test]
+    fn unreadable_or_non_utf8_data_can_still_be_listed_and_purged() {
+        let root = tempfile::tempdir().expect("tempdir");
+        fs::write(root.path().join("events.jsonl"), b"\xff\xfe{}\n{\"a\":1}\n").expect("binary");
+        let inventory = data_inventory(root.path()).expect("inventory");
+        assert!(inventory.files[0].exists);
+        assert_eq!(inventory.files[0].records, 2);
+        let error = export_data(&inventory).expect_err("invalid line");
+        assert!(error.to_string().contains("events.jsonl:1"));
+        let report = purge_data(&inventory, true).expect("purge");
+        assert_eq!(report.removed.len(), 1);
+        assert!(!root.path().join("events.jsonl").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn purge_does_not_follow_a_symlinked_managed_directory() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let elsewhere = tempfile::tempdir().expect("elsewhere");
+        fs::write(elsewhere.path().join("checkpoints.jsonl"), "{}\n").expect("cp");
+        std::os::unix::fs::symlink(elsewhere.path(), root.path().join("compaction")).expect("link");
+        let report = purge_data(&data_inventory(root.path()).expect("inventory"), true)
+            .expect("purge succeeds");
+        assert_eq!(report.removed.len(), 1);
+        assert!(
+            root.path().join("compaction").exists(),
+            "the link itself is kept"
+        );
+        assert!(elsewhere.path().exists());
     }
 }

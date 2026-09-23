@@ -124,6 +124,7 @@ struct EvalArgs {
     fixtures: PathBuf,
     #[arg(long = "skill-dir", default_value = "jevx/evals/skills")]
     skill_dirs: Vec<PathBuf>,
+    /// Kept for compatibility. Evaluation ignores it and uses only --skill-dir.
     #[arg(long)]
     cwd: Option<PathBuf>,
     #[arg(long)]
@@ -142,6 +143,7 @@ struct EvalRepeatArgs {
     fixtures: PathBuf,
     #[arg(long = "skill-dir", default_value = "jevx/evals/skills")]
     skill_dirs: Vec<PathBuf>,
+    /// Kept for compatibility. Evaluation ignores it and uses only --skill-dir.
     #[arg(long)]
     cwd: Option<PathBuf>,
     #[arg(long)]

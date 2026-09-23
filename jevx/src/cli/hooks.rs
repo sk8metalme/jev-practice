@@ -139,9 +139,6 @@ pub(super) fn run_hook_uninstall(args: HookUninstallArgs) -> Result<i32, JevxErr
     };
     println!("{verb} {}", report.path.display());
     println!("Removed handlers: {}", report.removed_handlers);
-    if let Some(backup) = report.backup_path {
-        println!("Backup: {}", backup.display());
-    }
     Ok(0)
 }
 
