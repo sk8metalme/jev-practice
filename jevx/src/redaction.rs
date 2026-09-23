@@ -1,3 +1,5 @@
+use std::path::{Component, Path};
+
 use sha2::{Digest, Sha256};
 
 const SENSITIVE_KEYS: [&str; 5] = ["token", "api_key", "secret", "password", "authorization"];
@@ -43,6 +45,20 @@ pub fn redact(value: &str) -> String {
     }
 
     output.join(" ")
+}
+
+pub fn redact_path(path: &Path) -> String {
+    let mut redacted = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => redacted.push(prefix.as_os_str()),
+            Component::RootDir => redacted.push(component.as_os_str()),
+            Component::CurDir => redacted.push("."),
+            Component::ParentDir => redacted.push(".."),
+            Component::Normal(value) => redacted.push(redact(&value.to_string_lossy())),
+        }
+    }
+    redacted.display().to_string()
 }
 
 fn sensitive_assignment(token: &str) -> Option<bool> {

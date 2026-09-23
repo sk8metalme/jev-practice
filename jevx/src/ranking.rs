@@ -175,23 +175,25 @@ pub async fn suggest_with_optional_judge<J: Judge + ?Sized>(
             .total_cmp(&left.probability.unwrap_or_default())
             .then_with(|| left.name.cmp(&right.name))
     });
-    let response_ms = execution
-        .response_ms
-        .max(elapsed_ms(started).saturating_sub(discovery_ms));
+    let response_ms = execution.response_ms;
     let total_ms = elapsed_ms(started).max(discovery_ms.saturating_add(response_ms));
     let usage = execution.usage;
-    let relative_cost = usage
-        .as_ref()
-        .filter(|_| {
-            config.input_cost_weight.is_finite()
-                && config.output_cost_weight.is_finite()
-                && config.input_cost_weight >= 0.0
-                && config.output_cost_weight >= 0.0
-        })
-        .map(|usage| {
-            usage.input_tokens as f64 * config.input_cost_weight
-                + usage.output_tokens as f64 * config.output_cost_weight
-        });
+    let relative_cost = if execution.cache_hit {
+        Some(0.0)
+    } else {
+        usage
+            .as_ref()
+            .filter(|_| {
+                config.input_cost_weight.is_finite()
+                    && config.output_cost_weight.is_finite()
+                    && config.input_cost_weight >= 0.0
+                    && config.output_cost_weight >= 0.0
+            })
+            .map(|usage| {
+                usage.input_tokens as f64 * config.input_cost_weight
+                    + usage.output_tokens as f64 * config.output_cost_weight
+            })
+    };
     Ok(SuggestionResult {
         schema_version: 1,
         decision,
@@ -271,7 +273,7 @@ fn build_state_plan(
 ) -> StatePlan {
     let redacted_prompt = redact(prompt);
     let cwd = input.cwd.display().to_string();
-    let redacted_cwd = redact(&cwd);
+    let redacted_cwd = crate::redaction::redact_path(&input.cwd);
     let mut redaction_reasons = Vec::new();
     if redacted_prompt != prompt {
         redaction_reasons.push("prompt_secret_pattern".to_owned());

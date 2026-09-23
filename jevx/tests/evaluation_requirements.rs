@@ -145,7 +145,9 @@ async fn evaluation_reports_local_rank_metrics_and_repeat_distribution() {
         response: JudgeResponse::selected("pdf", 0.95, 17, Some((31, 7))),
         requests: Mutex::new(Vec::new()),
     };
-    let repeated_jev = evaluate_repeated(&fixtures, &skills, &config, Some(&judge), 2)
+    let mut cached_config = config.clone();
+    cached_config.cache_capacity = 1;
+    let repeated_jev = evaluate_repeated(&fixtures, &skills, &cached_config, Some(&judge), 2)
         .await
         .expect("live repeat evaluation");
     let jevx = &repeated_jev.modes["jevx"];
@@ -153,6 +155,7 @@ async fn evaluation_reports_local_rank_metrics_and_repeat_distribution() {
     assert_eq!(jevx.jev_response_ms.mean, Some(17.0));
     assert_eq!(jevx.input_tokens.mean, Some(31.0));
     assert!(jevx.discovery_ms.p95.is_some());
+    assert_eq!(judge.requests.lock().expect("requests lock").len(), 2);
     assert!(
         evaluate_repeated(&fixtures, &skills, &config, None, 0)
             .await

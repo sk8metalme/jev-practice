@@ -257,6 +257,15 @@ async fn run_suggest_with_config(args: SuggestArgs, config: Config) -> Result<i3
     } else {
         match GatewayJudge::from_config(&execution_config) {
             Ok(judge) => suggest_with_judge(input.clone(), skills, &execution_config, &judge).await,
+            Err(JevxError::MissingApiKey) => {
+                suggest_with_optional_judge::<GatewayJudge>(
+                    input.clone(),
+                    skills,
+                    &execution_config,
+                    None,
+                )
+                .await
+            }
             Err(error) => Err(error),
         }
     };

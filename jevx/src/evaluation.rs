@@ -370,9 +370,11 @@ pub async fn evaluate_repeated(
         ));
     }
 
+    let mut repeat_config = config.clone();
+    repeat_config.cache_capacity = 0;
     let mut reports = Vec::with_capacity(run_count);
     for _ in 0..run_count {
-        reports.push(evaluate(fixtures, skills, config, judge).await);
+        reports.push(evaluate(fixtures, skills, &repeat_config, judge).await);
     }
 
     let mut mode_names = BTreeSet::new();

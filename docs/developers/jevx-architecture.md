@@ -112,7 +112,7 @@ Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>`
 
 Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否し、既存schema v1のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。
 
-Jev未設定時はローカル推測へフォールバックせず、`missing_api_key`を返す。stateのbyte/candidate window超過はJevを呼ばず、receiptへ`degraded`として記録する。これは「Jevの有用性を測る」目的で、ローカルだけの結果をJev結果と混同しないためだよ。
+Jev未設定時はローカル推測へフォールバックせず、`missing_api_key`をreceiptへ記録してから同じCLIエラーへ変換する。stateのbyte/candidate window超過はJevを呼ばず、receiptへ`degraded`として記録する。これは「Jevの有用性を測る」目的で、ローカルだけの結果をJev結果と混同しないためだよ。
 
 ## レイテンシ設計
 

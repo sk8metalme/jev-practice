@@ -55,7 +55,7 @@ Jevを使う価値を、Skill選択の精度・速度・token usage・安全性�
 | retry rate / average retries | retryが発生した実行の割合と実行あたりのretry平均 |
 | relative cost | input/output tokenへ設定weightを掛けたproxy cost。価格そのものではない |
 
-Decision Contractの実行結果は`decisions.jsonl`へ安全なreceiptとして記録する。`DecisionReceipt`はcontract/question/policy version（policy閾値を含むdigest付き）、state digest、実際のstate bytes、適用したstate/candidate予算、候補window、omitted/redaction理由、typed answer digest、status、fallback、calls/retry、latency、usage、relative cost、replay IDを持つが、prompt本文・Skill本文・Tool結果・APIキーを持たない。`read_decision_receipts`で読み込み、`replay_receipt`でversion、state metadata、recorded answerとcode-side resultを検証する。不一致は成功へ変換せず`degraded`として扱う。`jevx/evals/decision-contract-baseline.jsonl`はこのschemaを確認する秘密情報なしのaccepted/none fixtureである。
+Decision Contractの実行結果は`decisions.jsonl`へ安全なreceiptとして記録する。`DecisionReceipt`はcontract/question/policy version（policy閾値を含むdigest付き）、state digest、実際のstate bytes、適用したstate/candidate予算、候補window、omitted/redaction理由、typed answer digest、status、fallback、calls/retry、latency、usage、relative cost、replay IDを持つが、prompt本文・Skill本文・Tool結果・APIキーを持たない。`read_decision_receipts`で読み込み、`replay_receipt`でversion、state metadata、recorded answerとcode-side resultを検証する。不一致は成功へ変換せず`degraded`として扱う。`jevx/evals/decision-contract-baseline.jsonl`と対応するstate fixtureは実際に生成した値で、受け入れテストからreplayまで検証する。
 
 ## 実行手順
 
@@ -133,6 +133,8 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 APIキーありで同梱40ケースを実際に測定した結果は、[jevx APIキーあり実測レポート](../research/evaluations/jevx-live-evaluation-2026-09-21.md)に記録しているよ。これはHistorical snapshotであり、上のLatest baselineと混ぜない。そこでは、全体・ケース種別ごとの正解率、`none` recall（互換キー `nonePrecision`）、candidate miss、Jev/totalのp50・p95、平均token、品質ゲート判定を確認できる。
 
 同じ条件で複数回測定する場合は`eval-repeat`を使う。run単位の品質分散と、`local_rank` / `jevx` が計測するケースの`discoveryMs`・`jevResponseMs`・`totalMs`・token分布をまとめて出力する。`eval-repeat --output`はrun/mode集計（runごとのmode summaryを含む）だけを保存するJSONで、case JSONLやprompt/response本文は出力しない。
+
+反復runではprocess共有Decision cacheを無効化してrun間の回答再利用を防ぐ。単回のcache hitは外部Jevを呼んでいないため`jevResponseMs=0`、relative costも`0.0`として集計し、ローカル処理時間は`totalMs`だけに含める。
 
 ```bash
 cargo run --locked --manifest-path jevx/Cargo.toml -- \

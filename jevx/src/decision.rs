@@ -295,7 +295,14 @@ impl StatePlan {
     }
 
     pub fn is_degraded(&self) -> bool {
-        self.window_count == 0 || !self.omitted.is_empty()
+        self.window_count == 0
+            || !self.omitted.is_empty()
+            || self
+                .max_state_bytes
+                .is_some_and(|limit| self.state_bytes > limit)
+            || self
+                .candidate_limit
+                .is_some_and(|limit| self.candidate_count > limit)
     }
 }
 

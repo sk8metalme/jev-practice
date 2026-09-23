@@ -999,8 +999,11 @@ async fn gateway_judge_rejects_missing_skill_answer() {
 fn binary_reports_missing_key_as_json_error() {
     let binary = env!("CARGO_BIN_EXE_jevx");
     let root = tempdir().expect("tempdir");
+    let eval_skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("evals/skills");
     let output = Command::new(binary)
         .args(["skills", "suggest", "--prompt", "run tests", "--json"])
+        .arg("--skill-dir")
+        .arg(eval_skills)
         .env("AI_GATEWAY_API_KEY", "")
         .env("JEVX_HOME", root.path())
         .output()
@@ -1008,6 +1011,12 @@ fn binary_reports_missing_key_as_json_error() {
     assert_eq!(output.status.code(), Some(2));
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
     assert_eq!(json["error"]["code"], "missing_api_key");
+    let receipts = jevx::read_decision_receipts(&root.path().join("decisions.jsonl"))
+        .expect("decision receipts");
+    assert!(receipts.iter().any(|receipt| {
+        receipt.decision == jevx::DecisionStatus::Defer
+            && receipt.fallback == Some(jevx::FallbackReason::MissingApiKey)
+    }));
 }
 
 #[test]

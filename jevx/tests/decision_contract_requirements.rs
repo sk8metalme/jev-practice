@@ -676,7 +676,7 @@ async fn ranking_records_safe_receipts_and_uses_process_cache() {
     };
     let input = SuggestInput::new(
         "api_key=secret-value でPDFを確認".to_owned(),
-        std::path::PathBuf::from("api_key=secret-cwd"),
+        std::path::PathBuf::from("/tmp/api_key=secret-cwd/repo"),
     );
     let skills = vec![skill(
         root.path(),
@@ -692,24 +692,26 @@ async fn ranking_records_safe_receipts_and_uses_process_cache() {
     assert_eq!(first.decision, CandidateDecision::Selected);
     assert_eq!(second.decision, CandidateDecision::Selected);
     assert_eq!(second.metrics.cache_hit, Some(true));
+    assert_eq!(second.metrics.jev_response_ms, 0);
+    assert_eq!(second.metrics.relative_cost, Some(0.0));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(
-        states
-            .lock()
-            .expect("states lock")
-            .iter()
-            .all(|state| !state.contains("secret-value") && !state.contains("skill-secret"))
-    );
+    assert!(states.lock().expect("states lock").iter().all(|state| {
+        !state.contains("secret-value")
+            && !state.contains("secret-cwd")
+            && !state.contains("skill-secret")
+    }));
 
     let receipts = read_decision_receipts(&config.decision_receipt_path).expect("receipts");
     assert_eq!(receipts.len(), 2);
     assert!(receipts[1].cache_hit);
+    assert_eq!(receipts[1].relative_cost, Some(0.0));
     assert_eq!(receipts[0].relative_cost, Some(12.0));
     assert!(receipts[0].state_bytes > 0);
     assert_eq!(receipts[0].max_state_bytes, Some(32_000));
     assert_eq!(receipts[0].candidate_limit, Some(32));
     let json = std::fs::read_to_string(&config.decision_receipt_path).expect("receipt jsonl");
     assert!(!json.contains("secret-value"));
+    assert!(!json.contains("secret-cwd"));
     assert!(!json.contains("skill-secret"));
 }
 
@@ -751,6 +753,12 @@ async fn ranking_fails_closed_when_state_window_is_degraded() {
     assert!(
         matches!(byte_result, JevxError::InvalidInput(message) if message.contains("degraded"))
     );
+
+    let over_budget =
+        StatePlan::from_value(json!({"prompt":"oversized"}), 2, 1, Vec::new(), Vec::new())
+            .expect("state")
+            .with_budgets(1, 1);
+    assert!(over_budget.is_degraded());
 }
 
 #[test]
@@ -837,7 +845,7 @@ fn decision_stats_count_fallbacks_and_validate_receipt_schema() {
     assert_eq!(stats.fallback_rate, Some(0.8));
     assert_eq!(stats.cache_hits, 1);
     assert_eq!(stats.retries, 1);
-    assert_eq!(stats.average_relative_cost, Some(5.0));
+    assert_eq!(stats.average_relative_cost, Some(10.0 / 3.0));
     assert_eq!(stats.usage_events, 2);
 
     let mut invalid = serde_json::to_value(read_decision_receipts(&path).unwrap()[0].clone())
@@ -859,4 +867,102 @@ fn question_wire_shape_is_typed_and_serializable() {
     let value = serde_json::to_value(question).expect("question");
     assert_eq!(value["type"], "score");
     assert_eq!(value["criteria"][0], "low");
+}
+
+#[tokio::test]
+async fn baseline_receipts_are_generated_and_replayable() {
+    let contract = DecisionContract::choice(
+        "skill",
+        "skill-choice.v1",
+        BTreeMap::from([
+            ("none".to_owned(), "No candidate fits".to_owned()),
+            ("pdf".to_owned(), "PDF work".to_owned()),
+        ]),
+        0.60,
+        0.10,
+    );
+    let eval_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("evals");
+    let receipts = read_decision_receipts(&eval_dir.join("decision-contract-baseline.jsonl"))
+        .expect("baseline receipts");
+    let states = std::fs::read_to_string(eval_dir.join("decision-contract-baseline-state.jsonl"))
+        .expect("baseline states")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("state json"))
+        .collect::<Vec<_>>();
+    let answers = [
+        TypedAnswer::Choice {
+            choice: "pdf".to_owned(),
+            probabilities: BTreeMap::from([("none".to_owned(), 0.1), ("pdf".to_owned(), 0.9)]),
+            confidence: Some(0.9),
+        },
+        TypedAnswer::Choice {
+            choice: "none".to_owned(),
+            probabilities: BTreeMap::from([("none".to_owned(), 0.9), ("pdf".to_owned(), 0.1)]),
+            confidence: Some(0.9),
+        },
+    ];
+    let usages = [Some((10, 2)), None];
+    let latencies = [12, 8];
+    assert_eq!(receipts.len(), answers.len());
+    assert_eq!(states.len(), answers.len());
+    for ((receipt, state_spec), (answer, (usage, latency))) in receipts
+        .iter()
+        .zip(states)
+        .zip(answers.into_iter().zip(usages.into_iter().zip(latencies)))
+    {
+        let state = StatePlan::from_value(
+            state_spec["payload"].clone(),
+            state_spec["candidateCount"]
+                .as_u64()
+                .expect("candidate count") as usize,
+            state_spec["windowCount"].as_u64().expect("window count") as usize,
+            state_spec["omitted"]
+                .as_array()
+                .expect("omitted")
+                .iter()
+                .map(|value| value.as_str().expect("omitted value").to_owned())
+                .collect(),
+            state_spec["redactionReasons"]
+                .as_array()
+                .expect("redaction reasons")
+                .iter()
+                .map(|value| value.as_str().expect("redaction value").to_owned())
+                .collect(),
+        )
+        .expect("state")
+        .with_budgets(
+            state_spec["maxStateBytes"]
+                .as_u64()
+                .expect("state byte limit") as usize,
+            state_spec["candidateLimit"]
+                .as_u64()
+                .expect("candidate limit") as usize,
+        );
+        let execution = execute_contract(
+            &contract,
+            &state,
+            Some(&StubJudge {
+                response: DecisionResponse {
+                    answers: BTreeMap::from([("skill".to_owned(), answer)]),
+                    response_ms: latency,
+                    usage: usage.map(|(input_tokens, output_tokens)| Usage {
+                        input_tokens,
+                        output_tokens,
+                    }),
+                    calls: 1,
+                    retries: 0,
+                },
+            }),
+            &DecisionExecutionOptions::default(),
+        )
+        .await;
+        let generated = DecisionReceipt::from_execution(&contract, &state, &execution, 1.0, 1.0);
+        assert_eq!(
+            serde_json::to_value(receipt).expect("fixture receipt json"),
+            serde_json::to_value(&generated).expect("generated receipt json")
+        );
+        let replay = replay_receipt(receipt, &contract, &state).expect("baseline replay");
+        assert_eq!(replay.result, execution.result);
+        assert_eq!(replay.mode, DecisionMode::Replay);
+    }
 }

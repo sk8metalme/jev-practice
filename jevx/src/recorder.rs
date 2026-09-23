@@ -142,16 +142,20 @@ impl DecisionReceipt {
         let answer = result.answer.clone();
         let answer_digest = answer.as_ref().map(TypedAnswer::digest);
         let replay_id = replay_id(contract, state, answer_digest.as_deref());
-        let relative_cost = match (input_tokens, output_tokens) {
-            (Some(input), Some(output))
-                if input_weight.is_finite()
-                    && output_weight.is_finite()
-                    && input_weight >= 0.0
-                    && output_weight >= 0.0 =>
-            {
-                Some(input as f64 * input_weight + output as f64 * output_weight)
+        let relative_cost = if cache_hit {
+            Some(0.0)
+        } else {
+            match (input_tokens, output_tokens) {
+                (Some(input), Some(output))
+                    if input_weight.is_finite()
+                        && output_weight.is_finite()
+                        && input_weight >= 0.0
+                        && output_weight >= 0.0 =>
+                {
+                    Some(input as f64 * input_weight + output as f64 * output_weight)
+                }
+                _ => None,
             }
-            _ => None,
         };
         Self {
             schema_version: RECEIPT_SCHEMA_VERSION,
