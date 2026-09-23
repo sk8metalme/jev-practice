@@ -128,6 +128,7 @@ struct EvalRepeatArgs {
 enum HooksCommand {
     Shadow(HookShadowArgs),
     Install(HookInstallArgs),
+    Uninstall(HookUninstallArgs),
     CompactAssist(CompactAssistArgs),
     CompactEval(CompactEvalArgs),
     ConversationEval(ConversationEvalArgs),
@@ -156,6 +157,18 @@ enum HookScopeArg {
 
 #[derive(Debug, Args)]
 struct HookInstallArgs {
+    #[arg(long, value_enum, default_value = "user")]
+    scope: HookScopeArg,
+    #[arg(long, default_value = ".")]
+    repo: PathBuf,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct HookUninstallArgs {
     #[arg(long, value_enum, default_value = "user")]
     scope: HookScopeArg,
     #[arg(long, default_value = ".")]

@@ -874,3 +874,61 @@ fn error_run_path_is_represented_by_helper_codes() {
         2
     );
 }
+
+#[tokio::test]
+async fn hooks_uninstall_command_previews_then_removes_only_jevx_handlers() {
+    let root = tempdir().expect("tempdir");
+    let config = Config::for_test(root.path().join("data"));
+    let hooks_path = root.path().join(".codex/hooks.json");
+    run_hook_install(
+        HookInstallArgs {
+            scope: HookScopeArg::Project,
+            repo: root.path().to_path_buf(),
+            dry_run: false,
+            json: true,
+        },
+        &config,
+    )
+    .expect("install");
+    let installed = fs::read_to_string(&hooks_path).expect("installed");
+
+    let uninstall = |dry_run: bool, json: bool| HookUninstallArgs {
+        scope: HookScopeArg::Project,
+        repo: root.path().to_path_buf(),
+        dry_run,
+        json,
+    };
+    assert_eq!(
+        run_hook_uninstall(uninstall(true, true)).expect("preview"),
+        0
+    );
+    assert_eq!(fs::read_to_string(&hooks_path).expect("same"), installed);
+
+    assert_eq!(
+        run_inner_with_config(
+            Cli {
+                command: Command::Hooks {
+                    command: HooksCommand::Uninstall(uninstall(false, false)),
+                },
+            },
+            config.clone(),
+        )
+        .await
+        .expect("uninstall"),
+        0
+    );
+    let remaining: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&hooks_path).expect("after")).expect("json");
+    assert_eq!(remaining, serde_json::json!({"hooks": {}}));
+    assert!(hooks_path.with_file_name("hooks.json.jevx.bak").exists());
+
+    assert_eq!(
+        run_hook_uninstall(uninstall(false, false)).expect("no-op"),
+        0
+    );
+    fs::remove_file(&hooks_path).expect("remove");
+    assert_eq!(
+        run_hook_uninstall(uninstall(false, true)).expect("missing"),
+        0
+    );
+}

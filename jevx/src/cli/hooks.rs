@@ -6,7 +6,9 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use jevx::compact_assist::run_compact_assist;
-use jevx::hook_config::{HookInstallOptions, HookScope, install_hooks};
+use jevx::hook_config::{
+    HookInstallOptions, HookScope, HookUninstallOptions, install_hooks, uninstall_hooks,
+};
 use jevx::hooks::{
     analyze_hook_correlations, append_shadow_record, compact_evaluation,
     evaluate_conversation_compaction, load_conversation_cases, load_hook_records, run_shadow,
@@ -23,6 +25,7 @@ pub(super) async fn run_hooks_with_config(
     match command {
         HooksCommand::Shadow(args) => run_hook_shadow_with_config(args, config).await,
         HooksCommand::Install(args) => run_hook_install(args, &config),
+        HooksCommand::Uninstall(args) => run_hook_uninstall(args),
         HooksCommand::CompactAssist(args) => run_compact_assist_with_config(args, &config).await,
         HooksCommand::CompactEval(args) => run_compact_eval(args),
         HooksCommand::ConversationEval(args) => run_conversation_eval(args),
@@ -105,20 +108,51 @@ pub(super) fn resolve_hook_paths(
     Ok((home.unwrap_or_else(|| PathBuf::from(".")), codex_home))
 }
 
+fn env_path(key: &str) -> Option<PathBuf> {
+    env::var_os(key)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+pub(super) fn run_hook_uninstall(args: HookUninstallArgs) -> Result<i32, JevxError> {
+    let scope = hook_scope(args.scope);
+    let (home, codex_home) = resolve_hook_paths(scope, env_path("HOME"), env_path("CODEX_HOME"))?;
+    let report = uninstall_hooks(&HookUninstallOptions {
+        scope,
+        repo: args.repo,
+        home,
+        codex_home,
+        dry_run: args.dry_run,
+    })?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(0);
+    }
+    if !report.exists {
+        println!("No hook config at {}", report.path.display());
+        return Ok(0);
+    }
+    let verb = match (report.changed, report.dry_run) {
+        (false, _) => "No jevx hooks in",
+        (true, true) => "Would remove jevx hooks from",
+        (true, false) => "Removed jevx hooks from",
+    };
+    println!("{verb} {}", report.path.display());
+    println!("Removed handlers: {}", report.removed_handlers);
+    if let Some(backup) = report.backup_path {
+        println!("Backup: {}", backup.display());
+    }
+    Ok(0)
+}
+
 pub(super) fn run_hook_install(args: HookInstallArgs, config: &Config) -> Result<i32, JevxError> {
-    let home = env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
-    let codex_home = env::var_os("CODEX_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
     let data_home = config
         .telemetry_path
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
     let scope = hook_scope(args.scope);
-    let (home, codex_home) = resolve_hook_paths(scope, home, codex_home)?;
+    let (home, codex_home) = resolve_hook_paths(scope, env_path("HOME"), env_path("CODEX_HOME"))?;
     let report = install_hooks(&HookInstallOptions {
         scope,
         repo: args.repo,

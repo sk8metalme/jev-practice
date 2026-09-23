@@ -44,6 +44,31 @@ pub struct HookInstallReport {
     pub config: Value,
 }
 
+#[derive(Debug, Clone)]
+pub struct HookUninstallOptions {
+    pub scope: HookScope,
+    pub repo: PathBuf,
+    pub home: PathBuf,
+    pub codex_home: Option<PathBuf>,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HookUninstallReport {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u8,
+    pub path: PathBuf,
+    pub exists: bool,
+    pub changed: bool,
+    #[serde(rename = "dryRun")]
+    pub dry_run: bool,
+    #[serde(rename = "removedHandlers")]
+    pub removed_handlers: usize,
+    #[serde(rename = "backupPath", skip_serializing_if = "Option::is_none")]
+    pub backup_path: Option<PathBuf>,
+    pub config: Option<Value>,
+}
+
 pub fn hook_config_path(
     scope: HookScope,
     repo: &Path,
@@ -82,28 +107,11 @@ pub fn install_hooks(options: &HookInstallOptions) -> Result<HookInstallReport, 
         .as_ref()
         .map(|value| value != &config)
         .unwrap_or(true);
-    let mut backup_path = None;
-
-    if changed && !options.dry_run {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if path.exists() {
-            let backup = path.with_file_name(format!(
-                "{}.jevx.bak",
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("hooks.json")
-            ));
-            if !backup.exists() {
-                fs::copy(&path, &backup)?;
-                backup_path = Some(backup);
-            }
-        }
-        let mut content = serde_json::to_vec_pretty(&config)?;
-        content.push(b'\n');
-        fs::write(&path, content)?;
-    }
+    let backup_path = if changed && !options.dry_run {
+        write_with_backup(&path, &config)?
+    } else {
+        None
+    };
 
     Ok(HookInstallReport {
         path,
@@ -114,6 +122,109 @@ pub fn install_hooks(options: &HookInstallOptions) -> Result<HookInstallReport, 
         backup_path,
         config,
     })
+}
+
+/// Removes only the handlers that `install_hooks` manages and keeps every other hook.
+/// Groups and events that become empty because of the removal are dropped.
+pub fn uninstall_hooks(options: &HookUninstallOptions) -> Result<HookUninstallReport, JevxError> {
+    let path = hook_config_path(
+        options.scope,
+        &options.repo,
+        &options.home,
+        options.codex_home.as_deref(),
+    );
+    let mut report = HookUninstallReport {
+        schema_version: 1,
+        path,
+        exists: false,
+        changed: false,
+        dry_run: options.dry_run,
+        removed_handlers: 0,
+        backup_path: None,
+        config: None,
+    };
+    if !report.path.exists() {
+        return Ok(report);
+    }
+    report.exists = true;
+    let mut config = serde_json::from_str::<Value>(&fs::read_to_string(&report.path)?)?;
+    report.removed_handlers = strip_jevx_handlers(&mut config)?;
+    report.changed = report.removed_handlers > 0;
+    if report.changed && !options.dry_run {
+        report.backup_path = write_with_backup(&report.path, &config)?;
+    }
+    report.config = Some(config);
+    Ok(report)
+}
+
+fn strip_jevx_handlers(config: &mut Value) -> Result<usize, JevxError> {
+    let root = config
+        .as_object_mut()
+        .ok_or_else(|| JevxError::InvalidInput("hooks.json root must be an object".to_owned()))?;
+    let Some(hooks) = root.get_mut("hooks") else {
+        return Ok(0);
+    };
+    let hooks = hooks
+        .as_object_mut()
+        .ok_or_else(|| JevxError::InvalidInput("hooks must be an object".to_owned()))?;
+    let mut removed = 0;
+    let mut emptied_events = Vec::new();
+    for (event, groups) in hooks.iter_mut() {
+        let groups = groups
+            .as_array_mut()
+            .ok_or_else(|| JevxError::InvalidInput(format!("hooks.{event} must be an array")))?;
+        let mut removed_in_event = 0;
+        groups.retain_mut(|group| {
+            let count = count_jevx_handlers(group);
+            removed_in_event += count;
+            !(count > 0 && remove_jevx_handlers(group))
+        });
+        removed += removed_in_event;
+        if removed_in_event > 0 && groups.is_empty() {
+            emptied_events.push(event.clone());
+        }
+    }
+    for event in emptied_events {
+        hooks.remove(&event);
+    }
+    Ok(removed)
+}
+
+fn count_jevx_handlers(group: &Value) -> usize {
+    group
+        .get("hooks")
+        .and_then(Value::as_array)
+        .map(|handlers| {
+            handlers
+                .iter()
+                .filter(|handler| is_jevx_handler(handler))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Writes the config and keeps the first pre-jevx copy as `<name>.jevx.bak`.
+fn write_with_backup(path: &Path, config: &Value) -> Result<Option<PathBuf>, JevxError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut backup_path = None;
+    if path.exists() {
+        let backup = path.with_file_name(format!(
+            "{}.jevx.bak",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("hooks.json")
+        ));
+        if !backup.exists() {
+            fs::copy(path, &backup)?;
+            backup_path = Some(backup);
+        }
+    }
+    let mut content = serde_json::to_vec_pretty(config)?;
+    content.push(b'\n');
+    fs::write(path, content)?;
+    Ok(backup_path)
 }
 
 fn generated_config(executable: &Path, records_path: &Path, state_dir: &Path) -> Value {
@@ -360,5 +471,108 @@ mod tests {
         assert!(!remove_jevx_handlers(&mut not_a_group));
         let mut no_hooks = json!({"matcher":"startup"});
         assert!(!remove_jevx_handlers(&mut no_hooks));
+    }
+
+    fn uninstall_options(root: &Path, dry_run: bool) -> HookUninstallOptions {
+        HookUninstallOptions {
+            scope: HookScope::Project,
+            repo: root.to_path_buf(),
+            home: root.join("home"),
+            codex_home: None,
+            dry_run,
+        }
+    }
+
+    #[test]
+    fn uninstall_removes_only_jevx_handlers_and_keeps_custom_hooks() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join(".codex/hooks.json");
+        fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        let existing = json!({
+            "custom": true,
+            "hooks": {
+                "UserPromptSubmit": [
+                    {"hooks": [
+                        {"type":"command","command":"custom"},
+                        {"type":"command","command":"'/bin/jevx' hooks shadow --output '/log' --jevx-managed"}
+                    ]}
+                ],
+                "PreCompact": [
+                    {"matcher":"manual|auto","hooks": [
+                        {"type":"command","command":"'/bin/jevx' hooks compact-assist --state-dir '/s' --jevx-managed"}
+                    ]}
+                ],
+                "Stop": [{"hooks": [{"type":"command","command":"notify"}]}]
+            }
+        });
+        fs::write(&path, serde_json::to_vec_pretty(&existing).expect("json")).expect("write");
+
+        let preview = uninstall_hooks(&uninstall_options(root.path(), true)).expect("dry run");
+        assert!(preview.dry_run);
+        assert!(preview.changed);
+        assert_eq!(preview.removed_handlers, 2);
+        assert!(preview.backup_path.is_none());
+        let untouched: Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
+        assert_eq!(untouched, existing, "dry run must not write");
+
+        let report = uninstall_hooks(&uninstall_options(root.path(), false)).expect("uninstall");
+        assert!(report.changed);
+        assert_eq!(report.removed_handlers, 2);
+        assert_eq!(
+            report.backup_path.as_deref(),
+            Some(path.with_file_name("hooks.json.jevx.bak").as_path())
+        );
+        let written: Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
+        assert_eq!(written["custom"], true);
+        assert_eq!(
+            written["hooks"]["UserPromptSubmit"],
+            json!([{"hooks": [{"type":"command","command":"custom"}]}])
+        );
+        assert!(written["hooks"].get("PreCompact").is_none());
+        assert_eq!(written["hooks"]["Stop"], existing["hooks"]["Stop"]);
+
+        let again = uninstall_hooks(&uninstall_options(root.path(), false)).expect("idempotent");
+        assert!(!again.changed);
+        assert_eq!(again.removed_handlers, 0);
+    }
+
+    #[test]
+    fn uninstall_round_trips_install_and_handles_missing_or_invalid_config() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let missing = uninstall_hooks(&uninstall_options(root.path(), false)).expect("missing");
+        assert!(!missing.exists);
+        assert!(!missing.changed);
+        assert!(missing.config.is_none());
+
+        install_hooks(&HookInstallOptions {
+            scope: HookScope::Project,
+            repo: root.path().to_path_buf(),
+            home: root.path().join("home"),
+            codex_home: None,
+            executable: PathBuf::from("/bin/jevx"),
+            records_path: root.path().join("data/hooks.jsonl"),
+            state_dir: root.path().join("data/compaction"),
+            dry_run: false,
+        })
+        .expect("install");
+        let report = uninstall_hooks(&uninstall_options(root.path(), false)).expect("uninstall");
+        assert!(report.exists);
+        assert_eq!(report.removed_handlers, 4);
+        assert_eq!(report.config, Some(json!({"hooks": {}})));
+
+        fs::write(&report.path, r#"{"hooks": []}"#).expect("invalid");
+        let error = uninstall_hooks(&uninstall_options(root.path(), false)).expect_err("invalid");
+        assert!(error.to_string().contains("hooks must be an object"));
+        fs::write(&report.path, r#"[]"#).expect("invalid root");
+        let error = uninstall_hooks(&uninstall_options(root.path(), false)).expect_err("root");
+        assert!(error.to_string().contains("root must be an object"));
+        fs::write(&report.path, r#"{"hooks": {"Stop": {}}}"#).expect("invalid event");
+        let error = uninstall_hooks(&uninstall_options(root.path(), false)).expect_err("event");
+        assert!(error.to_string().contains("must be an array"));
+        fs::write(&report.path, r#"{"other": 1}"#).expect("no hooks");
+        let none = uninstall_hooks(&uninstall_options(root.path(), false)).expect("no hooks");
+        assert!(!none.changed);
     }
 }
