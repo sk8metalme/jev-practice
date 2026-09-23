@@ -164,20 +164,17 @@ Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許�
 
 これは固定fixtureの観測であり、利用者入力への精度・性能保証ではない。Jevの外部通信・Token使用量・Gatewayエラーを導入判断のコストとして同時に扱う。
 
-## Current / Latest baseline（2026-09-22）
+## Current / Latest baseline（2026-09-23）
 
-現行コードの外部送信なし確認は、`JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- eval --fixtures jevx/evals/skill-selection.jsonl --skill-dir jevx/evals/skills --dry-run --json` を正本とする。2026-09-22の確認では、`local_keyword` の正解率は87.5%、`local_rank` は17.5%、`none`は10.0%、Jevモードは`not_run`だった。
+現行コードの外部送信なし確認は、`JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- eval --fixtures jevx/evals/skill-selection.jsonl --skill-dir jevx/evals/skills --dry-run --json` を正本とする。評価カタログは `--skill-dir` だけで、project・HOME・CODEX_HOMEのSkillは混ざらない。2026-09-23の確認では、`local_keyword` の正解率は100.0%、`local_rank` は20.0%、`none`は10.0%、Jevモードは`not_run`だった。
 
 | 項目 | 値 |
 | --- | --- |
-| 実行日時 | `2026-09-22T15:00:42+09:00` |
-| 測定時の実装・fixture commit（docs同期前） | `ed0b93c023251400bcbbe2de8cdedd5451f08761` |
+| 実行日時 | `2026-09-23T20:48:29+09:00` |
+| 測定時の実装・fixture commit | `1899a02be3f6b98fc98ba930efd35e0bf7b65fe5` |
 | fixture SHA-256 | `a450a48fac7b49b544002f8c539b961fef0352951cde950f692768b4ea0748fb` |
-| Rust / Cargo | `rustc 1.98.1 (48a229cea 2026-09-01)` / `cargo 1.98.1 (797e8a9bc 2026-08-05)` |
-| OS | macOS 26.6.2（build 25G83） |
-| 依存条件 | APIキーなし、`JEVX_TELEMETRY=off`、外部Gateway呼び出しなし。fixture 9件に既定rootsを加えた有効候補14件 |
 
-evalの既定カタログは project `.agents/skills` / `.codex/skills`、`HOME/.agents/skills`、`CODEX_HOME/skills`、指定 `--skill-dir` の合成であり、`--skill-dir`だけでは隔離にならない。Latest値を再現する場合は記録時と同じrootsを保ち、fixture-only検証では一時HOME・CODEX_HOME・空のproject rootを用意して評価fixtureの `--skill-dir` を絶対パスで指定する（隔離時の値はLatestと異なり得る）。fixtureや実装が変わる場合は、このコマンドと条件を再実行して値を更新する。
+2026-09-22に記録した値（`local_keyword` 87.5%、`local_rank` 17.5%）は、既定のSkill rootが評価カタログに混ざった環境依存の値だったため、Historicalとして扱う。
 
 ## 評価方法
 

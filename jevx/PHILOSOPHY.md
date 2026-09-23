@@ -32,7 +32,7 @@ Codex CLIのSkillが増えると、依頼ごとに「どのSkillを使うべき�
 - **Jevの確信度で権限を与えない（auto-allowしない）。** 権限Hookを研究する場合も、脅威モデルとfail-closedの検証が済むまで `ask` / `defer` に流す。
 - **会話の要約・書き換え・公式Compactionの代替はしない。** `compact-assist` は、利用者が書いたredacted manifestとcheckpoint metadataを返すだけ。
 - **会話全文・Skill本文・Tool結果・APIキーをJevへ送らない。** 送るのはredactしたprompt、作業ディレクトリ、候補のID・名前・説明だけ。
-- **設定オプションを増やさない。** 既存の環境変数は逃げ道として維持し、新しい要望は既定値の改善で解く。
+- **設定オプションを増やさない。** 閾値3つ（`JEVX_MIN_PROBABILITY` / `JEVX_MIN_MARGIN` / `JEVX_MAX_CANDIDATES`）の上書きを最後の逃げ道として置き、これ以上は増やさない。新しい要望は既定値の改善で解く。
 - **クロスプラットフォーム対応を約束しない。** macOS以外で動いた報告は歓迎するが、サポート対象にはしない。
 
 同じ種類の要望を3回見送ったら、理由と代替手段をここへ追記する。
@@ -45,7 +45,7 @@ Codex CLIのSkillが増えると、依頼ごとに「どのSkillを使うべき�
 - `--json` 出力のキーと、その `schemaVersion`
 - 終了コード（`0` 成功、`2` 入力・設定・APIキーの問題、`3` Gatewayのtimeout・応答エラー）
 - `$JEVX_HOME/events.jsonl` などのローカルデータのschema（`schemaVersion` 付き）
-- `hooks.json` に書くhandlerの `--jevx-managed` マーカー（`hooks uninstall` がこれで判別する）
+- `hooks.json` に書くhandlerの形（`--jevx-managed` マーカー付きのcommand。`hooks install` / `uninstall` は、マーカー付き、または `jevx` バイナリの `hooks shadow` / `hooks compact-assist` を呼ぶcommandをjevxのものとして扱う）
 
 約束の仕方:
 

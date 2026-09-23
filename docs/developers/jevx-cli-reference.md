@@ -91,7 +91,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- doctor --json
 
 ### Skillを一覧表示する
 
-探索の優先順位は、プロジェクトの `.agents/skills`、`.codex/skills`、ユーザーの `~/.agents/skills`、`$CODEX_HOME/skills`（`CODEX_HOME`未設定時は`~/.codex/skills`）、`--skill-dir` の順だよ。同じ名前のSkillは、優先順位が高いルートを採用する。`--skill-dir` は既定rootsの置換ではなく追加なので、評価では一時HOME・CODEX_HOME・空のproject rootを使ってカタログを隔離する。
+探索の優先順位は、プロジェクトの `.agents/skills`、`.codex/skills`、ユーザーの `~/.agents/skills`、`$CODEX_HOME/skills`（`CODEX_HOME`未設定時は`~/.codex/skills`）、`--skill-dir` の順だよ。同じ名前のSkillは、優先順位が高いルートを採用する。`skills list` / `skills suggest` / `hooks shadow` の `--skill-dir` は既定rootsへの追加。`eval` / `eval-repeat` だけは `--skill-dir` のカタログしか使わない（評価の再現性のため）。
 
 ```bash
 cargo run --locked --manifest-path jevx/Cargo.toml -- \
@@ -417,7 +417,7 @@ jevx hooks uninstall --scope user
 jevx hooks uninstall --scope project --repo "$PWD"
 ```
 
-初回の変更時は、installと同じ `hooks.json.jevx.bak` にbackupを残す（すでにあれば上書きしない）。`hooks.json` がない場合や、jevxのhandlerがない場合は何も変更せずに終了する。
+uninstallはbackupを作らない。取り除くのはjevxのhandlerだけで、jevx入りの設定をbackupにすると、そこから戻したときにHookが復活してしまうため。installが最初に残した `hooks.json.jevx.bak` はそのまま残る。`hooks.json` がない場合や、jevxのhandlerがない場合は何も変更せずに終了する。
 
 ### Codex側の接続イメージ
 
@@ -583,16 +583,18 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 レポートでは正解率・`none` recall（互換キー `nonePrecision`）・候補miss・fallback率・cache hit率・retry率・エラー率と、`discoveryMs`・`jevResponseMs`・`totalMs`・相対costの mean / p50 / p95 などを分けて確認できる。単回`eval --output`のcase JSONLには`id`・`kind`・`expected`・判定・metrics・error codeを保存し、prompt本文・fixtureの`keywords`・Jev response本文を保存しない。`eval-repeat --output`はcase JSONLではなくrun/mode集計だけを保存する。
 
-### Current / Latest baseline（2026-09-22）
+### Current / Latest baseline（2026-09-23）
 
-`JEVX_TELEMETRY=off` の外部送信なし確認では、`none` 10.0%、`local_keyword` 87.5%、`local_rank` 17.5%、`jevx` は `not_run` だった。`nonePrecision` は `expectedNone` 分母の recall（`noneCorrect / expectedNone`）。測定時の実装・fixture commitは `ed0b93c023251400bcbbe2de8cdedd5451f08761`（docs同期前）、fixture SHA-256 `a450a48fac7b49b544002f8c539b961fef0352951cde950f692768b4ea0748fb`、`rustc/cargo 1.98.1`、macOS 26.6.2（build 25G83）、APIキーなし、fixture9件 + 既定rootsの有効候補14件。実行日時 `2026-09-22T15:00:42+09:00` と環境依存性をレポートへ併記する。隔離rootのfixture-only実行では値が変わるため、Latest値と混ぜない。
+`JEVX_TELEMETRY=off` の外部送信なし確認（`eval --dry-run --json`）の結果。測定時の実装 commit `1899a02be3f6b98fc98ba930efd35e0bf7b65fe5`、fixture SHA-256 `a450a48fac7b49b544002f8c539b961fef0352951cde950f692768b4ea0748fb`、`rustc/cargo 1.98.1`、macOS 26.6.2（build 25G83）、APIキーなし、カタログは `jevx/evals/skills` の9件だけ。実行日時 `2026-09-23T20:48:29+09:00`。
 
-| モード | cases | accuracy | none recall（互換キー `nonePrecision`） | 外部通信 |
+| モード | cases | accuracy | `noneRecall`（互換キー `nonePrecision`） | 外部通信 |
 | --- | ---: | ---: | ---: | --- |
 | `none` | 40 | 10.0% | 100.0%（4/4） | なし |
-| `local_keyword` | 40 | 87.5% | 75.0%（3/4） | なし |
-| `local_rank` | 40 | 17.5% | 75.0%（3/4） | なし |
+| `local_keyword` | 40 | 100.0% | 100.0%（4/4） | なし |
+| `local_rank` | 40 | 20.0% | 75.0%（3/4） | なし |
 | `jevx` | 0 | — | — | `not_run` |
+
+2026-09-22に記録した値（`local_keyword` 87.5%、`local_rank` 17.5%）は、既定のproject・HOME・CODEX_HOMEのSkill rootが評価カタログに混ざった環境依存の値だった。現行の `eval` は `--skill-dir` だけを使うため、その値はHistoricalとして扱う。
 
 ### Historical snapshot（2026-09-21、APIキーあり）
 

@@ -73,7 +73,7 @@ APIキーがなくても、`jevx skills list`、`jevx doctor`、`jevx eval --dry
 
 ## データはどこにあり、どう持ち出すか
 
-- ローカルに書くのは `$JEVX_HOME`（既定 `~/.jevx`）の下だけです。`jevx data path` で一覧、`jevx data export` で書き出し、`jevx data purge --yes` で削除できます。
+- jevxが自動で書くデータは `$JEVX_HOME`（既定 `~/.jevx`）の下だけです。`jevx data path` で一覧、`jevx data export` で書き出し、`jevx data purge --yes` で削除できます。例外は、利用者が明示したファイル（`hooks install` / `uninstall` が変更するCodexの `hooks.json`、`--output` で指定したレポート）です。
 - Telemetryにはprompt本文・APIキー・Jevの確率を保存しません。止めるときは `JEVX_TELEMETRY=off`。
 - Jevへ送るのは、redactしたprompt、作業ディレクトリ、候補SkillのID・名前・説明だけです。Skill本文、会話全文、Tool結果は送りません。
 - Hookを入れたら `jevx hooks uninstall` で戻せます。jevxのhandlerだけを取り除き、ほかのHookは残します。

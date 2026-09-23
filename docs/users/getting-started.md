@@ -228,26 +228,26 @@ Skill選択の評価計画と、入力・出力スキーマの詳細は[jevx評�
 
 ## 現行baseline（Latest）
 
-次の値は、外部送信なしの `eval --dry-run --json` を2026-09-22に実行した現行baselineです。`nonePrecision` は上記のとおり `expectedNone` 分母の recall であり、通常の「noneを予測した全件を分母にするprecision」ではありません。
+次の値は、外部送信なしの `eval --dry-run --json` を2026-09-23に実行した現行baselineです。`noneRecall`（互換キー `nonePrecision`）は `expectedNone` 分母の recall であり、通常の「noneを予測した全件を分母にするprecision」ではありません。
 
 | 項目 | 値 |
 | --- | --- |
-| 実行日時 | `2026-09-22T15:00:42+09:00` |
-| commit | `ed0b93c023251400bcbbe2de8cdedd5451f08761` |
+| 実行日時 | `2026-09-23T20:48:29+09:00` |
+| commit | `1899a02be3f6b98fc98ba930efd35e0bf7b65fe5` |
 | fixture SHA-256 | `a450a48fac7b49b544002f8c539b961fef0352951cde950f692768b4ea0748fb` |
 | Rust / Cargo | `rustc 1.98.1 (48a229cea 2026-09-01)` / `cargo 1.98.1 (797e8a9bc 2026-08-05)` |
 | OS | macOS 26.6.2（build 25G83） |
-| 実行条件 | `JEVX_TELEMETRY=off`、APIキーなし、fixture 9 Skill + 既定roots（有効候補14）、外部Gateway呼び出しなし |
-| カタログ条件 | 評価用 `--skill-dir jevx/evals/skills` を指定。Latest値の再現は同じHOME/CODEX_HOME/project roots、fixture-only再現は隔離root |
+| 実行条件 | `JEVX_TELEMETRY=off`、APIキーなし、外部Gateway呼び出しなし |
+| カタログ条件 | `--skill-dir jevx/evals/skills` の9 Skillだけ。project・HOME・CODEX_HOMEのSkillは評価に混ざらない |
 
-| 方式 | cases | 正解率 | `nonePrecision`（`expectedNone` 分母の recall） | 外部通信 |
+| 方式 | cases | 正解率 | `noneRecall`（`expectedNone` 分母の recall） | 外部通信 |
 | --- | ---: | ---: | ---: | --- |
 | `none` | 40 | 10.0% | 100.0%（4/4） | なし |
-| `local_keyword` | 40 | 87.5% | 75.0%（3/4） | なし |
-| `local_rank` | 40 | 17.5% | 75.0%（3/4） | なし |
+| `local_keyword` | 40 | 100.0% | 100.0%（4/4） | なし |
+| `local_rank` | 40 | 20.0% | 75.0%（3/4） | なし |
 | `jevx` | 0 | — | — | `not_run`（dry-run） |
 
-再現コマンドは次のとおりです。
+再現コマンドは次のとおりです（リポジトリのルートで実行）。
 
 ```bash
 JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- \
@@ -257,7 +257,7 @@ JEVX_TELEMETRY=off cargo run --locked --manifest-path jevx/Cargo.toml -- \
   --dry-run --json
 ```
 
-このLatest baselineは実行時のSkillカタログ、OS、Rust/Cargo、fixture、環境変数に依存します。とくにevalはproject `.agents/skills` / `.codex/skills`、`HOME/.agents/skills`、`CODEX_HOME/skills`も探索するため、Latest値を再現するには記録時と同じrootsを保持してください。一時HOME・CODEX_HOME・空のproject rootと明示したfixture Skill rootは、fixture-onlyの隔離再現に使います（値はLatestと異なり得ます）。手順は[評価計画](../developers/jevx-evaluation.md)にあります。
+`local_keyword` の100%は、fixtureと同梱の9 Skillだけを相手にした値です。実際のSkillカタログや依頼文での精度を保証するものではありません。2026-09-22に記録していた値（`local_keyword` 87.5%、`local_rank` 17.5%）は、当時の `eval` が作業ディレクトリやHOMEのSkillも評価カタログに混ぜていたための環境依存の値で、現在はHistoricalとして扱います。手順の詳細は[評価計画](../developers/jevx-evaluation.md)にあります。
 
 ## Historical snapshot（2026-09-21）
 
