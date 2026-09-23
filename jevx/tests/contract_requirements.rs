@@ -227,7 +227,29 @@ fn eval_dry_run_contract_keeps_none_precision_alias_and_adds_none_recall() {
             catalog.to_str().expect("utf8"),
         ],
     );
-    assert_eq!(report["modes"], isolated["modes"]);
+    // Compare decision quality only; latency fields differ between runs.
+    let quality = |report: &Value| {
+        report["modes"]
+            .as_object()
+            .expect("modes")
+            .iter()
+            .map(|(mode, summary)| {
+                let fields = [
+                    "cases",
+                    "correct",
+                    "accuracy",
+                    "expectedNone",
+                    "noneCorrect",
+                    "noneRecall",
+                    "candidateMisses",
+                    "errors",
+                ];
+                let picked: Vec<Value> = fields.iter().map(|key| summary[*key].clone()).collect();
+                (mode.clone(), picked)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(quality(&report), quality(&isolated));
 }
 
 #[test]
