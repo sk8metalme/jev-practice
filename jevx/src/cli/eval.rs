@@ -1,7 +1,7 @@
 //! `jevx eval` / `jevx eval-repeat`: Skill選択の評価Runner。
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use jevx::evaluation::{
     EvaluationReport, evaluate, evaluate_repeated, load_fixtures, write_case_results,
@@ -11,6 +11,25 @@ use jevx::{Config, GatewayJudge, JevxError, discover_skill_roots};
 
 use super::*;
 
+/// 既定のfixtureはリポジトリ相対なので、見つからないときは黙って空評価にせず指定方法を示す。
+pub(super) fn require_eval_inputs(
+    fixtures: &Path,
+    skill_dirs: &[PathBuf],
+) -> Result<(), JevxError> {
+    let missing: Vec<String> = std::iter::once(fixtures)
+        .chain(skill_dirs.iter().map(PathBuf::as_path))
+        .filter(|path| !path.exists())
+        .map(|path| path.display().to_string())
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(JevxError::InvalidInput(format!(
+        "evaluation inputs not found: {}. Run from the repository root, or pass --fixtures <FILE> and --skill-dir <DIR>",
+        missing.join(", ")
+    )))
+}
+
 pub(super) async fn run_eval_with_config(
     mut args: EvalArgs,
     mut config: Config,
@@ -19,6 +38,7 @@ pub(super) async fn run_eval_with_config(
         .cwd
         .take()
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    require_eval_inputs(&args.fixtures, &args.skill_dirs)?;
     let fixtures = load_fixtures(&args.fixtures)?;
     let skills = discover_skill_roots(&skill_roots(&cwd, &args.skill_dirs))?;
     config.telemetry_enabled = false;
@@ -48,6 +68,7 @@ pub(super) async fn run_eval_repeat_with_config(
         .cwd
         .take()
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    require_eval_inputs(&args.fixtures, &args.skill_dirs)?;
     let fixtures = load_fixtures(&args.fixtures)?;
     let skills = discover_skill_roots(&skill_roots(&cwd, &args.skill_dirs))?;
     config.telemetry_enabled = false;
@@ -73,11 +94,11 @@ pub(super) fn print_evaluation_human(report: &EvaluationReport) {
     println!("Cases: {}", report.case_count);
     for (mode, summary) in &report.modes {
         println!(
-            "{mode}: status={} cases={} accuracy={} nonePrecision={} errorRate={} fallbackRate={} cacheHitRate={} retryRate={}",
+            "{mode}: status={} cases={} accuracy={} noneRecall={} errorRate={} fallbackRate={} cacheHitRate={} retryRate={}",
             summary.status,
             summary.cases,
             format_ratio(summary.accuracy),
-            format_ratio(summary.none_precision),
+            format_ratio(summary.none_recall),
             format_ratio(summary.error_rate),
             format_ratio(summary.fallback_rate),
             format_ratio(summary.cache_hit_rate),

@@ -272,6 +272,7 @@ async fn eval_covers_live_error_output_file_and_human_metrics() {
             expected_none: 0,
             none_correct: 0,
             none_precision: None,
+            none_recall: None,
             candidate_misses: 0,
             candidate_miss_rate: Some(0.0),
             errors: 0,
@@ -589,6 +590,7 @@ async fn repeat_and_hook_commands_write_safe_reports() {
             cases_per_run: 1,
             accuracy: p95.clone(),
             none_precision: p95.clone(),
+            none_recall: p95.clone(),
             candidate_miss_rate: p95.clone(),
             error_rate: p95.clone(),
             fallback_rate: p95.clone(),
@@ -902,6 +904,10 @@ async fn hooks_uninstall_command_previews_then_removes_only_jevx_handlers() {
         run_hook_uninstall(uninstall(true, true)).expect("preview"),
         0
     );
+    assert_eq!(
+        run_hook_uninstall(uninstall(true, false)).expect("human preview"),
+        0
+    );
     assert_eq!(fs::read_to_string(&hooks_path).expect("same"), installed);
 
     assert_eq!(
@@ -929,6 +935,10 @@ async fn hooks_uninstall_command_previews_then_removes_only_jevx_handlers() {
     fs::remove_file(&hooks_path).expect("remove");
     assert_eq!(
         run_hook_uninstall(uninstall(false, true)).expect("missing"),
+        0
+    );
+    assert_eq!(
+        run_hook_uninstall(uninstall(false, false)).expect("missing human"),
         0
     );
 }
@@ -1077,4 +1087,12 @@ fn doctor_command_prints_json_and_human_reports() {
     let human = doctor_human_output(&doctor_report(&config, &doctor_env(root.path())));
     assert!(human.contains("Next steps:"));
     assert!(human.contains("Thresholds: minProbability=0.6"));
+
+    let mut warned = config.clone();
+    warned.warnings = vec!["JEVX_MIN_MARGIN must be between 0 and 1".to_owned()];
+    let mut report = doctor_report(&warned, &doctor_env(root.path()));
+    report["endpoint"] = serde_json::json!(null);
+    let human = doctor_human_output(&report);
+    assert!(human.contains("Warning: JEVX_MIN_MARGIN"));
+    assert!(human.contains("Endpoint: null"));
 }
