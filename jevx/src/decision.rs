@@ -928,6 +928,13 @@ pub struct DecisionExecution {
     pub(crate) error_message: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ExecutionMetrics {
+    response_ms: u64,
+    calls: u32,
+    retries: u32,
+}
+
 pub async fn execute_contract(
     contract: &DecisionContract,
     state: &StatePlan,
@@ -1026,22 +1033,49 @@ pub async fn execute_contract(
             }
         }
         Err(error) => {
-            let (failure, code) = match &error {
-                JevxError::MissingApiKey => (DecisionFailure::MissingApiKey, "missing_api_key"),
-                JevxError::Timeout => (DecisionFailure::Timeout, "timeout"),
-                JevxError::Provider(_) => (DecisionFailure::Provider, "provider_error"),
-                JevxError::InvalidInput(_) | JevxError::Json(_) | JevxError::Yaml(_) => {
-                    (DecisionFailure::StateDegraded, "invalid_input")
+            let (failure, code, metrics) = match &error {
+                JevxError::MissingApiKey => {
+                    (DecisionFailure::MissingApiKey, "missing_api_key", None)
                 }
-                JevxError::Io(_) => (DecisionFailure::Provider, "io_error"),
+                JevxError::Timeout => (DecisionFailure::Timeout, "timeout", None),
+                JevxError::Provider(_) => (DecisionFailure::Provider, "provider_error", None),
+                JevxError::ProviderWithMetrics {
+                    calls,
+                    retries,
+                    response_ms,
+                    ..
+                } => (
+                    DecisionFailure::Provider,
+                    "provider_error",
+                    Some(ExecutionMetrics {
+                        response_ms: *response_ms,
+                        calls: *calls,
+                        retries: *retries,
+                    }),
+                ),
+                JevxError::InvalidInput(_) | JevxError::Json(_) | JevxError::Yaml(_) => {
+                    (DecisionFailure::StateDegraded, "invalid_input", None)
+                }
+                JevxError::Io(_) => (DecisionFailure::Provider, "io_error", None),
             };
-            DecisionExecution::failed(
-                contract,
-                options.mode,
-                failure,
-                Some(code),
-                Some(error.to_string()),
-            )
+            if let Some(metrics) = metrics {
+                DecisionExecution::failed_with_metrics(
+                    contract,
+                    options.mode,
+                    failure,
+                    Some(code),
+                    Some(error.to_string()),
+                    metrics,
+                )
+            } else {
+                DecisionExecution::failed(
+                    contract,
+                    options.mode,
+                    failure,
+                    Some(code),
+                    Some(error.to_string()),
+                )
+            }
         }
     }
 }
@@ -1081,13 +1115,31 @@ impl DecisionExecution {
         error_code: Option<&str>,
         error_message: Option<String>,
     ) -> Self {
+        Self::failed_with_metrics(
+            contract,
+            mode,
+            failure,
+            error_code,
+            error_message,
+            ExecutionMetrics::default(),
+        )
+    }
+
+    fn failed_with_metrics(
+        contract: &DecisionContract,
+        mode: DecisionMode,
+        failure: DecisionFailure,
+        error_code: Option<&str>,
+        error_message: Option<String>,
+        metrics: ExecutionMetrics,
+    ) -> Self {
         Self {
             result: contract.failure(failure),
             mode,
-            response_ms: 0,
+            response_ms: metrics.response_ms,
             usage: None,
-            calls: 0,
-            retries: 0,
+            calls: metrics.calls,
+            retries: metrics.retries,
             cache_hit: false,
             error_code: error_code.map(str::to_owned),
             error_message,

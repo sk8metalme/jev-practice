@@ -73,10 +73,13 @@ impl GatewayJudge {
                 }
             };
             let status = response.status();
-            let text = response
-                .text()
-                .await
-                .map_err(|_| JevxError::Provider("Jevの応答を読み取れませんでした。".to_owned()))?;
+            let text = response.text().await.map_err(|_| {
+                provider_failure(
+                    "Jevの応答を読み取れませんでした。".to_owned(),
+                    &started,
+                    attempts,
+                )
+            })?;
 
             if is_retryable(status) && (attempts as usize) <= self.max_retries {
                 let backoff = self
@@ -85,15 +88,20 @@ impl GatewayJudge {
                 sleep(backoff).await;
                 continue;
             }
-            let payload: GatewayPayload = serde_json::from_str(&text)
-                .map_err(|_| JevxError::Provider("Jevの応答を読み取れませんでした。".to_owned()))?;
+            let payload: GatewayPayload = serde_json::from_str(&text).map_err(|_| {
+                provider_failure(
+                    "Jevの応答を読み取れませんでした。".to_owned(),
+                    &started,
+                    attempts,
+                )
+            })?;
             if !status.is_success() {
                 let message = payload
                     .error
                     .and_then(|error| error.message)
                     .map(|message| redact(&message))
                     .unwrap_or_else(|| "Jevの評価に失敗しました。".to_owned());
-                return Err(JevxError::Provider(message));
+                return Err(provider_failure(message, &started, attempts));
             }
 
             let raw_answers = payload.answers.unwrap_or_default();
@@ -102,7 +110,9 @@ impl GatewayJudge {
                 if let Some(raw_answer) = raw_answers.get(question_id) {
                     answers.insert(
                         question_id.clone(),
-                        parse_typed_answer(question, raw_answer)?,
+                        parse_typed_answer(question, raw_answer).map_err(|error| {
+                            provider_failure(error.to_string(), &started, attempts)
+                        })?,
                     );
                 }
             }
@@ -210,15 +220,7 @@ fn parse_typed_answer(question: &QuestionSpec, value: &Value) -> Result<TypedAns
                 .and_then(Value::as_str)
                 .ok_or_else(|| JevxError::Provider("Jevのchoice回答が不正です。".to_owned()))?
                 .to_owned();
-            let probabilities = value
-                .get("probabilities")
-                .and_then(Value::as_object)
-                .ok_or_else(|| {
-                    JevxError::Provider("Jevのprobabilities回答が不正です。".to_owned())
-                })?
-                .iter()
-                .filter_map(|(key, value)| value.as_f64().map(|value| (key.clone(), value)))
-                .collect::<BTreeMap<_, _>>();
+            let probabilities = parse_probabilities(value)?;
             Ok(TypedAnswer::Choice {
                 choice,
                 probabilities,
@@ -230,15 +232,7 @@ fn parse_typed_answer(question: &QuestionSpec, value: &Value) -> Result<TypedAns
                 .get("score")
                 .and_then(Value::as_f64)
                 .ok_or_else(|| JevxError::Provider("Jevのscore回答が不正です。".to_owned()))?;
-            let probabilities = value
-                .get("probabilities")
-                .and_then(Value::as_object)
-                .ok_or_else(|| {
-                    JevxError::Provider("Jevのprobabilities回答が不正です。".to_owned())
-                })?
-                .iter()
-                .filter_map(|(key, value)| value.as_f64().map(|value| (key.clone(), value)))
-                .collect::<BTreeMap<_, _>>();
+            let probabilities = parse_probabilities(value)?;
             let confidence = value
                 .get("confidence")
                 .and_then(Value::as_f64)
@@ -256,6 +250,30 @@ fn parse_typed_answer(question: &QuestionSpec, value: &Value) -> Result<TypedAns
                 .ok_or_else(|| JevxError::Provider("Jevのnoul回答が不正です。".to_owned()))?;
             Ok(TypedAnswer::Predicate { noul })
         }
+    }
+}
+
+fn parse_probabilities(value: &Value) -> Result<BTreeMap<String, f64>, JevxError> {
+    value
+        .get("probabilities")
+        .and_then(Value::as_object)
+        .ok_or_else(|| JevxError::Provider("Jevのprobabilities回答が不正です。".to_owned()))?
+        .iter()
+        .map(|(key, value)| {
+            value
+                .as_f64()
+                .map(|probability| (key.clone(), probability))
+                .ok_or_else(|| JevxError::Provider("Jevのprobabilities回答が不正です。".to_owned()))
+        })
+        .collect()
+}
+
+fn provider_failure(message: String, started: &Instant, calls: u32) -> JevxError {
+    JevxError::ProviderWithMetrics {
+        message,
+        calls,
+        retries: calls.saturating_sub(1),
+        response_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
     }
 }
 

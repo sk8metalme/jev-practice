@@ -864,6 +864,7 @@ fn error_code(error: &JevxError) -> &'static str {
         JevxError::InvalidInput(_) => "invalid_input",
         JevxError::MissingApiKey => "missing_api_key",
         JevxError::Provider(_) => "provider_error",
+        JevxError::ProviderWithMetrics { .. } => "provider_error",
         JevxError::Timeout => "timeout",
         JevxError::Io(_) => "io_error",
         JevxError::Json(_) => "json_error",
@@ -874,7 +875,7 @@ fn error_code(error: &JevxError) -> &'static str {
 fn error_exit_code(error: &JevxError) -> i32 {
     match error {
         JevxError::InvalidInput(_) | JevxError::MissingApiKey | JevxError::Json(_) => 2,
-        JevxError::Provider(_) | JevxError::Timeout => 3,
+        JevxError::Provider(_) | JevxError::ProviderWithMetrics { .. } | JevxError::Timeout => 3,
         JevxError::Io(_) | JevxError::Yaml(_) => 2,
     }
 }
