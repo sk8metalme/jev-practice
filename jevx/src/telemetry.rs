@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -5,9 +6,12 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::JevxError;
+use crate::cost::{CostAccumulator, CostEstimate, CostStatus};
 use crate::redaction::sha256_hex;
 use crate::storage::append_json_line;
 use crate::types::{CandidateDecision, CandidateResult, Metrics};
+
+pub const TELEMETRY_SCHEMA_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetryEvent {
@@ -31,7 +35,7 @@ impl TelemetryEvent {
         metrics: &Metrics,
     ) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: TELEMETRY_SCHEMA_VERSION,
             prompt_sha256: sha256_hex(prompt),
             prompt_chars: prompt.chars().count(),
             decision: decision.clone(),
@@ -73,6 +77,14 @@ pub struct Stats {
     pub average_output_tokens: Option<f64>,
     #[serde(rename = "usageEvents")]
     pub usage_events: usize,
+    #[serde(rename = "jevCost")]
+    pub jev_cost: Option<f64>,
+    #[serde(rename = "codexCost")]
+    pub codex_cost: Option<f64>,
+    #[serde(rename = "totalCost")]
+    pub total_cost: Option<f64>,
+    #[serde(rename = "costStatusCounts")]
+    pub cost_status_counts: BTreeMap<String, usize>,
 }
 
 pub fn read_stats(path: &Path) -> Result<Stats, JevxError> {
@@ -87,6 +99,10 @@ pub fn read_stats(path: &Path) -> Result<Stats, JevxError> {
     let mut input_tokens = Vec::new();
     let mut output_tokens = Vec::new();
     let mut usage_events = 0_usize;
+    let mut jev_cost = CostAccumulator::default();
+    let mut codex_cost = CostAccumulator::default();
+    let mut total_cost = CostAccumulator::default();
+    let mut cost_status_counts = BTreeMap::new();
     for line in BufReader::new(file).lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -113,6 +129,37 @@ pub fn read_stats(path: &Path) -> Result<Stats, JevxError> {
         if event.metrics.input_tokens.is_some() || event.metrics.output_tokens.is_some() {
             usage_events += 1;
         }
+        if let Some(cost) = &event.metrics.cost {
+            for (name, estimate) in [
+                ("jev", &cost.jev),
+                ("codex", &cost.codex),
+                ("total", &cost.total),
+            ] {
+                let status = match estimate.status {
+                    CostStatus::Available => "available",
+                    CostStatus::Unknown => "unknown",
+                    CostStatus::Unavailable => "unavailable",
+                };
+                *cost_status_counts
+                    .entry(format!("{name}:{status}"))
+                    .or_insert(0) += 1;
+            }
+            jev_cost.add(&cost.jev);
+            codex_cost.add(&cost.codex);
+            total_cost.add(&cost.total);
+        } else {
+            // Legacy events can lack the optional cost object. Keep the event count, but make
+            // the monetary aggregate unavailable instead of silently reporting only new rows.
+            for name in ["jev", "codex", "total"] {
+                *cost_status_counts
+                    .entry(format!("{name}:unavailable"))
+                    .or_insert(0) += 1;
+            }
+            let unavailable = CostEstimate::unavailable();
+            jev_cost.add(&unavailable);
+            codex_cost.add(&unavailable);
+            total_cost.add(&unavailable);
+        }
     }
     if stats.events > 0 {
         stats.average_jev_response_ms = total_response_ms / stats.events as f64;
@@ -127,6 +174,10 @@ pub fn read_stats(path: &Path) -> Result<Stats, JevxError> {
     stats.average_input_tokens = average(&input_tokens);
     stats.average_output_tokens = average(&output_tokens);
     stats.usage_events = usage_events;
+    stats.jev_cost = jev_cost.amount();
+    stats.codex_cost = codex_cost.amount();
+    stats.total_cost = total_cost.amount();
+    stats.cost_status_counts = cost_status_counts;
     Ok(stats)
 }
 

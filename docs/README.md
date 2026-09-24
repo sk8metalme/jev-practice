@@ -17,6 +17,8 @@ jevxで「何をして、何をしないか」「何を互換性として守る�
 | 導入 | [users/getting-started.md](users/getting-started.md) | Rust CLIの前提、install root/PATH、データ境界 |
 | コマンド | [developers/jevx-cli-reference.md](developers/jevx-cli-reference.md) | 全コマンド、設定値、Telemetry、データ管理、トラブルシューティング |
 | 評価 | [developers/jevx-evaluation.md](developers/jevx-evaluation.md) | 4モードのdry-run、再現条件、現行baseline |
+| 価値・採用判断 | [developers/jevx-value.md](developers/jevx-value.md) | 速度・品質・安全性・Jev/Codex費用の同時評価 |
+| 費用観測 | [developers/jevx-cost-observability.md](developers/jevx-cost-observability.md) | 推定/実費、価格版、task/turn/session集計 |
 | 要件・設計 | [developers/jevx-requirements.md](developers/jevx-requirements.md)、[developers/jevx-architecture.md](developers/jevx-architecture.md) | Rust実装の現行契約 |
 | 運用 | [operators/jevx-compaction-operations.md](operators/jevx-compaction-operations.md) | Hook/Compactionのcanonical runbook（2026-09-22時点） |
 
@@ -43,6 +45,10 @@ jevxで「何をして、何をしないか」「何を互換性として守る�
 - [jevx 要件定義と実装状況](developers/jevx-requirements.md): 対象範囲、CLI契約、データ保護、成功条件
 - [jevx アーキテクチャ](developers/jevx-architecture.md): Skill探索、Jev判定、Hook、Compaction補助の境界
 - [jevx 評価計画](developers/jevx-evaluation.md): 指標、fixture、再現コマンド、品質ゲート
+- [jevx 価値定義](developers/jevx-value.md): 速度向上、意味レビュー、route、費用の採用条件
+- [jevx 費用観測契約](developers/jevx-cost-observability.md): Jev/Codex/合算を比較する正本
+- [jevx 意味レビュー・route・fix](developers/jevx-review-routing.md): typed contractと安全境界
+- [jevx 文書監査](developers/jevx-documentation-audit.md): OSS設計原則との照合
 - [jevx CLIリファレンス](developers/jevx-cli-reference.md): 全コマンドの使い方と公開JSONの契約
 - [jevx ロードマップ](developers/jevx-roadmap.md): 今後の候補と、採用するときの基準
 - [TypeSafe APIを直接使う](developers/typesafe-api.md): jevxの現行経路とTypeSafe直接APIを比較する参考資料

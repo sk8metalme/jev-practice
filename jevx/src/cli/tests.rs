@@ -44,6 +44,83 @@ fn stats_human_output_includes_token_averages_and_home_requirements() {
     );
 }
 
+#[test]
+fn review_content_never_includes_skill_or_settings() {
+    let payload = serde_json::json!({
+        "prompt": "prompt fixture",
+        "plan": "plan fixture",
+        "diff": "diff fixture",
+        "finalAnswer": "answer fixture",
+        "skillBody": "skill secret=fixture-only",
+        "settings": {"mode": "fixture"},
+        "toolResult": "must never be selected",
+    });
+    let without_opt_in =
+        review_content(&payload, jevx::ReviewTarget::Turn, false).expect("local review content");
+    assert!(without_opt_in.contains("prompt fixture"));
+    assert!(!without_opt_in.contains("skill secret"));
+    assert!(!without_opt_in.contains("must never be selected"));
+    let with_opt_in =
+        review_content(&payload, jevx::ReviewTarget::Turn, true).expect("opt-in review content");
+    assert!(with_opt_in.contains("prompt fixture"));
+    assert!(!with_opt_in.contains("skill secret"));
+    assert!(!with_opt_in.contains("skillBody"));
+    assert!(!with_opt_in.contains("settings"));
+    assert!(!with_opt_in.contains("must never be selected"));
+}
+
+#[tokio::test]
+async fn review_cli_records_safe_receipt_and_requires_fix_confirmation() {
+    let root = tempdir().expect("tempdir");
+    let output = root.path().join("reviews.jsonl");
+    let config = Config::for_test(root.path().join("data"));
+    let args = ReviewArgs {
+        target: ReviewTargetArg::Turn,
+        allow_content: false,
+        auto_fix: false,
+        yes: false,
+        cwd: Some(root.path().to_path_buf()),
+        output: Some(output.clone()),
+        _jevx_managed: false,
+    };
+    let mut input = Cursor::new(
+        r#"{"hook_event_name":"UserPromptSubmit","content":"適宜対応 secret=fixture-only","toolResult":"do not send","taskId":"task","sessionId":"session","turnId":"turn","skillBody":"skill body","settings":{"unsafe":"not sent"}}"#
+            .as_bytes()
+            .to_vec(),
+    );
+    assert_eq!(
+        run_hook_review_from_reader(args, &config, &mut input)
+            .await
+            .expect("review"),
+        0
+    );
+    let receipt = fs::read_to_string(&output).expect("receipt");
+    assert!(receipt.contains("content_opt_in_required"));
+    assert!(!receipt.contains("fixture-only"));
+    assert!(!receipt.contains("unsafe"));
+
+    let invalid_fix_args = ReviewArgs {
+        target: ReviewTargetArg::Diff,
+        allow_content: false,
+        auto_fix: true,
+        yes: false,
+        cwd: Some(root.path().to_path_buf()),
+        output: Some(root.path().join("invalid-fix.jsonl")),
+        _jevx_managed: false,
+    };
+    let mut invalid_input = Cursor::new(br#"{"diff":"return false;"}"#.to_vec());
+    assert!(matches!(
+        run_hook_review_from_reader(invalid_fix_args, &config, &mut invalid_input).await,
+        Err(JevxError::InvalidInput(message)) if message.contains("--yes")
+    ));
+
+    let stats_args = ReviewStatsArgs {
+        input: output,
+        json: true,
+    };
+    assert_eq!(run_review_stats(stats_args).expect("stats"), 0);
+}
+
 fn write_skill(root: &Path, name: &str) {
     let directory = root.join(name);
     fs::create_dir_all(&directory).expect("mkdir");
@@ -290,12 +367,18 @@ async fn eval_covers_live_error_output_file_and_human_metrics() {
             discovery_ms_p95: Some(11),
             average_input_tokens: Some(8.0),
             average_output_tokens: Some(2.0),
+            jev_cost: Some(0.1),
+            codex_cost: None,
+            total_cost: None,
+            cost_status_counts: BTreeMap::new(),
         },
     );
     print_evaluation_human(&EvaluationReport {
-        schema_version: 1,
+        schema_version: 2,
         case_count: 1,
+        baseline_mode: "local_rank".to_owned(),
         modes,
+        comparisons: BTreeMap::new(),
         cases: Vec::new(),
     });
     assert_eq!(format_ratio(Some(0.5)), "0.500");
@@ -603,13 +686,39 @@ async fn repeat_and_hook_commands_write_safe_reports() {
             total_ms: p95.clone(),
             input_tokens: p95.clone(),
             output_tokens: p95,
+            jev_cost: DistributionSummary {
+                mean: Some(1.0),
+                stddev: Some(0.0),
+                min: Some(1.0),
+                max: Some(1.0),
+                p50: Some(1.0),
+                p95: Some(1.0),
+            },
+            codex_cost: DistributionSummary {
+                mean: None,
+                stddev: None,
+                min: None,
+                max: None,
+                p50: None,
+                p95: None,
+            },
+            total_cost: DistributionSummary {
+                mean: None,
+                stddev: None,
+                min: None,
+                max: None,
+                p50: None,
+                p95: None,
+            },
         },
     );
     print_repeat_human(&RepeatEvaluationReport {
-        schema_version: 1,
+        schema_version: 2,
         run_count: 1,
         case_count: 1,
+        baseline_mode: "local_rank".to_owned(),
         modes: jevx_modes,
+        comparisons: BTreeMap::new(),
         runs: Vec::new(),
     });
 }
@@ -667,6 +776,7 @@ async fn gateway_success_and_new_hook_command_paths_are_exercised() {
                         scope: HookScopeArg::Project,
                         repo: root.path().to_path_buf(),
                         dry_run: false,
+                        allow_content: false,
                         json: false,
                     }),
                 },
@@ -684,6 +794,7 @@ async fn gateway_success_and_new_hook_command_paths_are_exercised() {
                 scope: HookScopeArg::Project,
                 repo: root.path().to_path_buf(),
                 dry_run: true,
+                allow_content: false,
                 json: false,
             },
             &data_config,
@@ -697,6 +808,7 @@ async fn gateway_success_and_new_hook_command_paths_are_exercised() {
                 scope: HookScopeArg::Project,
                 repo: root.path().to_path_buf(),
                 dry_run: true,
+                allow_content: false,
                 json: true,
             },
             &data_config,
@@ -887,6 +999,7 @@ async fn hooks_uninstall_command_previews_then_removes_only_jevx_handlers() {
             scope: HookScopeArg::Project,
             repo: root.path().to_path_buf(),
             dry_run: false,
+            allow_content: false,
             json: true,
         },
         &config,
@@ -1028,7 +1141,7 @@ fn doctor_report_suggests_next_steps_until_setup_is_complete() {
     config.warnings = vec!["JEVX_MIN_MARGIN must be between 0 and 1; using default 0.1".to_owned()];
 
     let report = doctor_report(&config, &env);
-    assert_eq!(report["schemaVersion"], 1);
+    assert_eq!(report["schemaVersion"], 2);
     assert_eq!(report["apiKeyConfigured"], false);
     assert_eq!(report["jevxOnPath"], false);
     assert_eq!(report["skillInstalled"], false);

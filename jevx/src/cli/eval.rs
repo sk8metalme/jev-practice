@@ -92,6 +92,7 @@ pub(super) async fn run_eval_repeat_with_config(
 pub(super) fn print_evaluation_human(report: &EvaluationReport) {
     println!("jevx evaluation");
     println!("Cases: {}", report.case_count);
+    println!("Baseline: {}", report.baseline_mode);
     for (mode, summary) in &report.modes {
         println!(
             "{mode}: status={} cases={} accuracy={} noneRecall={} errorRate={} fallbackRate={} cacheHitRate={} retryRate={}",
@@ -106,6 +107,32 @@ pub(super) fn print_evaluation_human(report: &EvaluationReport) {
         );
         if let Some(cost) = summary.average_relative_cost {
             println!("  Relative cost average: {cost:.2}");
+        }
+        if summary.jev_cost.is_some()
+            || summary.codex_cost.is_some()
+            || summary.total_cost.is_some()
+        {
+            println!(
+                "  Monetary cost average: Jev={} Codex={} total={}",
+                format_optional_f64(summary.jev_cost),
+                format_optional_f64(summary.codex_cost),
+                format_optional_f64(summary.total_cost),
+            );
+        }
+        if !summary.cost_status_counts.is_empty() {
+            println!(
+                "  Cost status counts: {}",
+                serde_json::to_string(&summary.cost_status_counts)
+                    .unwrap_or_else(|_| "{}".to_owned())
+            );
+        }
+        if let Some(comparison) = report.comparisons.get(mode) {
+            println!(
+                "  Baseline delta: totalMs={} speedup={} additionalCost={}",
+                format_optional_f64(comparison.total_ms_delta),
+                format_ratio(comparison.speedup_rate),
+                format_optional_f64(comparison.additional_cost),
+            );
         }
         if let Some(response_ms) = summary.jev_response_ms_p50 {
             println!(
@@ -132,6 +159,7 @@ pub(super) fn print_repeat_human(report: &jevx::evaluation::RepeatEvaluationRepo
     println!("jevx repeated evaluation");
     println!("Runs: {}", report.run_count);
     println!("Cases per run: {}", report.case_count);
+    println!("Baseline: {}", report.baseline_mode);
     for (mode, summary) in &report.modes {
         println!(
             "{mode}: runs={} status={} accuracyMean={} errorRateMean={} fallbackRateMean={} retryRateMean={}",
@@ -144,6 +172,24 @@ pub(super) fn print_repeat_human(report: &jevx::evaluation::RepeatEvaluationRepo
         );
         if let Some(cost) = summary.relative_cost.mean {
             println!("  Relative cost mean: {cost:.2}");
+        }
+        if summary.jev_cost.mean.is_some()
+            || summary.codex_cost.mean.is_some()
+            || summary.total_cost.mean.is_some()
+        {
+            println!(
+                "  Monetary cost mean: Jev={} Codex={} total={}",
+                format_optional_f64(summary.jev_cost.mean),
+                format_optional_f64(summary.codex_cost.mean),
+                format_optional_f64(summary.total_cost.mean),
+            );
+        }
+        if let Some(comparison) = report.comparisons.get(mode) {
+            println!(
+                "  Baseline speedup mean: {} additionalCost mean: {}",
+                format_ratio(comparison.speedup_rate.mean),
+                format_optional_f64(comparison.additional_cost.mean),
+            );
         }
         if let Some(p95) = summary.discovery_ms.p95 {
             println!("  Local discovery p95: {p95:.0} ms");

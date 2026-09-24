@@ -157,12 +157,52 @@ struct EvalRepeatArgs {
 #[derive(Debug, Subcommand)]
 enum HooksCommand {
     Shadow(HookShadowArgs),
+    Review(ReviewArgs),
+    ReviewStats(ReviewStatsArgs),
     Install(HookInstallArgs),
     Uninstall(HookUninstallArgs),
     CompactAssist(CompactAssistArgs),
     CompactEval(CompactEvalArgs),
     ConversationEval(ConversationEvalArgs),
     Correlate(CorrelationArgs),
+}
+
+#[derive(Debug, Args)]
+struct ReviewStatsArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ReviewTargetArg {
+    Prompt,
+    Plan,
+    Diff,
+    FinalAnswer,
+    Turn,
+}
+
+#[derive(Debug, Args)]
+struct ReviewArgs {
+    #[arg(long, value_enum, default_value = "turn")]
+    target: ReviewTargetArg,
+    /// Redact and send the selected content to Jev. Without this flag only local metadata is used.
+    #[arg(long)]
+    allow_content: bool,
+    /// Request workspace-wide fixes from the input fix plan.
+    #[arg(long)]
+    auto_fix: bool,
+    /// Confirm the explicit no-backup/no-rollback fix operation.
+    #[arg(long, requires = "auto_fix")]
+    yes: bool,
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    #[arg(long)]
+    output: Option<PathBuf>,
+    #[arg(long = "jevx-managed", hide = true)]
+    _jevx_managed: bool,
 }
 
 #[derive(Debug, Args)]
@@ -193,6 +233,9 @@ struct HookInstallArgs {
     repo: PathBuf,
     #[arg(long)]
     dry_run: bool,
+    /// Explicitly allow redacted review content to reach Jev.
+    #[arg(long)]
+    allow_content: bool,
     #[arg(long)]
     json: bool,
 }
@@ -352,6 +395,7 @@ pub(super) fn error_code(error: &JevxError) -> &'static str {
         JevxError::Provider(_) => "provider_error",
         JevxError::ProviderWithMetrics { .. } => "provider_error",
         JevxError::Timeout => "timeout",
+        JevxError::TimeoutWithMetrics { .. } => "timeout",
         JevxError::Io(_) => "io_error",
         JevxError::Json(_) => "json_error",
         JevxError::Yaml(_) => "yaml_error",
@@ -361,7 +405,10 @@ pub(super) fn error_code(error: &JevxError) -> &'static str {
 pub(super) fn error_exit_code(error: &JevxError) -> i32 {
     match error {
         JevxError::InvalidInput(_) | JevxError::MissingApiKey | JevxError::Json(_) => 2,
-        JevxError::Provider(_) | JevxError::ProviderWithMetrics { .. } | JevxError::Timeout => 3,
+        JevxError::Provider(_)
+        | JevxError::ProviderWithMetrics { .. }
+        | JevxError::Timeout
+        | JevxError::TimeoutWithMetrics { .. } => 3,
         JevxError::Io(_) | JevxError::Yaml(_) => 2,
     }
 }

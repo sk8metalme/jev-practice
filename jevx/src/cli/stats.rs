@@ -23,7 +23,7 @@ pub(super) fn run_stats_with_config(
 
 pub(super) fn stats_human_output(stats: &jevx::Stats) -> String {
     format!(
-        "events: {}\nselected: {}\nnone: {}\nerrors: {}\nselected rate: {}\nnone rate: {}\nerror rate: {}\naverage Jev response: {:.1} ms\nJev response p50/p95: {}/{} ms\nTotal p50/p95: {}/{} ms\naverage input/output tokens: {}/{}\nusage events: {}\n",
+        "events: {}\nselected: {}\nnone: {}\nerrors: {}\nselected rate: {}\nnone rate: {}\nerror rate: {}\naverage Jev response: {:.1} ms\nJev response p50/p95: {}/{} ms\nTotal p50/p95: {}/{} ms\naverage input/output tokens: {}/{}\nusage events: {}\nJev cost: {}\nCodex cost: {}\nTotal cost: {}\nCost status counts: {}\n",
         stats.events,
         stats.selected,
         stats.none,
@@ -39,5 +39,9 @@ pub(super) fn stats_human_output(stats: &jevx::Stats) -> String {
         format_optional_f64(stats.average_input_tokens),
         format_optional_f64(stats.average_output_tokens),
         stats.usage_events,
+        format_optional_f64(stats.jev_cost),
+        format_optional_f64(stats.codex_cost),
+        format_optional_f64(stats.total_cost),
+        serde_json::to_string(&stats.cost_status_counts).unwrap_or_else(|_| "{}".to_owned()),
     )
 }

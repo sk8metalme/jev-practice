@@ -16,6 +16,7 @@ fn install_options(root: &Path, dry_run: bool) -> HookInstallOptions {
         executable: root.join("bin/jevx with space"),
         records_path: root.join("state/hook-records.jsonl"),
         state_dir: root.join("state/compaction"),
+        allow_review_content: false,
         dry_run,
     }
 }
@@ -65,7 +66,7 @@ fn hook_install_preserves_existing_handlers_and_is_idempotent() {
     let user_prompt = written["hooks"]["UserPromptSubmit"]
         .as_array()
         .expect("user prompt groups");
-    assert_eq!(user_prompt.len(), 2);
+    assert_eq!(user_prompt.len(), 3);
     let user_prompt_handlers = user_prompt
         .iter()
         .flat_map(|group| group["hooks"].as_array().into_iter().flatten());

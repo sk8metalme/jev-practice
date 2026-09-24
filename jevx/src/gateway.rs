@@ -68,7 +68,13 @@ impl GatewayJudge {
                 .await
             {
                 Ok(response) => response,
-                Err(error) if error.is_timeout() => return Err(JevxError::Timeout),
+                Err(error) if error.is_timeout() => {
+                    return Err(JevxError::TimeoutWithMetrics {
+                        calls: attempts,
+                        retries: attempts.saturating_sub(1),
+                        response_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+                    });
+                }
                 Err(_) => {
                     return Err(JevxError::Provider(
                         "Jevへの接続に失敗しました。".to_owned(),

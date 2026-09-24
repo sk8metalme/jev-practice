@@ -1,76 +1,88 @@
 # Philosophy
 
-jevxの判断の軸。機能の追加・要望への回答・レビューは、個人の好みではなくこの文書で決める。
+jevxの機能・設定・文書・レビューを決める正本。好みではなく、問題・境界・測定結果で判断する。
 
 ## 解く問題
 
-Codex CLIのSkillが増えると、依頼ごとに「どのSkillを使うべきか」「使わないほうがいいのか」を毎回その場の感覚で決めることになり、その判断が正しかったかも、Jevのような意味判定を足したときに速さやコストに見合うかも観測できない。jevxは、**Codexの作業を止めずに、Skill選択の判断を提案として出し、その効果と費用を同じ条件で測れるようにする**ためにある。
+Codex CLIの作業が大きくなると、Skill選択、Compaction、計画・推論開始、文章・コードの意味確認、モデル／subagentの選択に時間がかかる。Jevを足せば品質が上がる可能性はあるが、Jevの遅延・Token・費用と、Codex側の追加ターン・昇格費用が見えないままでは導入価値を判断できない。
 
-## なぜ作ったか
+jevxは、**Codexの作業を止めずに、決定的なローカル処理とJevの意味判定を組み合わせ、速度・品質・安全性・Jev費用・Codex費用を同じ条件で比較できる状態を作る**。
 
-自分のCodex環境でSkillが増えるにつれて、依頼のたびに合うSkillを探す時間が気になり、Jevで自動的に選べないか試したくなった。ただ、LLMの判定をそのまま実行に使うのは怖かったので、提案と計測だけから始めた。「Jevを入れたら本当に良くなったのか」を数字で言えることが、最初からの目的。
+## 価値の優先順位
 
-## 誰のためのものか
+1. **安全な正しさ** — Jevの回答は推薦。最終status、route適用、ファイル書き換え、権限はコードが決める。
+2. **総価値の可視化** — 速度短縮だけで成功にせず、レビュー品質、誤って危険側へ進まない率、Jev／Codex／合算費用、失敗時の追加費用を同時に示す。
+3. **明示的な境界** — 本文を外部へ送る、Hookを登録する、workspaceを修正する操作は利用者のopt-inを必要とする。
+4. **決定的な局所性** — 抽出、列挙、diff、redaction、hash、budget、閾値、重複排除、最終適用はローカルコードで行う。
+5. **再現可能な観測** — contract／question／policy、state digest、回答、fallback、latency、Token、price version、cost status、replay IDを本文なしで記録する。
 
-- 対象: macOSでCodex CLIを使い、Skillを複数持っていて、その選び方と効果を測りたい人
-- 対象: Jevのような意味判定を、安全側に倒した設計で試したい開発者
-- 対象外: Skillを自動でロード・実行してほしい人（Codex標準のSkill選択を使う）
-- 対象外: Linux / Windowsで使いたい人（現時点では検証していない。フォークは歓迎）
-- 対象外: 会話を要約・圧縮してほしい人（Codex公式のCompactionを使う）
+## 対象機能
 
-## 原則（上ほど優先）
+- 毎ターンのprompt／plan／diff／final answerレビュー
+- 日本語の曖昧表現、文章の矛盾、コードの意味的矛盾、コメントと実装の乖離の検出
+- Skill選択・Compaction・計画／推論開始のp50／p95とbaseline差分の観測
+- Jevの難易度判定によるLuna／Terra／Solとreasoning候補の推薦
+- Hookで実際に適用されたrouteだけをappliedとする観測
+- 明示opt-inしたworkspace内fixのhash一致チェック付き適用
+- Jev単体、Codex単体、合算の費用・Token・retry・fallback・cache・latency集計
 
-1. **自動化より安全側** — `selected` は提案であり実行許可ではない。timeout・障害・低確信度は `none` や `error` として表に出し、成功や自動allowに変えない。便利さのために安全側の結果を消すことはしない。
-2. **Jevの便利さより決定的なローカルコード** — 列挙・順位付け・redaction・閾値判定・設定の書き換えはコードで行い、Jevにはコードで書きにくい意味の問いだけを渡す。Jevを使えば簡単に見える処理でも、決定的に解けるならJev化しない。
-3. **精度単独より観測可能性と再現性** — Jevありの正解率だけで導入を決めず、Jevなしのbaseline、`none` の扱い、遅延、Token、エラー率、反復時の分散を同じ条件で測る。測れない機能は入れない。
-4. **設定の追加より既定値の改善** — 閾値や候補数は評価で決めた既定値を持つ。要望には、まず既定値の改善で答える。上書きの逃げ道（環境変数）は残すが、設定項目は原則増やさない。
-5. **DRYより局所性** — 1コマンド1ファイルで、上から読めば挙動がわかる構成にする。文書は正本を1か所に置き、ほかはリンクにする。
+## Jevとコードの境界
+
+- 構文解析、対象列挙、candidate window、redaction、state digest、cache、ファイルhash、除外判定、最終allow／deny／writeはコードが所有する。
+- Jevへは「候補が依頼に合うか」「このstateに意味的な矛盾があるか」「難易度はどの水準か」のような文脈的な問いだけをtyped contractで渡す。
+- 自由文の回答、確信度、route推薦を権限・Skill自動実行・自動書き換えへ直接つなげない。
+- timeout、provider error、低確信度、契約不成立、state不足、費用不明は成功や0円に変換しない。
+
+## データ境界
+
+既定では本文をJevへ送らない。hooks install --allow-content または hooks review --allow-content の明示opt-in時だけ、選択されたprompt／plan／diff／final answerをredactして送る。
+
+- API key、資格情報、秘密値、raw Tool resultは常に除外する。
+- Skill本文と設定本文は、opt-inの有無にかかわらず送らない。Skill descriptionなど、候補探索に必要な限定メタデータだけをコード側で選ぶ。
+- $JEVX_HOMEへ保存するHook／review recordとreceiptには本文を入れず、digest、文字数、finding、route、latency、適用結果、費用だけを残す。
+- unknown／unavailableの費用は0円にしない。推定費用と実費を分け、通貨とprice versionを保存する。
 
 ## やらないこと（Non-goals）
 
-- **Skill本文の自動ロード・自動実行はしない。** 代わりに、提案を見たCodexや利用者が通常のルールで判断する。
-- **Jevの確信度で権限を与えない（auto-allowしない）。** 権限Hookを研究する場合も、脅威モデルとfail-closedの検証が済むまで `ask` / `defer` に流す。
-- **会話の要約・書き換え・公式Compactionの代替はしない。** `compact-assist` は、利用者が書いたredacted manifestとcheckpoint metadataを返すだけ。
-- **会話全文・Skill本文・Tool結果・APIキーをJevへ送らない。** 送るのはredactしたprompt、作業ディレクトリ、候補のID・名前・説明だけ。
-- **設定オプションを増やさない。** 閾値3つ（`JEVX_MIN_PROBABILITY` / `JEVX_MIN_MARGIN` / `JEVX_MAX_CANDIDATES`）と、Decision Contractの実行上限6つ（state byte・retry回数・backoff・cache容量・cost重み2つ）の上書きを最後の逃げ道として置き、これ以上は増やさない。どれも範囲を決め、範囲外は既定値へ戻して `doctor` で警告する。新しい要望は既定値の改善で解く。
-- **クロスプラットフォーム対応を約束しない。** macOS以外で動いた報告は歓迎するが、サポート対象にはしない。
+- Skill本文の黙ったロード・実行、Jev確信度によるauto-allow、権限付与
+- Codex公式Compactionの置き換え、会話の勝手な要約・書き換え、Tool Resultの自動削除
+- prompt／plan／diff／final answerの明示opt-inなしの外部送信、Skill本文／設定本文の外部送信
+- API key、資格情報、秘密値、raw Tool resultの外部送信
+- HookだけでCodexのmodel／reasoning切替が必ず成功したという主張。証拠がなければdegraded
+- legacy/の現行機能化、Windows対応の約束、費用上限の導入（現段階は観測を優先）
+- 速度だけ、精度だけ、費用だけを単独の成功条件にすること
 
-同じ種類の要望を3回見送ったら、理由と代替手段をここへ追記する。
+自動fixは明示opt-inと--yesが必要。backup／rollbackは作らず、legacy/、.git、秘密ファイル、期待hash不一致、timeout、低確信度、入力欠落、契約不成立では書き換えない。このリスクを受け入れられない利用者にはreview-onlyを使う。
 
 ## 互換性の約束
 
-守る境界（公開境界）:
+守る公開境界は次のとおり。
 
-- CLIのサブコマンドと、`--help` に表示される引数
-- `--json` 出力のキーと、その `schemaVersion`
-- 終了コード（`0` 成功、`2` 入力・設定・APIキーの問題、`3` Gatewayのtimeout・応答エラー）
-- `$JEVX_HOME/events.jsonl` などのローカルデータのschema（`schemaVersion` 付き）
-- `hooks.json` に書くhandlerの形（`--jevx-managed` マーカー付きのcommand。`hooks install` / `uninstall` は、マーカー付き、または `jevx` バイナリの `hooks shadow` / `hooks compact-assist` を呼ぶcommandをjevxのものとして扱う）
+- CLIサブコマンド、公開引数、終了コード
+- --jsonのキーとschemaVersion
+- $JEVX_HOME配下のJSONL schema
+- hooks.jsonへ書く--jevx-managed付きcommandと、既存設定を保持するmerge／uninstall
 
-約束の仕方:
+既存のsuggestion／telemetry／decision receipt／hook recordはschema v1を読み込みschema v2へ移行する。review／route／fixはそれぞれschemaを持ち、receiptには本文を含めない。キーを消す・意味を変える場合はschemaVersionを上げ、移行とjevx/tests/contract_requirements.rsを同時に更新する。名前と意味がずれたキーは消さず、正しいキーを追加する。
 
-- 公開境界のキーを消す・名前を変える・意味を変えるときは `schemaVersion` を上げ、移行手順を書く。キーの追加は互換の範囲とする。
-- 名前と意味がずれたキーは、互換キーとして残したまま正しい名前のキーを足す（例: `nonePrecision` と `noneRecall`）。
-- 公開境界は `jevx/tests/contract_requirements.rs` が実バイナリで固定する。
+## 成功条件
 
-約束しないもの: Rustのライブラリ API（`jevx::*`）、人間向け出力の文言や並び、性能値、`--jevx-managed` のような hidden 引数の直接利用、`legacy/` 配下。
+- Skill選択、Compaction、計画／推論の3領域でbaseline比20%以上短縮を、同じ入力・環境・再試行条件で再現できる
+- 通常Hookの判定・指示生成p95が800ms以下で、昇格経路の発生率・p95・品質差・追加費用を分離できる
+- 4レビューカテゴリをfixtureで再現し、review receiptをJevなしにreplayできる
+- Jev → Luna → Terra → Solのfallback順をfixtureで検証できる
+- route未適用をappliedとして記録しない
+- secrets、API key、raw Tool resultの外部送信が0件
+- Jev費用、Codex費用、合算、task／turn／session集計、baseline差分、成功review／fix単価を提示できる
+- 取得不能な費用がunknown／unavailableとして残り、0円に見えない
+- 新規実行コードのline coverage 98%以上、fmt・clippy・unit・integration・contract・fixture評価が通る
 
-## 貢献について
+数値の採否は docs/developers/jevx-value.md と docs/developers/jevx-cost-observability.md を正本とする。歴史的な実測値は現行保証に使わない。
 
-**Open-Source, not Open-Contribution。** 利用・改変・フォークは自由だが、外部からのPull Requestは原則受け付けない。判断の一貫性と、安全側の設計を一人で追跡できる状態を保つため。詳しくは [CONTRIBUTING.md](../CONTRIBUTING.md)。
+## OSSとしての判断
 
-- 歓迎するもの: 再現手順つきの不具合報告、実在する困りごとの説明、匿名化した評価fixture
-- 受け入れにくいもの: 外部PR、Non-goalsに当たる要望、設定オプションの追加
+問題・受け入れ基準・捨てるものをIssueまたは設計メモに書く。既定値で解ける問題に設定を追加しない。変更範囲を小さくし、実測がない機能はblockingにしない。設計原則のレビューにはoss-design Skillを使い、詳細なチェック結果は docs/developers/jevx-documentation-audit.md へ記録する。
 
-## 判断が割れたとき
+## 貢献とライセンス
 
-**安全側と互換性を優先する。** ただし、利用者の体験（最初の5分、わかりやすいエラー）が大きく良くなり、安全側の結果と公開境界を壊さない場合は、使いやすさを優先する。
-
-## 関わり方
-
-個人が余暇で開発している実験プロジェクト。返信や修正には時間がかかることがある。
-
-## ライセンスと将来
-
-- ライセンスはMIT（[LICENSE](../LICENSE)）。一方的には変更しない。
-- 作者が関われなくなった場合は、リポジトリをarchiveし、その旨をREADMEに書く。フォークを歓迎する。
+Open-Source, not Open-Contribution。利用・フォーク・再現手順付きのIssue・秘密を含まないfixtureは歓迎するが、外部Pull Requestは原則受け付けない。ライセンスはMIT。

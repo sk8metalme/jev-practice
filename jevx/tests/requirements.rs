@@ -10,9 +10,10 @@ use std::thread;
 use async_trait::async_trait;
 use jevx::decision::{DecisionRequest, QuestionSpec};
 use jevx::{
-    CandidateDecision, Config, GatewayJudge, Judge, JudgeRequest, JudgeResponse, SkillRecord,
-    SuggestInput, TelemetryEvent, Usage, append_telemetry, read_decision_receipts, read_stats,
-    suggest_with_judge, suggest_with_optional_judge,
+    CandidateDecision, Config, CostEstimate, CostStatus, CostSummary, GatewayJudge, Judge,
+    JudgeRequest, JudgeResponse, SkillRecord, SuggestInput, TelemetryEvent, Usage,
+    append_telemetry, read_decision_receipts, read_stats, suggest_with_judge,
+    suggest_with_optional_judge,
 };
 use tempfile::tempdir;
 
@@ -141,6 +142,14 @@ async fn ranking_handles_empty_prompt_missing_skill_and_no_candidates() {
     .expect("no candidates");
     assert_eq!(no_candidates.decision, CandidateDecision::NoCandidates);
     assert_eq!(no_candidates.reason_code.as_deref(), Some("no_candidates"));
+    assert_eq!(
+        no_candidates
+            .metrics
+            .cost
+            .as_ref()
+            .and_then(|cost| cost.total.amount),
+        Some(0.0)
+    );
 }
 
 #[tokio::test]
@@ -289,6 +298,14 @@ async fn explicit_skill_bypasses_jev() {
         result.selected.as_ref().map(|item| item.name.as_str()),
         Some("pdf")
     );
+    assert_eq!(
+        result
+            .metrics
+            .cost
+            .as_ref()
+            .and_then(|cost| cost.total.amount),
+        Some(0.0)
+    );
 }
 
 #[tokio::test]
@@ -363,7 +380,7 @@ fn redaction_and_telemetry_do_not_keep_raw_prompt() {
 fn output_json_has_stable_schema_and_response_speed_name() {
     let result = jevx::SuggestionResult::none("none");
     let json = serde_json::to_value(result).expect("json");
-    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["schemaVersion"], 2);
     assert!(json.get("metrics").is_some());
     assert!(json["metrics"].get("jevResponseMs").is_some());
 }
@@ -425,7 +442,8 @@ fn serialized_types_accept_aliases_and_preserve_optional_fields() {
         usage,
         Usage {
             input_tokens: 4,
-            output_tokens: 2
+            output_tokens: 2,
+            cost: None,
         }
     );
     let response = JudgeResponse::selected("none", 0.9, 1, None);
@@ -512,6 +530,37 @@ fn telemetry_is_appendable_and_stats_are_aggregated() {
 }
 
 #[test]
+fn telemetry_aggregates_costs_and_keeps_unknown_distinct_from_zero() {
+    let root = tempdir().expect("tempdir");
+    let path = root.path().join("events.jsonl");
+    let cost = CostSummary {
+        jev: CostEstimate::available(0.25, Some("USD".to_owned()), Some("fixture-1".to_owned())),
+        codex: CostEstimate::unknown(Some("USD".to_owned()), Some("fixture-1".to_owned())),
+        total: CostEstimate::unknown(Some("USD".to_owned()), Some("fixture-1".to_owned())),
+    };
+    let event = TelemetryEvent::from_result(
+        "cost-prompt",
+        &CandidateDecision::Selected,
+        None,
+        &jevx::Metrics {
+            cost: Some(cost),
+            ..jevx::Metrics::default()
+        },
+    );
+    append_telemetry(&path, &event).expect("append cost event");
+
+    let stats = read_stats(&path).expect("stats");
+    assert_eq!(stats.jev_cost, Some(0.25));
+    assert_eq!(stats.codex_cost, None);
+    assert_eq!(stats.total_cost, None);
+    assert_eq!(stats.cost_status_counts.get("codex:unknown"), Some(&1));
+    assert_eq!(
+        CostStatus::Unknown,
+        event.metrics.cost.expect("cost").codex.status
+    );
+}
+
+#[test]
 fn telemetry_handles_missing_empty_and_error_events() {
     let root = tempdir().expect("tempdir");
     let missing = root.path().join("missing.jsonl");
@@ -532,6 +581,10 @@ fn telemetry_handles_missing_empty_and_error_events() {
         .expect("blank line");
     let stats = read_stats(&path).expect("stats");
     assert_eq!(stats.errors, 1);
+    assert_eq!(stats.jev_cost, None);
+    assert_eq!(stats.codex_cost, None);
+    assert_eq!(stats.total_cost, None);
+    assert_eq!(stats.cost_status_counts.get("total:unavailable"), Some(&1));
 }
 
 #[test]
@@ -674,7 +727,7 @@ async fn gateway_judge_parses_successful_gateway_response() {
     let handle = thread::spawn(move || {
         let (mut stream, _) = server.accept().expect("accept");
         read_request(&mut stream);
-        let body = r#"{"answers":{"skill":{"choice":"pdf","probabilities":{"pdf":0.9,"none":0.1}}},"usage":{"inputTokens":5,"outputTokens":2}}"#;
+        let body = r#"{"answers":{"skill":{"choice":"pdf","probabilities":{"pdf":0.9,"none":0.1}}},"usage":{"inputTokens":5,"outputTokens":2,"cost":{"amount":0.123,"currency":"USD","priceVersion":"provider-test","status":"available","basis":"actual"}}}"#;
         write_http_response(&mut stream, "200 OK", body);
     });
     let mut config = Config::for_test(tempdir().expect("tempdir").path().to_path_buf());
@@ -693,7 +746,12 @@ async fn gateway_judge_parses_successful_gateway_response() {
         .expect("response");
     handle.join().expect("server");
     assert_eq!(response.choice.as_deref(), Some("pdf"));
-    assert_eq!(response.usage.expect("usage").input_tokens, 5);
+    let usage = response.usage.expect("usage");
+    assert_eq!(usage.input_tokens, 5);
+    assert_eq!(
+        usage.cost.expect("provider cost").basis,
+        jevx::CostBasis::Actual
+    );
 }
 
 #[tokio::test]

@@ -6,6 +6,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use crate::DEFAULT_ENDPOINT;
+use crate::cost::TokenPricing;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -24,6 +25,8 @@ pub struct Config {
     pub cache_capacity: usize,
     pub input_cost_weight: f64,
     pub output_cost_weight: f64,
+    pub price_currency: String,
+    pub price_version: String,
     /// 範囲外などで既定値へ戻した環境変数の説明。`doctor` が表示する。
     pub warnings: Vec<String>,
 }
@@ -129,6 +132,10 @@ impl Config {
                 0.0..=1_000.0,
                 &mut warnings,
             ),
+            // Monetary price is accepted from the provider usage/cost payload. These labels are
+            // retained in the diagnostic contract but are not user-configurable settings.
+            price_currency: "USD".to_owned(),
+            price_version: "provider-usage".to_owned(),
             warnings,
         }
     }
@@ -150,7 +157,19 @@ impl Config {
             cache_capacity: 0,
             input_cost_weight: 1.0,
             output_cost_weight: 1.0,
+            price_currency: "USD".to_owned(),
+            price_version: "provider-usage".to_owned(),
             warnings: Vec::new(),
+        }
+    }
+
+    pub fn jev_pricing(&self) -> TokenPricing {
+        TokenPricing {
+            input_per_million: None,
+            output_per_million: None,
+            reasoning_per_million: None,
+            currency: Some(self.price_currency.clone()),
+            price_version: Some(self.price_version.clone()),
         }
     }
 
@@ -275,6 +294,8 @@ mod tests {
         assert_eq!(configured.cache_capacity, 5);
         assert_eq!(configured.input_cost_weight, 1.5);
         assert_eq!(configured.output_cost_weight, 2.5);
+        assert_eq!(configured.price_currency, "USD");
+        assert_eq!(configured.price_version, "provider-usage");
 
         for key in keys {
             remove_var(key);
@@ -294,6 +315,8 @@ mod tests {
         assert_eq!(defaults.cache_capacity, 0);
         assert_eq!(defaults.input_cost_weight, 1.0);
         assert_eq!(defaults.output_cost_weight, 1.0);
+        assert_eq!(defaults.price_currency, "USD");
+        assert_eq!(defaults.price_version, "provider-usage");
         assert!(defaults.warnings.is_empty());
         assert!(!defaults.thresholds_customized());
 

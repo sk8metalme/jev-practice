@@ -98,7 +98,7 @@ pub(super) fn doctor_report(config: &Config, env: &DoctorEnv) -> Value {
     }
 
     json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "apiKeyConfigured": api_key_configured,
         "endpoint": config.endpoint,
         "telemetryPath": config.telemetry_path,
@@ -122,6 +122,14 @@ pub(super) fn doctor_report(config: &Config, env: &DoctorEnv) -> Value {
             "inputCostWeight": config.input_cost_weight,
             "outputCostWeight": config.output_cost_weight,
             "customized": config.limits_customized(),
+        },
+        "pricing": {
+            "currency": config.price_currency,
+            "version": config.price_version,
+            "jevInputPricePerMillion": Value::Null,
+            "jevOutputPricePerMillion": Value::Null,
+            "jevConfigured": false,
+            "source": "provider_usage",
         },
         "warnings": config.warnings,
         "nextSteps": next_steps,
@@ -185,6 +193,15 @@ pub(super) fn doctor_human_output(report: &Value) -> String {
         limits["retryBackoffMs"],
         limits["decisionCacheCapacity"],
         limits["customized"]
+    ));
+    let pricing = &report["pricing"];
+    lines.push(format!(
+        "Pricing: currency={} version={} jevConfigured={} inputPerMillion={} outputPerMillion={}",
+        text(&pricing["currency"]),
+        text(&pricing["version"]),
+        pricing["jevConfigured"],
+        text(&pricing["jevInputPricePerMillion"]),
+        text(&pricing["jevOutputPricePerMillion"]),
     ));
     for warning in report["warnings"].as_array().into_iter().flatten() {
         lines.push(format!("Warning: {}", text(warning)));

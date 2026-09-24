@@ -1045,6 +1045,19 @@ pub async fn execute_contract(
                     (DecisionFailure::MissingApiKey, "missing_api_key", None)
                 }
                 JevxError::Timeout => (DecisionFailure::Timeout, "timeout", None),
+                JevxError::TimeoutWithMetrics {
+                    calls,
+                    retries,
+                    response_ms,
+                } => (
+                    DecisionFailure::Timeout,
+                    "timeout",
+                    Some(ExecutionMetrics {
+                        response_ms: *response_ms,
+                        calls: *calls,
+                        retries: *retries,
+                    }),
+                ),
                 JevxError::Provider(_) => (DecisionFailure::Provider, "provider_error", None),
                 JevxError::ProviderWithMetrics {
                     calls,

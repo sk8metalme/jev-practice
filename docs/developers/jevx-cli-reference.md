@@ -69,7 +69,7 @@ export JEVX_TELEMETRY=1
 | `JEVX_MIN_MARGIN` | `0.10` | 1位と次点の確率差の下限（0〜1） |
 | `JEVX_MAX_CANDIDATES` | `32` | Jevへ送る候補数の上限（1〜256） |
 
-閾値3つ（`JEVX_MIN_PROBABILITY` / `JEVX_MIN_MARGIN` / `JEVX_MAX_CANDIDATES`）とDecision Contractの実行上限6つ（`JEVX_MAX_STATE_BYTES` / `JEVX_MAX_RETRIES` / `JEVX_RETRY_BACKOFF_MS` / `JEVX_DECISION_CACHE_CAPACITY` / `JEVX_INPUT_COST_WEIGHT` / `JEVX_OUTPUT_COST_WEIGHT`）は、最後の逃げ道として用意している。既定値は評価で決めた値なので、変える前に `eval` / `eval-repeat` で同じ条件の比較を取ってね。範囲外・数値でない値・`NaN` / `inf` は既定値へ戻り、`doctor` が警告を出す。新しい設定項目は増やさない（[PHILOSOPHY.md](../../jevx/PHILOSOPHY.md)）。
+閾値3つ（`JEVX_MIN_PROBABILITY` / `JEVX_MIN_MARGIN` / `JEVX_MAX_CANDIDATES`）とDecision Contractの実行上限6つ（`JEVX_MAX_STATE_BYTES` / `JEVX_MAX_RETRIES` / `JEVX_RETRY_BACKOFF_MS` / `JEVX_DECISION_CACHE_CAPACITY` / `JEVX_INPUT_COST_WEIGHT` / `JEVX_OUTPUT_COST_WEIGHT`）は、最後の逃げ道として用意している。費用はProvider usage/cost payloadを使い、jevx独自の単価設定は持たない。既定値は評価で決めた値なので、変える前に `eval` / `eval-repeat` で同じ条件の比較を取ってね。範囲外・数値でない値・`NaN` / `inf` は既定値へ戻り、`doctor` が警告を出す。新しい設定項目は増やさない（[PHILOSOPHY.md](../../jevx/PHILOSOPHY.md)）。
 
 ### 診断と次の一手（`doctor`）
 
@@ -162,11 +162,11 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 ## レスポンスと Jev の速度
 
-`--json` の提案結果は `schemaVersion: 1` のJSON。`jevResponseMs` はJevへのHTTPリクエスト開始から構造化レスポンスの読み取り完了まで、`totalMs` はローカルSkill探索を含む `jevx` 全体の経過時間だよ。
+`--json` の提案結果は `schemaVersion: 2` のJSON。`jevResponseMs` はJevへのHTTPリクエスト開始から構造化レスポンスの読み取り完了まで、`totalMs` はローカルSkill探索を含む `jevx` 全体の経過時間だよ。`metrics.cost`はJev/Codex/合算を持ち、各componentは`status`（available/unknown/unavailable）、`basis`（estimated/actual）、通貨、価格版を含む。
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "decision": "selected",
   "selected": {
     "id": "testing",
@@ -194,7 +194,12 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
     "totalMs": 138,
     "candidateCount": 3,
     "inputTokens": 82,
-    "outputTokens": 12
+    "outputTokens": 12,
+    "cost": {
+      "jev": {"amount": null, "currency": "USD", "priceVersion": "provider-usage", "status": "unknown", "basis": "estimated"},
+      "codex": {"amount": null, "currency": null, "priceVersion": null, "status": "unavailable", "basis": "estimated"},
+      "total": {"amount": null, "currency": "USD", "priceVersion": "provider-usage", "status": "unknown", "basis": "estimated"}
+    }
   },
   "mode": "shadow"
 }
@@ -215,6 +220,38 @@ Mode: shadow
 ```
 
 `explicit`、`no_candidates`、APIキーなしのエラーではJevへ到達しないため、`jevResponseMs` が `0` またはJSONに含まれない場合がある。速度を比較するときは、同じ候補カタログ・同じ入力・同じネットワーク条件で `p50` / `p95` を見るのがおすすめ。
+
+## 意味レビュー・route・fix
+
+`hooks review` はprompt/plan/diff/final-answer/turnを対象に、日本語clarity、文章矛盾、コード矛盾、コメントと実装の乖離を観測する。既定では本文をJevへ送らず、redact済みローカル検出だけを実行して`degraded`を返す。Jevへ送るには利用者が`--allow-content`を明示する必要がある。raw Tool result、API key、資格情報は常に対象外。
+
+```bash
+printf '%s\n' '{"hook_event_name":"UserPromptSubmit","prompt":"適宜対応して","taskId":"task-demo","sessionId":"session-demo","turnId":"turn-demo"}' \\
+  | jevx hooks review --target prompt
+
+# 選択した本文をredactしてJevへ送る明示opt-in
+printf '%s\n' '{"hook_event_name":"PostToolUse","diff":"// always returns true\\nreturn false;"}' \\
+  | jevx hooks review --target diff --allow-content
+
+# fixは明示確認が必要。期待SHA-256とsafe pathもコード側で検証する
+printf '%s\n' '{"diff":"return false;","fixes":[]}' \\
+  | jevx hooks review --target diff --allow-content --auto-fix --yes
+
+jevx hooks review-stats --input "${JEVX_HOME:-$HOME/.jevx}/reviews.jsonl" --json
+```
+
+Reviewの出力は`continue`/`suppressOutput`と`review`を持つ。`review.schemaVersion`は2、receiptには本文を含めず、request/content digest・文字数、finding、route、latency、calls/retry/cache、Token、fallback、cost、fix status、replay IDを保存する。`route.status`は適用証拠が完全一致したときだけ`applied`で、それ以外は`degraded`/`failed`。`codexUsage`が入力されればmodel、reasoning、main/subagent、通常Token、昇格追加Token、elapsed、fallback、通常cost、`additionalCost`もreceiptへ残る。
+
+`review-stats`はstatus、finding、p50/p95、Jev/Codex/total、通常Token・昇格追加Token、fallback追加費用、推定/実費の元となるcost component、成功review/fix単価、task/turn/sessionのSHA-256単位を集計する。金額が取得できない行は`unknown`/`unavailable`の件数として残り、価格版・通貨が混在した合計を作らず、0にも変換しない。
+
+`hooks install`でreview handlerを登録する場合は、まず通常のreview-onlyを使う。本文をJevへ送る設定を生成する場合だけ、次のように明示する。
+
+```bash
+jevx hooks install --scope user --dry-run --allow-content --json
+jevx hooks install --scope user --allow-content --json
+```
+
+`--allow-content`はCodexのTool結果や会話全文の送信許可ではなく、Hook payloadの選択対象だけの許可。生成されたHookは`/hooks`でreview/trustし、不要になれば`hooks uninstall`でjevx管理handlerだけを外す。
 
 ## Jev Gatewayへ直接 `curl` する
 
@@ -271,7 +308,7 @@ Gatewayの構造化レスポンスは、例えば次のようになる。
 
 ## Telemetryと統計
 
-既定では `$JEVX_HOME/events.jsonl` と `$JEVX_HOME/decisions.jsonl`（通常は `~/.jevx/` 配下）へ追記する。前者は既存Telemetry、後者はDecision Contractのreceiptで、依頼文そのものではなく、state digest、契約版、判定、fallback、retry、latency、Token使用量、token proxy costなどの安全なメタデータを保存する。Gatewayの生response本文は保存しない。
+既定では `$JEVX_HOME/events.jsonl` と `$JEVX_HOME/decisions.jsonl`（通常は `~/.jevx/` 配下）へ追記する。前者は既存Telemetry、後者はDecision Contractのreceiptで、依頼文そのものではなく、state digest、契約版、判定、fallback、retry、cache、latency、Token使用量、Jev/Codex/total costなどの安全なメタデータを保存する。Gatewayの生response本文は保存しない。費用は`unknown`/`unavailable`を0へ変換せず、`basis`とprice version/currencyを残す。
 
 receiptは `DecisionReceipt` / `JsonlDecisionRecorder` と `read_decision_receipts` / `replay_receipt` からRust APIとして扱える。`jevx/evals/decision-contract-baseline.jsonl` は秘密情報なしのaccepted/none比較用fixtureで、同じcontract・state digest・recorded answerを使えばJevなしにcode-side decisionを再評価できる。receiptの不一致は`replay_mismatch` / `degraded`となり、成功へ変換しない。
 
@@ -328,6 +365,7 @@ jevxがローカルに書くデータは、すべて `$JEVX_HOME`（既定 `~/.j
 | `compactionRecords` | `compaction/hook-records.jsonl` | `hooks compact-assist` |
 | `compactionCheckpoints` | `compaction/checkpoints.jsonl` | `hooks compact-assist` |
 | `decisionReceipts` | `decisions.jsonl` | `skills suggest` / `hooks shadow`（Decision Contractのreceipt。Telemetry有効時） |
+| `reviewReceipts` | `reviews.jsonl` | `hooks review`（本文なしの意味レビュー、route、fix、費用receipt） |
 
 ```bash
 jevx data path            # 場所・サイズ・レコード数（--jsonあり）
@@ -336,7 +374,7 @@ jevx data purge           # 削除対象を表示するだけ
 jevx data purge --yes     # 実際に削除する
 ```
 
-`purge` が消すのは上の5ファイルと、空になった `compaction/` だけ。利用者が作る `.jevx/compact-context.md`、Codexの `hooks.json` と `hooks.json.jevx.bak`、`--output` で指定した評価レポートには触れない。`export` は壊れた行があると、その内容を表示せずにファイル名と行番号だけを返す。
+`purge` が消すのは上の6ファイルと、空になった `compaction/` だけ。利用者が作る `.jevx/compact-context.md`、Codexの `hooks.json` と `hooks.json.jevx.bak`、`--output` で指定した評価レポートには触れない。`export` は壊れた行があると、その内容を表示せずにファイル名と行番号だけを返す。inventory/export/purgeのdata schemaはreview receipt追加に伴いv2。
 
 ## Codex Skillとしてセットアップする
 
@@ -400,7 +438,7 @@ printf '%s\n' \
       --output /tmp/jevx-hooks.jsonl
 ```
 
-`--output` へ保存されるHook recordは、hashed IDsとprompt非保存を含む現行schemaの観測記録だよ。`trigger`、`source`、`selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなrecordを拒否し、既存schema v1のloadでは該当metadataを正規化・欠損化して分析互換性を保つよ。
+`--output` へ保存されるHook recordは、hashed IDsとprompt非保存を含む現行schemaの観測記録だよ。任意の`codexUsage`/`codex` payloadがあればmodel、reasoning、通常/昇格Token、fallback、costも残し、`cost`にはJev/Codex/totalとestimated/actual、通貨・価格版を記録する。取得不能な費用は`unknown`/`unavailable`のままだよ。`trigger`、`source`、`selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなrecordを拒否し、既存schema v1のloadでは該当metadataを正規化・欠損化して分析互換性を保つよ。
 
 - `sessionIdSha256`、`turnIdSha256`、`modelSha256`、`correlationIdSha256`
 - `promptSha256`、`promptChars`
@@ -459,10 +497,11 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 | --- | --- | --- | --- |
 | `SessionStart` | `startup\|resume\|clear\|compact` | checkpointを補助contextとして復元 | なし |
 | `PreCompact` | `manual\|auto` | compact前のmetadataを記録 | なし |
-| `PostCompact` | `manual\|auto` | compact後のmetadataを記録 | なし |
-| `UserPromptSubmit` | なし | Skill選択をshadow観測 | Jev設定時はあり |
+| `PostCompact` | `manual\|auto` | compact後のmetadataを記録 + diff review | `--allow-content`時だけ対象本文 |
+| `UserPromptSubmit` | なし | Skill選択をshadow観測 + prompt review | `--allow-content`時だけ対象本文 |
+| `Stop` | なし | final-answer review | `--allow-content`時だけ対象本文 |
 
-変更後はCodexで `/hooks` を開き、対象Hookをreview/trustしてから有効化してね。Codexのproject-local HookはプロジェクトTrustの影響を受けるため、設定ファイルを書けたこととHookが発火することは別に確認する。
+変更後はCodexで `/hooks` を開き、対象Hookをreview/trustしてから有効化してね。Codexのproject-local HookはプロジェクトTrustの影響を受けるため、設定ファイルを書けたこととHookが発火することは別に確認する。reviewの本文送信を許可しない場合は`--allow-content`なしでinstallする。
 
 ### Compaction補助の試作
 
@@ -527,7 +566,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
   --output /tmp/jevx-conversation-report.json
 ```
 
-レポートにはケースID、モデル、件数、保持率、デコイ漏えい件数、完了フラグ、遅延、Token集計だけが残り、`followUpText`、`requiredFacts`、`secretMarkers` の本文は再保存しない。
+レポートにはケースID、モデル、件数、保持率、デコイ漏えい件数、完了フラグ、遅延、Token集計、任意の`codexUsage`（reasoning、main/subagent、通常Token、昇格追加Token、elapsed、fallback、cost）が残り、`followUpText`、`requiredFacts`、`secretMarkers` の本文は再保存しない。`fallbackExtraCost`は取得できた同一価格版・通貨の追加費用だけを示し、欠落時は`null`のままになる。
 
 ### Compaction後のToken指標
 
@@ -556,7 +595,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
   eval --dry-run --json
 ```
 
-`none`、`local_keyword`、`local_rank`、Jev（`not_run`）を同じfixtureで比較する。`noneRecall` は `expectedNone` 分母の recall（`noneCorrect / expectedNone`）。`nonePrecision` は同じ値を持つ互換キーで、名前と意味がずれているため新しい集計では `noneRecall` を使ってね（`schemaVersion` 1の間は両方を出力する）。
+`none`、`local_keyword`、`local_rank`、Jev（`not_run`）を同じfixtureで比較する。現行report schema 2は`baselineMode: "local_rank"`と`comparisons`を持ち、各modeについて`totalMsDelta`、`speedupRate`、`additionalCost`を出す。`noneRecall` は `expectedNone` 分母の recall（`noneCorrect / expectedNone`）。`nonePrecision` は同じ値を持つ互換キーで、名前と意味がずれているため新しい集計では `noneRecall` を使ってね。
 
 既定の `--fixtures jevx/evals/skill-selection.jsonl` と `--skill-dir jevx/evals/skills` はリポジトリルートからの相対パス。見つからない場合は、黙って空の評価をせずに終了コード2で指定方法を表示する。`eval --dry-run`ではJev/Gatewayへ外部送信しない。
 
@@ -583,7 +622,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
   --output /tmp/jevx-repeat.json
 ```
 
-レポートでは正解率・`none` recall（互換キー `nonePrecision`）・候補miss・fallback率・cache hit率・retry率・エラー率と、`discoveryMs`・`jevResponseMs`・`totalMs`・相対costの mean / p50 / p95 などを分けて確認できる。単回`eval --output`のcase JSONLには`id`・`kind`・`expected`・判定・metrics・error codeを保存し、prompt本文・fixtureの`keywords`・Jev response本文を保存しない。`eval-repeat --output`はcase JSONLではなくrun/mode集計だけを保存する。
+レポートでは正解率・`none` recall（互換キー `nonePrecision`）・候補miss・fallback率・cache hit率・retry率・エラー率と、`discoveryMs`・`jevResponseMs`・`totalMs`・相対cost・Jev/Codex/total monetary costの mean / p50 / p95 などを分けて確認できる。`comparisons`にはbaselineからの速度短縮率と追加費用が入り、いずれかが取得不能なら`null`のまま残る。単回`eval --output`のcase JSONLには`id`・`kind`・`expected`・判定・metrics・error codeを保存し、prompt本文・fixtureの`keywords`・Jev response本文を保存しない。`eval-repeat --output`はcase JSONLではなくrun/mode集計だけを保存する。
 
 ### Current / Latest baseline（2026-09-23）
 
@@ -619,7 +658,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 ## セキュリティとデータの扱い
 
-- Jevへ送るのは、マスキングしたprompt、redactした作業ディレクトリ、rawの候補Skill ID/name、redactしたdescription。Skill本文、過去会話全文、Tool結果、APIキーは送らない。
+- Jevへ送るのは、通常のSkill提案ではマスキングしたprompt、redactした作業ディレクトリ、rawの候補Skill ID/name、redactしたdescription。reviewで`--allow-content`を明示した場合だけ、対象として選択したprompt/plan/diff/final answerをredactして送る。Skill本文、設定本文、過去会話全文、raw Tool結果、APIキーは常に送らない。`hooks install`でUserPromptSubmit shadowを登録すると、APIキー設定時はredact済みpromptがreviewのopt-inとは独立して送信される。
 - `AI_GATEWAY_API_KEY` は環境変数からBearer認証へ使い、レスポンスやTelemetryへ書き出さない。
 - Telemetryはprompt本文やprobabilityではなくハッシュ・文字数・判定・選択時の`selectedSkill`（raw ID）・計測値を保存するため、Skill ID自体を秘密値にしない。
 - Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` / `Authorization: Basic <value>` の認識済み形式で値を保存・送信しない。任意の `Basic` 文言や未知のPIIを除去する完全なDLPではない。
@@ -668,8 +707,9 @@ cargo clippy --locked --manifest-path jevx/Cargo.toml --all-targets -- -D warnin
 カバレッジを確認できる環境では、Rustの行カバレッジ98%以上をゲートにする。
 
 ```bash
-cargo llvm-cov --locked --manifest-path jevx/Cargo.toml \
-  --all-features --workspace --summary-only --fail-under-lines 98
+cargo llvm-cov --locked --manifest-path jevx/Cargo.toml --all-targets \
+  --ignore-filename-regex 'src/(cli/.*|compact_assist|decision|discovery|error|gateway|hook_config|ranking|redaction|storage|telemetry|types)\.rs' \
+  --summary-only --fail-under-lines 98
 ```
 
 公開している `--json` のキーと終了コードは `jevx/tests/contract_requirements.rs` が実バイナリで固定している。キーを消す・名前を変えるときは `schemaVersion` を上げ、[互換性の約束](../../jevx/PHILOSOPHY.md#互換性の約束)に従う。

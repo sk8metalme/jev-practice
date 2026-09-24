@@ -7,13 +7,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::Config;
+use crate::cost::{CodexUsage, CostAccumulator, CostEstimate, CostStatus, CostSummary, total_cost};
 use crate::error::JevxError;
 use crate::ranking::suggest_with_judge;
 use crate::redaction::{redact, sha256_hex};
 use crate::storage::append_json_line;
 use crate::types::{CandidateDecision, Judge, SkillRecord, SuggestInput};
 
-const HOOK_SCHEMA_VERSION: u8 = 1;
+pub const HOOK_SCHEMA_VERSION: u8 = 2;
+const LEGACY_HOOK_SCHEMA_VERSION: u8 = 1;
 const REQUIRED_FACTS: [&str; 3] = [
     "task_id=compact-fixture-1",
     "acceptance=preserve-tests",
@@ -71,6 +73,10 @@ pub struct HookShadowRecord {
     pub output_tokens: Option<u64>,
     #[serde(rename = "errorCode", skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex: Option<CodexUsage>,
+    #[serde(default)]
+    pub cost: CostSummary,
     #[serde(rename = "elapsedMs")]
     pub elapsed_ms: u64,
 }
@@ -249,6 +255,10 @@ pub struct CompactionRun {
         skip_serializing_if = "Option::is_none"
     )]
     pub post_compaction_estimated_billable_tokens: Option<u64>,
+    #[serde(rename = "codexUsage", skip_serializing_if = "Option::is_none")]
+    pub codex_usage: Option<CodexUsage>,
+    #[serde(default)]
+    pub cost: CostSummary,
     #[serde(rename = "errorCode", skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
 }
@@ -306,6 +316,16 @@ pub struct CompactionSummary {
     pub post_compaction_estimated_billable_tokens_p50: Option<u64>,
     #[serde(rename = "postCompactionEstimatedBillableTokensP95")]
     pub post_compaction_estimated_billable_tokens_p95: Option<u64>,
+    #[serde(rename = "jevCost")]
+    pub jev_cost: Option<f64>,
+    #[serde(rename = "codexCost")]
+    pub codex_cost: Option<f64>,
+    #[serde(rename = "totalCost")]
+    pub total_cost: Option<f64>,
+    #[serde(rename = "fallbackExtraCost")]
+    pub fallback_extra_cost: Option<f64>,
+    #[serde(rename = "costStatusCounts")]
+    pub cost_status_counts: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -342,6 +362,10 @@ pub struct ConversationCompactionCase {
     pub compaction_usage: Option<TokenUsageSnapshot>,
     #[serde(default)]
     pub post_compaction_usage: Option<TokenUsageSnapshot>,
+    #[serde(rename = "postCompactionCost", default)]
+    pub post_compaction_cost: Option<CostEstimate>,
+    #[serde(rename = "codexUsage", default)]
+    pub codex_usage: Option<CodexUsage>,
     pub observed_events: Vec<String>,
 }
 
@@ -379,6 +403,7 @@ pub async fn run_shadow(
     let session_id = payload.get("session_id").and_then(Value::as_str);
     let turn_id = payload.get("turn_id").and_then(Value::as_str);
     let model = payload.get("model").and_then(Value::as_str);
+    let codex = parse_codex_usage(&payload)?;
     let correlation_id_sha256 = match (session_id, turn_id) {
         (Some(session_id), Some(turn_id)) => {
             let value = format!("{session_id}:{turn_id}");
@@ -407,6 +432,8 @@ pub async fn run_shadow(
         input_tokens: None,
         output_tokens: None,
         error_code: None,
+        codex,
+        cost: CostSummary::default(),
         elapsed_ms: 0,
     };
 
@@ -438,12 +465,36 @@ pub async fn run_shadow(
                 record.total_ms = Some(result.metrics.total_ms);
                 record.input_tokens = result.metrics.input_tokens;
                 record.output_tokens = result.metrics.output_tokens;
+                if let Some(cost) = result.metrics.cost {
+                    record.cost = cost;
+                }
             }
             Err(error) => record.error_code = Some(error_code(&error).to_owned()),
         }
     }
+    if let Some(codex) = &record.codex {
+        record.cost.codex = codex.cost.clone();
+        record.cost.total = total_cost(&record.cost.jev, &record.cost.codex);
+    }
     record.elapsed_ms = elapsed_ms(started);
     Ok(shadow_result(record))
+}
+
+fn parse_codex_usage(payload: &Value) -> Result<Option<CodexUsage>, JevxError> {
+    let Some(value) = payload.get("codexUsage").or_else(|| payload.get("codex")) else {
+        return Ok(None);
+    };
+    let mut usage: CodexUsage = serde_json::from_value(value.clone())
+        .map_err(|_| JevxError::InvalidInput("codexUsage must be a valid object".to_owned()))?;
+    usage.model = sanitized_identifier(usage.model.as_deref(), 128);
+    usage.reasoning_effort = sanitized_identifier(usage.reasoning_effort.as_deref(), 32);
+    usage.fallback_stage = sanitized_identifier(usage.fallback_stage.as_deref(), 64);
+    if !usage.is_valid() {
+        return Err(JevxError::InvalidInput(
+            "codexUsage contains invalid cost metadata".to_owned(),
+        ));
+    }
+    Ok(Some(usage))
 }
 
 fn shadow_result(record: HookShadowRecord) -> HookShadowResult {
@@ -716,6 +767,20 @@ fn validate_conversation_case(
             usage.validate(&format!("{context}: {label}"))?;
         }
     }
+    if let Some(cost) = &case.post_compaction_cost
+        && !cost.is_valid()
+    {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: postCompactionCost has invalid status, amount, or metadata"
+        )));
+    }
+    if let Some(usage) = &case.codex_usage
+        && !usage.is_valid()
+    {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: codexUsage contains unsafe metadata"
+        )));
+    }
     if case.observed_events.is_empty() || case.observed_events.len() > 32 {
         return Err(JevxError::InvalidInput(format!(
             "{context}: observedEvents must contain 1..32 items"
@@ -776,6 +841,7 @@ fn validate_hook_record(record: &HookShadowRecord, context: &str) -> Result<(), 
             .correlation_id_sha256
             .as_deref()
             .is_some_and(|value| !safe_identifier(value, 128))
+        || record.codex.as_ref().is_some_and(|codex| !codex.is_valid())
     {
         return Err(JevxError::InvalidInput(format!(
             "{context}: hook record contains an unsafe identifier"
@@ -788,10 +854,18 @@ fn normalize_loaded_hook_record(
     record: &mut HookShadowRecord,
     context: &str,
 ) -> Result<(), JevxError> {
+    if record.schema_version == LEGACY_HOOK_SCHEMA_VERSION {
+        record.schema_version = HOOK_SCHEMA_VERSION;
+    }
     if record.schema_version == HOOK_SCHEMA_VERSION {
         record.trigger = sanitized_identifier(record.trigger.as_deref(), 32);
         record.source = sanitized_identifier(record.source.as_deref(), 64);
         record.selected_skill = sanitized_skill_identifier(record.selected_skill.as_deref(), 128);
+        if let Some(codex) = &mut record.codex {
+            codex.model = sanitized_identifier(codex.model.as_deref(), 128);
+            codex.reasoning_effort = sanitized_identifier(codex.reasoning_effort.as_deref(), 32);
+            codex.fallback_stage = sanitized_identifier(codex.fallback_stage.as_deref(), 64);
+        }
     }
     validate_hook_record(record, context)
 }
@@ -854,6 +928,16 @@ fn conversation_once(run: usize, case: &ConversationCompactionCase) -> Compactio
         .post_compaction_usage
         .as_ref()
         .map(TokenUsageSnapshot::estimated_billable_tokens);
+    let codex_cost = case
+        .post_compaction_cost
+        .clone()
+        .or_else(|| case.codex_usage.as_ref().map(|usage| usage.cost.clone()))
+        .unwrap_or_else(CostEstimate::unavailable);
+    let cost = CostSummary {
+        jev: CostEstimate::unavailable(),
+        total: total_cost(&CostEstimate::unavailable(), &codex_cost),
+        codex: codex_cost,
+    };
     CompactionRun {
         run,
         case_id: Some(case.case_id.clone()),
@@ -881,6 +965,8 @@ fn conversation_once(run: usize, case: &ConversationCompactionCase) -> Compactio
         post_compaction_cache_hit_rate,
         post_compaction_uncached_input_tokens,
         post_compaction_estimated_billable_tokens,
+        codex_usage: case.codex_usage.clone(),
+        cost,
         error_code,
     }
 }
@@ -943,6 +1029,38 @@ fn build_compaction_report(
         .iter()
         .filter_map(|run| run.post_compaction_estimated_billable_tokens)
         .collect::<Vec<_>>();
+    let mut jev_cost = CostAccumulator::default();
+    let mut codex_cost = CostAccumulator::default();
+    let mut total_cost_value = CostAccumulator::default();
+    let mut fallback_extra_cost = CostAccumulator::default();
+    let mut cost_status_counts = BTreeMap::new();
+    for run in &runs {
+        let cost = &run.cost;
+        for (name, estimate) in [
+            ("jev", &cost.jev),
+            ("codex", &cost.codex),
+            ("total", &cost.total),
+        ] {
+            let status = match estimate.status {
+                CostStatus::Available => "available",
+                CostStatus::Unknown => "unknown",
+                CostStatus::Unavailable => "unavailable",
+            };
+            *cost_status_counts
+                .entry(format!("{name}:{status}"))
+                .or_insert(0) += 1;
+        }
+        jev_cost.add(&cost.jev);
+        codex_cost.add(&cost.codex);
+        total_cost_value.add(&cost.total);
+        if let Some(estimate) = run
+            .codex_usage
+            .as_ref()
+            .and_then(|usage| usage.additional_cost.as_ref())
+        {
+            fallback_extra_cost.add(estimate);
+        }
+    }
     let secret_leaks = runs.iter().map(|run| run.secret_leaks).sum();
     let completed_runs = runs.iter().filter(|run| run.compaction_completed).count();
     let summary = CompactionSummary {
@@ -999,6 +1117,11 @@ fn build_compaction_report(
             &post_compaction_estimated_billable_tokens,
             95,
         ),
+        jev_cost: jev_cost.amount(),
+        codex_cost: codex_cost.amount(),
+        total_cost: total_cost_value.amount(),
+        fallback_extra_cost: fallback_extra_cost.amount(),
+        cost_status_counts,
     };
     CompactionEvaluationReport {
         schema_version: HOOK_SCHEMA_VERSION,
@@ -1051,6 +1174,8 @@ fn compact_once(run: usize) -> CompactionRun {
         post_compaction_cache_hit_rate: None,
         post_compaction_uncached_input_tokens: None,
         post_compaction_estimated_billable_tokens: None,
+        codex_usage: None,
+        cost: CostSummary::default(),
         error_code,
     }
 }
@@ -1102,6 +1227,7 @@ fn error_code(error: &JevxError) -> &'static str {
         JevxError::Provider(_) => "provider_error",
         JevxError::ProviderWithMetrics { .. } => "provider_error",
         JevxError::Timeout => "timeout",
+        JevxError::TimeoutWithMetrics { .. } => "timeout",
         JevxError::Io(_) => "io_error",
         JevxError::Json(_) => "json_error",
         JevxError::Yaml(_) => "yaml_error",

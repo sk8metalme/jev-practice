@@ -5,7 +5,7 @@
 
 ## 目的
 
-Jevを使う価値を、Skill選択の精度・速度・token usage・安全性で確認する。単に「選ばれたか」だけでなく、Jevを使わない場合と比較して、日常のCodex CLIに追加するコストに見合うかを測る。
+Jevを使う価値を、Skill選択・意味レビュー・route・Compaction/計画の速度、品質、安全性、Jev費用、Codex費用で確認する。単に「選ばれたか」だけでなく、Jevを使わない場合と比較して、日常のCodex CLIに追加する総コストに見合うかを測る。
 
 ## 比較対象
 
@@ -13,6 +13,7 @@ Jevを使う価値を、Skill選択の精度・速度・token usage・安全性�
 2. **ローカルキーワード (`local_keyword`)**: `name`・`description`の単純な一致だけでTop-1を決めるベースライン
 3. **ローカル順位 (`local_rank`)**: 現行ランキング実装で候補を順位付けしTop-1を返す、外部送信なしのベースライン
 4. **jevx Jev (`jevx`)**: ローカル候補絞り込み + batched Choice + 確率閾値
+5. **review/route**: 4カテゴリのlocal/typed finding + route evidence + fix gate
 
 `jevx/evals/skill-selection.jsonl`には、合成ケース30件と、秘密情報を含まない匿名化形式のケース10件を収録している。匿名化ケースは実際の利用者ログを再現したものではなく、実データを保存しない評価パイプラインを先に固定するためのテンプレートケースだよ。
 
@@ -54,6 +55,11 @@ Jevを使う価値を、Skill選択の精度・速度・token usage・安全性�
 | cache hit rate | 同一contract・policy・state digestでcacheを再利用した割合 |
 | retry rate / average retries | retryが発生した実行の割合と実行あたりのretry平均 |
 | relative cost | input/output tokenへ設定weightを掛けたproxy cost。価格そのものではない |
+| `jevCost` / `codexCost` / `totalCost` | Provider usage/cost payloadから得たcomponent/合算。`unknown`/`unavailable`を0にしない |
+| cost basis | `estimated`（Providerの推定値など）と`actual`（外部実績値）を分離 |
+| task/turn/session cost | receiptのhash IDごとのJev/Codex/total合計。raw IDや本文は保存しない |
+| successful review/fix cost | Completed/None review、Applied fixに紐づくtotalCost |
+| speed vs cost | `baselineMode=local_rank`に対する`totalMsDelta`、`speedupRate`、`additionalCost`を同じrun条件で提示。`eval-repeat`は各値を分布化 |
 
 Decision Contractの実行結果は`decisions.jsonl`へ安全なreceiptとして記録する。`DecisionReceipt`はcontract/question/policy version（policy閾値を含むdigest付き）、state digest、実際のstate bytes、適用したstate/candidate予算、候補window、omitted/redaction理由、typed answer digest、status、fallback、calls/retry、latency、usage、relative cost、replay IDを持つが、prompt本文・Skill本文・Tool結果・APIキーを持たない。`read_decision_receipts`で読み込み、`replay_receipt`でversion、state metadata、recorded answerとcode-side resultを検証する。不一致は成功へ変換せず`degraded`として扱う。`jevx/evals/decision-contract-baseline.jsonl`と対応するstate fixtureは実際に生成した値で、受け入れテストからreplayまで検証する。
 
@@ -133,7 +139,7 @@ APIキーありで同梱40ケースを実際に測定した結果は、[jevx API
 
 同じ条件で複数回測定する場合は`eval-repeat`を使う。run単位の品質分散と、`local_rank` / `jevx` が計測するケースの`discoveryMs`・`jevResponseMs`・`totalMs`・token分布をまとめて出力する。`eval-repeat --output`はrun/mode集計（runごとのmode summaryを含む）だけを保存するJSONで、case JSONLやprompt/response本文は出力しない。
 
-反復runではprocess共有Decision cacheを無効化してrun間の回答再利用を防ぐ。単回のcache hitは外部Jevを呼んでいないため`jevResponseMs=0`、relative costも`0.0`として集計し、ローカル処理時間は`totalMs`だけに含める。
+反復runではprocess共有Decision cacheを無効化してrun間の回答再利用を防ぐ。単回のcache hitは外部Jevを呼んでいないため`jevResponseMs=0`、relative costも`0.0`として集計し、ローカル処理時間は`totalMs`だけに含める。`eval`のreport schema 2は`baselineMode=local_rank`と`comparisons`を持ち、速度差分と追加費用を同じrun条件で出す。
 
 ```bash
 cargo run --locked --manifest-path jevx/Cargo.toml -- \
@@ -147,7 +153,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 APIキーありで5回測定した結果は[複数回・APIキーあり実測レポート](../research/evaluations/jevx-variance-evaluation-2026-09-21.md)に記録している。jevxは5回×40ケースで正解率平均98.0%、Jev p50/p95 427/610ms、total p50/p95 429/612ms、ローカル探索p95 2msだった。Codex Hookのshadow測定とcompaction相当fixtureの結果は[Codex Hook shadow / compaction評価](../research/evaluations/jevx-codex-hooks-evaluation.md)に分けている。
 
-標準出力のレポートは次のような構造になる。以下の `jevx` 数値は2026-09-21のHistorical exampleであり、現行dry-runの値ではない。現行実装では各mode summaryへfallback/cache/retry/relative costの集計も含まれる。
+標準出力のレポートは次のような構造になる。以下の `jevx` 数値は2026-09-21のHistorical exampleであり、現行dry-runの値ではない。現行実装ではreport schema 2として`baselineMode`と`comparisons`を持ち、各mode summaryへfallback/cache/retry/relative cost/費用statusの集計も含まれる。
 
 ```json
 {
@@ -210,6 +216,8 @@ v1のリリース判断では、次を同時に満たすことを目安にする
 - APIキー・Skill本文・生プロンプト・probabilityがTelemetryへ出ない
 - state byte/window超過、timeout、provider error、低確信度が`accepted`や自動allowへ変換されない
 - recorded answerをJevなしで同じcode-side decisionへ再現できる
+- 速度20%以上短縮、品質改善、費用変化を同じレポートで説明できる。速度だけでは合格にしない
+- 4カテゴリのreview、route applied/degraded/failed、fix hash gate、推定/実費を確認できる
 - 新規Rust実行コードのラインカバレッジ >= 98%
 
 この評価は、精度が良くても遅すぎる・情報を送りすぎる場合を合格にしないためのものだよ。

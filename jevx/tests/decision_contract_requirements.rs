@@ -389,6 +389,7 @@ async fn execution_replay_and_cache_never_call_jev_for_replay_or_hit() {
             usage: Some(Usage {
                 input_tokens: 10,
                 output_tokens: 2,
+                cost: None,
             }),
             calls: 1,
             retries: 0,
@@ -669,6 +670,7 @@ async fn ranking_records_safe_receipts_and_uses_process_cache() {
             usage: Some(Usage {
                 input_tokens: 10,
                 output_tokens: 2,
+                cost: None,
             }),
         },
         calls: calls.clone(),
@@ -948,6 +950,7 @@ async fn baseline_receipts_are_generated_and_replayable() {
                     usage: usage.map(|(input_tokens, output_tokens)| Usage {
                         input_tokens,
                         output_tokens,
+                        cost: None,
                     }),
                     calls: 1,
                     retries: 0,
