@@ -9,7 +9,7 @@
 | 問題が先 | 完了 | [jevx-value.md](jevx-value.md)に利用者の困りごと、採用条件、捨てるものを記載 |
 | Non-goals | 完了 | Skill自動実行、auto-allow、会話書換、Tool Result削除、費用上限を正本へ記載 |
 | 既定値優先 | 完了 | content外部送信とfixを既定無効。費用はProvider usage/cost payloadを使い、単価設定を追加しない |
-| 公開境界 | 完了 | CLI、JSON、receipt、Hook marker、Hook record v3、checkpoint v2、data schema v3と移行テストを確認 |
+| 公開境界 | 完了 | CLI、JSON、receipt、Hook marker、Hook record v4、checkpoint v2、data schema v4と移行テストを確認 |
 | ユーザー主権 | 完了 | `$JEVX_HOME`管理、data export/purge、`--dry-run`、`--yes`、明示opt-in |
 | 最初の5分 | 維持 | `jevx/README.md`からvalue/cost/CLIへリンク。導入とdoctorのnextStepsを保持 |
 | 局所性 | 完了 | `src/cli/`のcommand境界、review/route/costの責務分離、正本リンクを追加 |

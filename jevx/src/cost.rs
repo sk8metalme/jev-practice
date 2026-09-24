@@ -152,11 +152,13 @@ impl CostAccumulator {
             self.invalid_metadata = true;
             return;
         }
+        let neutral_zero =
+            matches!(estimate.status, CostStatus::Available) && estimate.amount == Some(0.0);
         if let Some(basis) = self.basis {
-            if basis != estimate.basis {
+            if basis != estimate.basis && !neutral_zero {
                 self.invalid_metadata = true;
             }
-        } else {
+        } else if !neutral_zero {
             self.basis = Some(estimate.basis);
         }
         match estimate.status {
@@ -665,6 +667,24 @@ mod tests {
             Some("fixture-1".to_owned()),
         ));
         assert_eq!(mixed.amount(), None);
+
+        let mut zero_before_estimated = CostAccumulator::default();
+        zero_before_estimated.add(&CostEstimate::actual(0.0, None, None));
+        zero_before_estimated.add(&CostEstimate::available(
+            0.1,
+            Some("USD".to_owned()),
+            Some("fixture-1".to_owned()),
+        ));
+        assert_eq!(zero_before_estimated.amount(), Some(0.1));
+
+        let mut zero_after_estimated = CostAccumulator::default();
+        zero_after_estimated.add(&CostEstimate::available(
+            0.1,
+            Some("USD".to_owned()),
+            Some("fixture-1".to_owned()),
+        ));
+        zero_after_estimated.add(&CostEstimate::actual(0.0, None, None));
+        assert_eq!(zero_after_estimated.amount(), Some(0.1));
 
         let mut mixed_version = CostAccumulator::default();
         mixed_version.add(&CostEstimate::available(

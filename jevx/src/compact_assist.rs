@@ -158,23 +158,42 @@ fn merge_previous_usage(record: &mut HookShadowRecord, previous: Option<&Compact
     let Some(previous) = previous else {
         return;
     };
+    if !same_compaction_cycle(record, previous) {
+        return;
+    }
     if record.pre_compaction_usage.is_none() {
         record.pre_compaction_usage = previous.pre_compaction_usage.clone();
     }
     if record.compaction_usage.is_none() {
         record.compaction_usage = previous.compaction_usage.clone();
     }
-    if record.token_savings.is_none()
-        && let (Some(before), Some(after)) = (
-            record.pre_compaction_usage.as_ref(),
-            record.post_compaction_usage.as_ref(),
-        )
-    {
+    if let (Some(before), Some(after)) = (
+        record.pre_compaction_usage.as_ref(),
+        record.post_compaction_usage.as_ref(),
+    ) {
         record.token_savings = Some(TokenSavings::from_snapshots(
             Some(before),
             Some(after),
             "hook_checkpoint",
         ));
+    }
+}
+
+fn same_compaction_cycle(record: &HookShadowRecord, previous: &CompactCheckpoint) -> bool {
+    same_optional_identity(
+        record.turn_id_sha256.as_deref(),
+        previous.turn_id_sha256.as_deref(),
+    ) && same_optional_identity(
+        record.correlation_id_sha256.as_deref(),
+        previous.correlation_id_sha256.as_deref(),
+    )
+}
+
+fn same_optional_identity(left: Option<&str>, right: Option<&str>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left == right,
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -195,7 +214,29 @@ fn latest_pre_compaction_checkpoint(
     state_dir: &Path,
     session_id_sha256: Option<&str>,
 ) -> Result<Option<CompactCheckpoint>, JevxError> {
-    latest_checkpoint_where(state_dir, session_id_sha256, |event| event == "PreCompact")
+    let Some(session_id_sha256) = session_id_sha256 else {
+        return Ok(None);
+    };
+    let path = state_dir.join("checkpoints.jsonl");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(path)?;
+    let mut latest = None;
+    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(checkpoint) = serde_json::from_str::<CompactCheckpoint>(line) else {
+            continue;
+        };
+        if checkpoint.session_id_sha256.as_deref() != Some(session_id_sha256) {
+            continue;
+        }
+        match checkpoint.hook_event_name.as_str() {
+            "PreCompact" => latest = Some(checkpoint),
+            "PostCompact" => latest = None,
+            _ => {}
+        }
+    }
+    Ok(latest)
 }
 
 fn latest_checkpoint_where<F>(
@@ -380,13 +421,22 @@ mod tests {
             .hook_event_name,
             "PostCompact"
         );
+        assert!(
+            latest_pre_compaction_checkpoint(
+                checkpoint_path.parent().expect("state dir"),
+                Some("session-hash")
+            )
+            .expect("latest pre")
+            .is_none()
+        );
+        append_checkpoint(&checkpoint_path, &checkpoint).expect("next pre checkpoint");
         assert_eq!(
             latest_pre_compaction_checkpoint(
                 checkpoint_path.parent().expect("state dir"),
                 Some("session-hash")
             )
             .expect("latest pre")
-            .expect("pre checkpoint")
+            .expect("next pre checkpoint")
             .hook_event_name,
             "PreCompact"
         );

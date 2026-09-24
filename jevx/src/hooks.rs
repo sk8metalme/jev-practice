@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,21 +9,28 @@ use serde_json::Value;
 use crate::Config;
 use crate::cost::{CodexUsage, CostAccumulator, CostEstimate, CostStatus, CostSummary, total_cost};
 use crate::error::JevxError;
-use crate::hook_dedupe::{CachedHookDecision, DedupeStore};
+use crate::hook_dedupe::{DedupeClaim, DedupeStore};
 use crate::ranking::suggest_with_judge;
 use crate::redaction::{redact, sha256_hex};
 use crate::storage::append_json_line;
 use crate::types::{CandidateDecision, Judge, SkillRecord, SuggestInput};
 
-pub const HOOK_SCHEMA_VERSION: u8 = 3;
+pub const HOOK_SCHEMA_VERSION: u8 = 4;
 const LEGACY_HOOK_SCHEMA_VERSION: u8 = 1;
-const PREVIOUS_HOOK_SCHEMA_VERSION: u8 = 2;
+const OLDER_HOOK_SCHEMA_VERSION: u8 = 2;
+const PREVIOUS_HOOK_SCHEMA_VERSION: u8 = 3;
 const REQUIRED_FACTS: [&str; 3] = [
     "task_id=compact-fixture-1",
     "acceptance=preserve-tests",
     "next=run-cargo-test",
 ];
 const SENSITIVE_FIXTURE_MARKERS: [&str; 2] = ["api_key=fixture-only", "secret=fixture-only"];
+
+enum DedupeAcquire {
+    Hit(crate::hook_dedupe::CachedHookDecision),
+    Owner,
+    Timeout,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct HookResponse {
@@ -75,6 +82,8 @@ pub struct HookShadowRecord {
     pub output_tokens: Option<u64>,
     #[serde(rename = "errorCode", skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
+    #[serde(rename = "dedupeError", skip_serializing_if = "Option::is_none")]
+    pub dedupe_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex: Option<CodexUsage>,
     #[serde(rename = "dedupeHit", default)]
@@ -170,6 +179,25 @@ pub struct TokenSavings {
 }
 
 impl TokenSavings {
+    pub fn unavailable_from_snapshots(
+        before: Option<&TokenUsageSnapshot>,
+        after: Option<&TokenUsageSnapshot>,
+        source: &str,
+    ) -> Self {
+        Self {
+            before_tokens: before
+                .filter(|usage| usage.has_total_tokens())
+                .map(|usage| usage.total_tokens),
+            after_tokens: after
+                .filter(|usage| usage.has_total_tokens())
+                .map(|usage| usage.total_tokens),
+            saved_tokens: None,
+            reduction_rate: None,
+            source: source.to_owned(),
+            status: MeasurementStatus::Unavailable,
+        }
+    }
+
     pub fn from_snapshots(
         before: Option<&TokenUsageSnapshot>,
         after: Option<&TokenUsageSnapshot>,
@@ -554,7 +582,7 @@ pub async fn run_shadow(
     let compaction_usage = parse_token_usage(&payload, "compactionUsage")?;
     let post_compaction_usage = parse_token_usage(&payload, "postCompactionUsage")?;
     let post_compaction_cost = parse_post_compaction_cost(&payload)?;
-    let token_savings = TokenSavings::from_snapshots(
+    let token_savings = TokenSavings::unavailable_from_snapshots(
         pre_compaction_usage.as_ref(),
         post_compaction_usage.as_ref(),
         "hook_payload",
@@ -587,6 +615,7 @@ pub async fn run_shadow(
         input_tokens: None,
         output_tokens: None,
         error_code: None,
+        dedupe_error: None,
         codex,
         dedupe_hit: false,
         dedupe_key_sha256: None,
@@ -620,10 +649,10 @@ pub async fn run_shadow(
         let dedupe_key = user_prompt_dedupe_key(&record, &cwd, skills, config);
         record.dedupe_key_sha256 = dedupe_key.clone();
         let dedupe_store = config.telemetry_path.parent().map(DedupeStore::new);
-        let mut dedupe_error = false;
+        let mut dedupe_error = None;
         if let (Some(key), Some(store)) = (dedupe_key.as_deref(), dedupe_store.as_ref()) {
-            match store.lookup(key) {
-                Ok(Some(cached)) => {
+            match wait_for_dedupe_claim(store, key, config.timeout).await {
+                Ok(DedupeAcquire::Hit(cached)) => {
                     record.dedupe_hit = true;
                     record.decision = Some(cached.decision);
                     record.selected_skill = cached.selected_skill;
@@ -632,33 +661,33 @@ pub async fn run_shadow(
                     record.elapsed_ms = elapsed_ms(started);
                     return Ok(shadow_result(record));
                 }
-                Ok(None) => {}
-                Err(_) => dedupe_error = true,
+                Ok(DedupeAcquire::Owner) => {}
+                Ok(DedupeAcquire::Timeout) => {
+                    record.cost.jev = CostEstimate::actual(0.0, None, None);
+                    record.dedupe_error = Some("wait_timeout".to_owned());
+                    record.elapsed_ms = elapsed_ms(started);
+                    return Ok(shadow_result(record));
+                }
+                Err(_) => dedupe_error = Some("claim_error"),
             }
         }
         let Some(prompt) = prompt.map(str::trim).filter(|value| !value.is_empty()) else {
             record.cost.jev = CostEstimate::actual(0.0, None, None);
-            record.error_code = Some(
-                if dedupe_error {
-                    "dedupe_error"
-                } else {
-                    "invalid_input"
-                }
-                .to_owned(),
-            );
+            record.error_code = Some("invalid_input".to_owned());
+            record.dedupe_error = dedupe_error.map(str::to_owned);
             record.elapsed_ms = elapsed_ms(started);
             return Ok(shadow_result(record));
         };
         let Some(judge) = judge else {
             record.cost.jev = CostEstimate::actual(0.0, None, None);
-            record.error_code = Some(
-                if dedupe_error {
-                    "dedupe_error"
-                } else {
-                    "missing_api_key"
-                }
-                .to_owned(),
-            );
+            record.error_code = Some("missing_api_key".to_owned());
+            record.dedupe_error = dedupe_error.map(str::to_owned);
+            if let (Some(key), Some(store)) = (dedupe_key.as_deref(), dedupe_store.as_ref())
+                && store.release(key).is_err()
+                && record.dedupe_error.is_none()
+            {
+                record.dedupe_error = Some("release_error".to_owned());
+            }
             record.elapsed_ms = elapsed_ms(started);
             return Ok(shadow_result(record));
         };
@@ -678,44 +707,56 @@ pub async fn run_shadow(
                 if let Some(cost) = result.metrics.cost {
                     record.cost = cost;
                 }
-                if dedupe_error {
-                    record.error_code = Some("dedupe_error".to_owned());
-                }
-                if result.metrics.fallback != Some(true)
-                    && !matches!(decision, CandidateDecision::Error)
-                    && let (Some(key), Some(store)) = (dedupe_key.as_deref(), dedupe_store.as_ref())
-                    && store
-                        .insert(CachedHookDecision {
-                            key_sha256: key.to_owned(),
-                            created_at_ms: 0,
-                            decision,
-                            selected_skill: record.selected_skill.clone(),
-                            discovery_ms: record.discovery_ms,
-                            jev_response_ms: record.jev_response_ms,
-                            total_ms: record.total_ms,
-                            input_tokens: record.input_tokens,
-                            output_tokens: record.output_tokens,
-                        })
-                        .is_err()
-                {
-                    record.error_code = Some("dedupe_error".to_owned());
+                record.dedupe_error = dedupe_error.map(str::to_owned);
+                if let (Some(key), Some(store)) = (dedupe_key.as_deref(), dedupe_store.as_ref()) {
+                    if result.metrics.fallback != Some(true)
+                        && !matches!(decision, CandidateDecision::Error)
+                    {
+                        if store
+                            .complete(key, decision, record.selected_skill.clone())
+                            .is_err()
+                            && record.dedupe_error.is_none()
+                        {
+                            record.dedupe_error = Some("complete_error".to_owned());
+                        }
+                    } else if store.release(key).is_err() && record.dedupe_error.is_none() {
+                        record.dedupe_error = Some("release_error".to_owned());
+                    }
                 }
             }
             Err(error) => {
-                record.error_code = Some(
-                    if dedupe_error {
-                        "dedupe_error"
-                    } else {
-                        error_code(&error)
-                    }
-                    .to_owned(),
-                )
+                record.error_code = Some(error_code(&error).to_owned());
+                record.dedupe_error = dedupe_error.map(str::to_owned);
+                if let (Some(key), Some(store)) = (dedupe_key.as_deref(), dedupe_store.as_ref())
+                    && store.release(key).is_err()
+                    && record.dedupe_error.is_none()
+                {
+                    record.dedupe_error = Some("release_error".to_owned());
+                }
             }
         }
     }
     apply_provider_cost(&mut record);
     record.elapsed_ms = elapsed_ms(started);
     Ok(shadow_result(record))
+}
+
+async fn wait_for_dedupe_claim(
+    store: &DedupeStore,
+    key: &str,
+    timeout: Duration,
+) -> Result<DedupeAcquire, JevxError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match store.claim(key)? {
+            DedupeClaim::Wait if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            DedupeClaim::Wait => return Ok(DedupeAcquire::Timeout),
+            DedupeClaim::Hit(entry) => return Ok(DedupeAcquire::Hit(entry)),
+            DedupeClaim::Owner => return Ok(DedupeAcquire::Owner),
+        }
+    }
 }
 
 fn parse_token_usage(
@@ -1086,7 +1127,7 @@ pub fn analyze_hook_stats(records: &[HookShadowRecord]) -> Result<HookStatsRepor
                 .entry(decision_label(decision).to_owned())
                 .or_insert(0) += 1;
         }
-        if record.error_code.is_some() {
+        if record.error_code.is_some() || record.dedupe_error.is_some() {
             error_count += 1;
         }
         latencies.push(record.elapsed_ms);
@@ -1128,27 +1169,24 @@ pub fn analyze_hook_stats(records: &[HookShadowRecord]) -> Result<HookStatsRepor
         }
     }
 
-    let before_tokens = measured_savings
-        .iter()
-        .filter_map(|savings| savings.before_tokens)
-        .try_fold(0_u64, |sum, value| sum.checked_add(value));
-    let after_tokens = measured_savings
-        .iter()
-        .filter_map(|savings| savings.after_tokens)
-        .try_fold(0_u64, |sum, value| sum.checked_add(value));
-    let saved_tokens = measured_savings
-        .iter()
-        .filter_map(|savings| savings.saved_tokens)
-        .try_fold(0_u64, |sum, value| sum.checked_add(value));
-    let before_tokens = (!measured_savings.is_empty())
-        .then_some(before_tokens)
-        .flatten();
-    let after_tokens = (!measured_savings.is_empty())
-        .then_some(after_tokens)
-        .flatten();
-    let saved_tokens = (!measured_savings.is_empty())
-        .then_some(saved_tokens)
-        .flatten();
+    let before_tokens = checked_optional_token_sum(
+        measured_savings
+            .iter()
+            .filter_map(|savings| savings.before_tokens),
+        "beforeTokens",
+    )?;
+    let after_tokens = checked_optional_token_sum(
+        measured_savings
+            .iter()
+            .filter_map(|savings| savings.after_tokens),
+        "afterTokens",
+    )?;
+    let saved_tokens = checked_optional_token_sum(
+        measured_savings
+            .iter()
+            .filter_map(|savings| savings.saved_tokens),
+        "savedTokens",
+    )?;
     let token_reduction_rate = match (before_tokens, saved_tokens) {
         (Some(before), Some(saved)) if before > 0 => Some(saved as f64 / before as f64),
         _ => None,
@@ -1200,11 +1238,7 @@ pub fn compact_evaluation(run_count: usize) -> Result<CompactionEvaluationReport
     for run in 1..=run_count {
         runs.push(compact_once(run));
     }
-    Ok(build_compaction_report(
-        "shadow",
-        "synthetic-codex-compaction-v1",
-        runs,
-    ))
+    build_compaction_report("shadow", "synthetic-codex-compaction-v1", runs)
 }
 
 pub fn load_conversation_cases(path: &Path) -> Result<Vec<ConversationCompactionCase>, JevxError> {
@@ -1248,11 +1282,7 @@ pub fn evaluate_conversation_compaction(
         .enumerate()
         .map(|(index, case)| conversation_once(index + 1, case))
         .collect();
-    Ok(build_compaction_report(
-        "live",
-        "real-conversation-codex-v1",
-        runs,
-    ))
+    build_compaction_report("live", "real-conversation-codex-v1", runs)
 }
 
 fn validate_conversation_case(
@@ -1418,6 +1448,10 @@ fn validate_hook_record(record: &HookShadowRecord, context: &str) -> Result<(), 
             .dedupe_key_sha256
             .as_deref()
             .is_some_and(|value| !safe_identifier(value, 128))
+        || record
+            .dedupe_error
+            .as_deref()
+            .is_some_and(|value| !safe_identifier(value, 64))
         || record.codex.as_ref().is_some_and(|codex| !codex.is_valid())
         || record
             .pre_compaction_usage
@@ -1451,15 +1485,17 @@ fn normalize_loaded_hook_record(
     record: &mut HookShadowRecord,
     context: &str,
 ) -> Result<(), JevxError> {
-    if record.schema_version == LEGACY_HOOK_SCHEMA_VERSION
-        || record.schema_version == PREVIOUS_HOOK_SCHEMA_VERSION
-    {
+    if matches!(
+        record.schema_version,
+        LEGACY_HOOK_SCHEMA_VERSION | OLDER_HOOK_SCHEMA_VERSION | PREVIOUS_HOOK_SCHEMA_VERSION
+    ) {
         record.schema_version = HOOK_SCHEMA_VERSION;
     }
     if record.schema_version == HOOK_SCHEMA_VERSION {
         record.trigger = sanitized_identifier(record.trigger.as_deref(), 32);
         record.source = sanitized_identifier(record.source.as_deref(), 64);
         record.selected_skill = sanitized_skill_identifier(record.selected_skill.as_deref(), 128);
+        record.dedupe_error = sanitized_identifier(record.dedupe_error.as_deref(), 64);
         if let Some(codex) = &mut record.codex {
             codex.model = sanitized_identifier(codex.model.as_deref(), 128);
             codex.reasoning_effort = sanitized_identifier(codex.reasoning_effort.as_deref(), 32);
@@ -1596,7 +1632,7 @@ fn build_compaction_report(
     mode: &str,
     scenario: &str,
     runs: Vec<CompactionRun>,
-) -> CompactionEvaluationReport {
+) -> Result<CompactionEvaluationReport, JevxError> {
     let run_count = runs.len();
     let passed = runs
         .iter()
@@ -1645,22 +1681,44 @@ fn build_compaction_report(
         .filter_map(|run| run.token_savings.as_ref())
         .filter(|savings| savings.status == MeasurementStatus::Measured)
         .collect::<Vec<_>>();
-    let total_saved_tokens = (!token_savings.is_empty())
-        .then(|| {
-            token_savings
-                .iter()
-                .filter_map(|savings| savings.saved_tokens)
-                .try_fold(0_u64, |sum, value| sum.checked_add(value))
-        })
-        .flatten();
-    let total_before_tokens = (!token_savings.is_empty())
-        .then(|| {
-            token_savings
-                .iter()
-                .filter_map(|savings| savings.before_tokens)
-                .try_fold(0_u64, |sum, value| sum.checked_add(value))
-        })
-        .flatten();
+    let total_saved_tokens = checked_optional_token_sum(
+        token_savings
+            .iter()
+            .filter_map(|savings| savings.saved_tokens),
+        "savedTokens",
+    )?;
+    let total_before_tokens = checked_optional_token_sum(
+        token_savings
+            .iter()
+            .filter_map(|savings| savings.before_tokens),
+        "beforeTokens",
+    )?;
+    let total_input_tokens = checked_token_sum(
+        post_compaction_usage.iter().map(|usage| usage.input_tokens),
+        "inputTokens",
+    )?;
+    let total_cached_input_tokens = checked_token_sum(
+        post_compaction_usage
+            .iter()
+            .map(|usage| usage.cached_input_tokens),
+        "cachedInputTokens",
+    )?;
+    let total_cache_write_input_tokens = checked_token_sum(
+        post_compaction_usage
+            .iter()
+            .map(|usage| usage.cache_write_input_tokens),
+        "cacheWriteInputTokens",
+    )?;
+    let total_output_tokens = checked_token_sum(
+        post_compaction_usage
+            .iter()
+            .map(|usage| usage.output_tokens),
+        "outputTokens",
+    )?;
+    let total_tokens = checked_token_sum(
+        post_compaction_usage.iter().map(|usage| usage.total_tokens),
+        "totalTokens",
+    )?;
     let token_reduction_rate = match (total_before_tokens, total_saved_tokens) {
         (Some(before), Some(saved)) if before > 0 => Some(saved as f64 / before as f64),
         _ => None,
@@ -1718,26 +1776,11 @@ fn build_compaction_report(
         token_savings_measured_runs: token_savings.len(),
         total_saved_tokens,
         token_reduction_rate,
-        total_input_tokens: post_compaction_usage
-            .iter()
-            .map(|usage| usage.input_tokens)
-            .sum(),
-        total_cached_input_tokens: post_compaction_usage
-            .iter()
-            .map(|usage| usage.cached_input_tokens)
-            .sum(),
-        total_cache_write_input_tokens: post_compaction_usage
-            .iter()
-            .map(|usage| usage.cache_write_input_tokens)
-            .sum(),
-        total_output_tokens: post_compaction_usage
-            .iter()
-            .map(|usage| usage.output_tokens)
-            .sum(),
-        total_tokens: post_compaction_usage
-            .iter()
-            .map(|usage| usage.total_tokens)
-            .sum(),
+        total_input_tokens,
+        total_cached_input_tokens,
+        total_cache_write_input_tokens,
+        total_output_tokens,
+        total_tokens,
         post_compaction_cache_hit_rate_p50: percentile_f64(&post_compaction_cache_hit_rates, 50),
         post_compaction_cache_hit_rate_p95: percentile_f64(&post_compaction_cache_hit_rates, 95),
         post_compaction_uncached_input_tokens_p50: percentile(
@@ -1762,14 +1805,32 @@ fn build_compaction_report(
         fallback_extra_cost: fallback_extra_cost.amount(),
         cost_status_counts,
     };
-    CompactionEvaluationReport {
+    Ok(CompactionEvaluationReport {
         schema_version: HOOK_SCHEMA_VERSION,
         mode: mode.to_owned(),
         scenario: scenario.to_owned(),
         run_count,
         runs,
         summary,
-    }
+    })
+}
+
+fn checked_token_sum(mut values: impl Iterator<Item = u64>, field: &str) -> Result<u64, JevxError> {
+    Ok(checked_optional_token_sum(&mut values, field)?.unwrap_or(0))
+}
+
+fn checked_optional_token_sum(
+    mut values: impl Iterator<Item = u64>,
+    field: &str,
+) -> Result<Option<u64>, JevxError> {
+    let mut saw_value = false;
+    let total = values.try_fold(0_u64, |sum, value| {
+        saw_value = true;
+        sum.checked_add(value)
+    });
+    total
+        .map(|total| saw_value.then_some(total))
+        .ok_or_else(|| JevxError::InvalidInput(format!("{field} total overflows u64")))
 }
 
 fn compact_once(run: usize) -> CompactionRun {
@@ -1909,6 +1970,7 @@ mod tests {
             input_tokens: None,
             output_tokens: None,
             error_code: None,
+            dedupe_error: None,
             codex: None,
             dedupe_hit: false,
             dedupe_key_sha256: None,
@@ -2136,6 +2198,22 @@ mod tests {
         assert_eq!(priced_report.jev_cost, Some(0.1));
         assert_eq!(priced_report.codex_cost, Some(0.2));
         assert_eq!(priced_report.total_cost, Some(0.3));
+    }
+
+    #[test]
+    fn hook_stats_rejects_token_sum_overflow() {
+        let mut left = record("PostCompact");
+        left.token_savings = Some(TokenSavings {
+            before_tokens: Some(u64::MAX),
+            after_tokens: Some(1),
+            saved_tokens: Some(u64::MAX - 1),
+            reduction_rate: Some(1.0),
+            source: "test".to_owned(),
+            status: MeasurementStatus::Measured,
+        });
+        let right = left.clone();
+        let error = analyze_hook_stats(&[left, right]).expect_err("stats must reject overflow");
+        assert!(error.to_string().contains("beforeTokens total overflows"));
     }
 
     #[test]

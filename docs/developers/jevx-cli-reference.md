@@ -361,6 +361,7 @@ jevxがローカルに書くデータは、すべて `$JEVX_HOME`（既定 `~/.j
 | kind | パス | 書き込むコマンド |
 | --- | --- | --- |
 | hookDedupe | hook-dedupe.json | UserPromptSubmitの正常な判定結果の短期再利用 |
+| hookDedupeLock | hook-dedupe.lock | UserPromptSubmitのclaim・完了書き込みの直列化 |
 | `telemetry` | `events.jsonl` | `skills suggest`（Telemetry有効時） |
 | `hookRecords` | `hooks.jsonl` | `hooks install` で登録した `UserPromptSubmit` Hook |
 | `compactionRecords` | `compaction/hook-records.jsonl` | `hooks compact-assist` |
@@ -375,7 +376,7 @@ jevx data purge           # 削除対象を表示するだけ
 jevx data purge --yes     # 実際に削除する
 ```
 
-`purge` が消すのは上の7ファイルと、空になった `compaction/` だけ。利用者が作る `.jevx/compact-context.md`、Codexの `hooks.json` と `hooks.json.jevx.bak`、`--output` で指定した評価レポートには触れない。`export` は壊れた行があると、その内容を表示せずにファイル名と行番号だけを返す。inventory/export/purgeのdata schemaはhook dedupe状態追加に伴いv3。
+`purge` が消すのは上の8ファイルと、空になった `compaction/` だけ。利用者が作る `.jevx/compact-context.md`、Codexの `hooks.json` と `hooks.json.jevx.bak`、`--output` で指定した評価レポートには触れない。`export` は壊れた行があると、その内容を表示せずにファイル名と行番号だけを返す。inventory/export/purgeのdata schemaはhook dedupe lock追加に伴いv4。
 
 ## Codex Skillとしてセットアップする
 
@@ -439,13 +440,13 @@ printf '%s\n' \
       --output /tmp/jevx-hooks.jsonl
 ```
 
-`--output` へ保存されるHook recordはschema v3。hashed IDsとprompt非保存を含む現行schemaの観測記録だよ。任意の`codexUsage`/`codex`/Responses API形式の`usage` payloadがあればmodel、reasoning、通常/昇格Token、fallback、costも残し、nested detailsのcached/cache-write/reasoning Tokenもtyped fieldへ正規化する。`cost`にはJev/Codex/totalとestimated/actual、通貨・価格版を記録する。取得不能な費用は`unknown`/`unavailable`のままだよ。`trigger`、`source`、`selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなrecordを拒否し、既存schema v1/v2のloadでは該当metadataを正規化・欠損化して分析互換性を保つよ。
+`--output` へ保存されるHook recordはschema v4。hashed IDsとprompt非保存を含む現行schemaの観測記録だよ。任意の`codexUsage`/`codex`/Responses API形式の`usage` payloadがあればmodel、reasoning、通常/昇格Token、fallback、costも残し、nested detailsのcached/cache-write/reasoning Tokenもtyped fieldへ正規化する。`cost`にはJev/Codex/totalとestimated/actual、通貨・価格版を記録する。取得不能な費用は`unknown`/`unavailable`のままだよ。`trigger`、`source`、`selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなrecordを拒否し、既存schema v1/v2/v3のloadでは該当metadataを正規化・欠損化して分析互換性を保つよ。
 
 - `sessionIdSha256`、`turnIdSha256`、`modelSha256`、`correlationIdSha256`
 - `promptSha256`、`promptChars`
 - `decision`、`selectedSkill`
 - `discoveryMs`、`jevResponseMs`、`totalMs`、Token使用量、`errorCode`
-- `dedupeHit`、`dedupeKeySha256`、`preCompactionUsage`、`compactionUsage`、`postCompactionUsage`。dedupe keyはcwd・候補Skill・判定設定のdigestも含み、hit時に元呼び出しのlatency/Tokenを複製しない。状態障害は`errorCode=dedupe_error`として残す
+- `dedupeHit`、`dedupeKeySha256`、`dedupeError`、`preCompactionUsage`、`compactionUsage`、`postCompactionUsage`。dedupe keyはcwd・候補Skill・判定設定のdigestも含み、hit時に元呼び出しのlatency/Tokenを複製しない。状態障害は主`errorCode`を上書きせず、`dedupeError`として残す
 - `postCompactionCost`、`compactionElapsedMs`、`tokenSavings`（before/after/saved/reduction/status）
 
 生のセッションID・ターンID・モデル名・prompt本文は保存しない。Jevを使わないイベントでも、Hookの継続性を確認できる。
@@ -508,7 +509,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 ### Compaction補助の試作
 
-`hooks compact-assist` はHook JSONをstdinから読み、`<state-dir>/hook-records.jsonl` と `checkpoints.jsonl` に安全なmetadataだけを追記する。Hook recordはschema v3、checkpointはschema v2。preCompactionUsage / compactionUsage / postCompactionUsage / postCompactionCostがpayloadにあれば保持し、同一scopeのbefore/afterが揃った場合だけtokenSavingsを計算する。Hook recordの `trigger` / `source` / `selectedSkill` はwrite前にbounded identifierへ正規化され、unsafeな値は欠損として扱われる。新規appendはunsafeなrecordを拒否し、既存schema v1/v2のloadでは任意metadataを正規化・欠損化して過去ログを読み続ける。`SessionStart(source=compact)`のときは、同じセッションのcheckpointと、作業ディレクトリに任意で置いた `.jevx/compact-context.md` をredactして `additionalContext` に返す。
+`hooks compact-assist` はHook JSONをstdinから読み、`<state-dir>/hook-records.jsonl` と `checkpoints.jsonl` に安全なmetadataだけを追記する。Hook recordはschema v4、checkpointはschema v2。直接のHook payloadにbefore/afterが同時にあっても別リクエストの可能性があるため`tokenSavings.status=unavailable`とし、未消費の同一session・turn・correlation cycleのPreCompact checkpointとPostCompactを対応付けられた場合だけtokenSavingsをMeasuredにする。Hook recordの `trigger` / `source` / `selectedSkill` はwrite前にbounded identifierへ正規化され、unsafeな値は欠損として扱われる。新規appendはunsafeなrecordを拒否し、既存schema v1/v2/v3のloadでは任意metadataを正規化・欠損化して過去ログを読み続ける。`SessionStart(source=compact)`のときは、同じセッションのcheckpointと、作業ディレクトリに任意で置いた `.jevx/compact-context.md` をredactして `additionalContext` に返す。
 
 ```bash
 mkdir -p .jevx
@@ -562,7 +563,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
   --output /tmp/jevx-compact-baseline.json
 ```
 
-これは実Codexを起動するコマンドではなく、jevxの評価器と集計ロジックを検証するための `mode: shadow` のベースラインだよ。Compaction評価レポートはHook schema v3としてToken削減量も含める。
+これは実Codexを起動するコマンドではなく、jevxの評価器と集計ロジックを検証するための `mode: shadow` のベースラインだよ。Compaction評価レポートはHook schema v4としてToken削減量も含める。
 
 ### 実測した会話を安全に評価する
 
@@ -678,7 +679,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 - `AI_GATEWAY_API_KEY` は環境変数からBearer認証へ使い、レスポンスやTelemetryへ書き出さない。
 - Telemetryはprompt本文やprobabilityではなくハッシュ・文字数・判定・選択時の`selectedSkill`（raw ID）・計測値を保存するため、Skill ID自体を秘密値にしない。
 - Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` / `Authorization: Basic <value>` の認識済み形式で値を保存・送信しない。任意の `Basic` 文言や未知のPIIを除去する完全なDLPではない。
-- Hookの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなrecordを拒否し、既存schema v1/v2のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。
+- Hookの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなrecordを拒否し、既存schema v1/v2/v3のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。
 - Hook recordはセッションID、ターンID、モデルをSHA-256化して保存する。
 - `/tmp` の会話評価fixtureやCodexのrollout・認証ファイルは、評価後に削除する運用にする。
 - `--no-telemetry` はローカル保存を止めるだけ。外部送信も止めたいときは、Jevを呼ぶコマンドを実行しない。

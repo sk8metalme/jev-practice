@@ -169,7 +169,7 @@ fn hooks_install_and_uninstall_json_contract_round_trip() {
 fn data_json_contract() {
     let home = tempdir().expect("home");
     let inventory = json_output(home.path(), home.path(), &["data", "path", "--json"]);
-    assert_eq!(inventory["schemaVersion"], 3);
+    assert_eq!(inventory["schemaVersion"], 4);
     assert_has_keys(&inventory, &["schemaVersion", "dataHome", "files"]);
     assert_has_keys(
         &inventory["files"][0],
@@ -197,7 +197,7 @@ fn hook_stats_json_contract() {
         home.path(),
         &["hooks", "stats", "--input", input_arg, "--json"],
     );
-    assert_eq!(report["schemaVersion"], 3);
+    assert_eq!(report["schemaVersion"], 4);
     assert_has_keys(
         &report,
         &[

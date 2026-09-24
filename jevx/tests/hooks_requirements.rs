@@ -421,6 +421,38 @@ fn conversation_compaction_evaluation_aggregates_without_storing_raw_text() {
 }
 
 #[test]
+fn conversation_compaction_rejects_token_total_overflow() {
+    let usage = jevx::hooks::TokenUsageSnapshot {
+        input_tokens: u64::MAX,
+        total_tokens: u64::MAX,
+        ..jevx::hooks::TokenUsageSnapshot::default()
+    };
+    let mut left = conversation_case("overflow-left", "goal=keep-context\nnext=verify");
+    left.post_compaction_usage = Some(usage.clone());
+    let mut right = conversation_case("overflow-right", "goal=keep-context\nnext=verify");
+    right.post_compaction_usage = Some(usage);
+
+    let error = evaluate_conversation_compaction(&[left, right])
+        .expect_err("token total overflow must fail explicitly");
+    assert!(error.to_string().contains("inputTokens total overflows"));
+
+    let mut saved_left = conversation_case("saved-overflow-left", "goal=keep-context\nnext=verify");
+    saved_left.pre_compaction_usage = Some(jevx::hooks::TokenUsageSnapshot {
+        total_tokens: u64::MAX,
+        ..jevx::hooks::TokenUsageSnapshot::default()
+    });
+    saved_left.post_compaction_usage = Some(jevx::hooks::TokenUsageSnapshot {
+        total_tokens: 1,
+        ..jevx::hooks::TokenUsageSnapshot::default()
+    });
+    let mut saved_right = saved_left.clone();
+    saved_right.case_id = "saved-overflow-right".to_owned();
+    let error = evaluate_conversation_compaction(&[saved_left, saved_right])
+        .expect_err("saved token overflow must fail explicitly");
+    assert!(error.to_string().contains("savedTokens total overflows"));
+}
+
+#[test]
 fn conversation_compaction_records_codex_usage_and_fallback_extra_cost() {
     let mut case = conversation_case("codex-cost", "goal=keep-context\nnext=verify");
     case.codex_usage = Some(jevx::CodexUsage {
@@ -773,7 +805,7 @@ fn hook_correlation_loader_rejects_empty_and_secret_echo() {
         })
     };
     for (field, value) in [
-        ("schemaVersion", json!(4)),
+        ("schemaVersion", json!(99)),
         ("hookEventName", json!("Unknown")),
         ("mode", json!("unsafe mode")),
         ("sessionIdSha256", json!("unsafe session")),
@@ -821,7 +853,7 @@ fn append_shadow_record_rejects_untrusted_selected_skill() {
     let root = tempdir().expect("tempdir");
     let path = root.path().join("hook-records.jsonl");
     let record = HookShadowRecord {
-        schema_version: 3,
+        schema_version: 4,
         mode: "shadow".to_owned(),
         hook_event_name: "UserPromptSubmit".to_owned(),
         trigger: None,
@@ -840,6 +872,7 @@ fn append_shadow_record_rejects_untrusted_selected_skill() {
         input_tokens: None,
         output_tokens: None,
         error_code: None,
+        dedupe_error: None,
         codex: None,
         dedupe_hit: false,
         dedupe_key_sha256: None,

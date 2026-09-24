@@ -63,7 +63,7 @@ jevxは、**Codexの作業を止めずに、決定的なローカル処理とJev
 - $JEVX_HOME配下のJSONL schema
 - hooks.jsonへ書く--jevx-managed付きcommandと、既存設定を保持するmerge／uninstall
 
-既存のsuggestion／telemetry／decision receiptは各現行schemaと旧schemaを読み取り、hook recordはschema v1/v2をschema v3へ、Compaction checkpointはschema v1をschema v2へ安全に移行する。review／route／fixはそれぞれschemaを持ち、receiptには本文を含めない。キーを消す・意味を変える場合はschemaVersionを上げ、移行とjevx/tests/contract_requirements.rsを同時に更新する。名前と意味がずれるキーは消さず、正しいキーを追加する。
+既存のsuggestion／telemetry／decision receiptは各現行schemaと旧schemaを読み取り、hook recordはschema v1/v2/v3をschema v4へ、Compaction checkpointはschema v1をschema v2へ安全に移行する。review／route／fixはそれぞれschemaを持ち、receiptには本文を含めない。キーを消す・意味を変える場合はschemaVersionを上げ、移行とjevx/tests/contract_requirements.rsを同時に更新する。名前と意味がずれるキーは消さず、正しいキーを追加する。
 
 ## 成功条件
 

@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 
 use crate::JevxError;
 
-pub const DATA_SCHEMA_VERSION: u8 = 3;
+pub const DATA_SCHEMA_VERSION: u8 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DataFile {
@@ -41,10 +41,11 @@ pub struct PurgeReport {
 }
 
 /// jevxが書き込むファイルの種類と、`$JEVX_HOME` からの相対パス。
-const MANAGED_FILES: [(&str, &str); 7] = [
+const MANAGED_FILES: [(&str, &str); 8] = [
     ("telemetry", "events.jsonl"),
     ("hookRecords", "hooks.jsonl"),
     ("hookDedupe", "hook-dedupe.json"),
+    ("hookDedupeLock", "hook-dedupe.lock"),
     ("compactionRecords", "compaction/hook-records.jsonl"),
     ("compactionCheckpoints", "compaction/checkpoints.jsonl"),
     ("decisionReceipts", "decisions.jsonl"),
@@ -171,6 +172,7 @@ mod tests {
                 "telemetry",
                 "hookRecords",
                 "hookDedupe",
+                "hookDedupeLock",
                 "compactionRecords",
                 "compactionCheckpoints",
                 "decisionReceipts",
@@ -182,7 +184,7 @@ mod tests {
         assert!(!inventory.files[2].exists);
         assert_eq!(inventory.files[2].bytes, 0);
         assert_eq!(
-            inventory.files[4].path,
+            inventory.files[5].path,
             root.path().join("compaction/checkpoints.jsonl")
         );
     }

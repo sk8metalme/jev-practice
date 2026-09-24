@@ -82,15 +82,15 @@ Codex Hook（明示的にinstall）
 ```text
 Codex Hook JSON
     │
-    ├─ run_shadow: event契約を検証し、cwd・候補Skill・判定設定を含むkeyで正常なUserPromptSubmitを短期dedupeし、Hook recordを追記
+    ├─ run_shadow: event契約を検証し、cwd・候補Skill・判定設定を含むkeyで正常なUserPromptSubmitをclaimして短期dedupeし、Hook recordを追記
     ├─ .jevx/compact-context.mdを読む（任意）
-    ├─ usage/cost payloadをtyped metadataへ正規化し、前後Token削減量を計算
+    ├─ usage/cost payloadをtyped metadataへ正規化し、直接payloadの前後Tokenはunavailable、同一cycleのcheckpoint対だけMeasuredにする
     ├─ redact → 4,000文字制限 → SHA-256
     ├─ hook-records.jsonl / checkpoints.jsonlへmetadataのみ追記
     └─ SessionStart(source=compact)なら additionalContext、statsはp50/p95とcost statusを集計（hit時のcall metricsは再利用しない）
 ```
 
-checkpointへ保存するのはevent名、boundedなtrigger/source、各種SHA-256、文字数、context有無、任意のtyped usage/cost metadataだけ。Hook recordのselectedSkillもwrite前にbounded identifierへ正規化し、unsafeな値は欠損化する。appendはunsafe recordを拒否し、既存schema v1/v2のloadはtrigger/source/selectedSkillを正規化してから分析へ渡すため、過去ログ1件で全体を壊さない。redacted本文はcheckpointへ保存せず、compact後のHook応答を組み立てるプロセス内でだけ使う。contextがない場合は「metadata not found」を返すが、Codexを停止しない。
+checkpointへ保存するのはevent名、boundedなtrigger/source、各種SHA-256、文字数、context有無、任意のtyped usage/cost metadataだけ。Hook recordのselectedSkillもwrite前にbounded identifierへ正規化し、unsafeな値は欠損化する。appendはunsafe recordを拒否し、既存schema v1/v2/v3のloadはtrigger/source/selectedSkillを正規化してから分析へ渡すため、過去ログ1件で全体を壊さない。redacted本文はcheckpointへ保存せず、compact後のHook応答を組み立てるプロセス内でだけ使う。contextがない場合は「metadata not found」を返すが、Codexを停止しない。
 
 ## Skill探索の優先順位
 
@@ -124,7 +124,7 @@ checkpointへ保存するのはevent名、boundedなtrigger/source、各種SHA-2
 
 Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` / `Authorization: Basic <value>` の認識済み形式で値を保存・送信しない。未知のPIIや任意の `Basic` 文言まで除去するDLPではない。`--no-telemetry` はローカル記録を止めるだけで、Jev/Gatewayへの外部送信停止ではない。
 
-Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否し、既存schema v1/v2のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。Review receiptも本文を保存せず、task/turn/sessionはhashだけでcostを集計する。
+Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否し、既存schema v1/v2/v3のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。Review receiptも本文を保存せず、task/turn/sessionはhashだけでcostを集計する。
 
 Jev未設定時はローカル推測へフォールバックせず、`missing_api_key`をreceiptへ記録してから同じCLIエラーへ変換する。stateのbyte/candidate window超過はJevを呼ばず、receiptへ`degraded`として記録する。これは「Jevの有用性を測る」目的で、ローカルだけの結果をJev結果と混同しないためだよ。
 
