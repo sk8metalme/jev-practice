@@ -169,7 +169,7 @@ fn hooks_install_and_uninstall_json_contract_round_trip() {
 fn data_json_contract() {
     let home = tempdir().expect("home");
     let inventory = json_output(home.path(), home.path(), &["data", "path", "--json"]);
-    assert_eq!(inventory["schemaVersion"], 2);
+    assert_eq!(inventory["schemaVersion"], 3);
     assert_has_keys(&inventory, &["schemaVersion", "dataHome", "files"]);
     assert_has_keys(
         &inventory["files"][0],
@@ -180,6 +180,51 @@ fn data_json_contract() {
     let purge = json_output(home.path(), home.path(), &["data", "purge", "--json"]);
     assert_has_keys(&purge, &["schemaVersion", "dryRun", "removed"]);
     assert_eq!(purge["dryRun"], true);
+}
+
+#[test]
+fn hook_stats_json_contract() {
+    let home = tempdir().expect("home");
+    let input = home.path().join("hooks.jsonl");
+    std::fs::write(
+        &input,
+        r#"{"schemaVersion":3,"mode":"shadow","hookEventName":"PreCompact","elapsedMs":4}"#,
+    )
+    .expect("hook records");
+    let input_arg = input.to_str().expect("input path");
+    let report = json_output(
+        home.path(),
+        home.path(),
+        &["hooks", "stats", "--input", input_arg, "--json"],
+    );
+    assert_eq!(report["schemaVersion"], 3);
+    assert_has_keys(
+        &report,
+        &[
+            "schemaVersion",
+            "recordCount",
+            "eventCounts",
+            "decisionCounts",
+            "dedupeHitCount",
+            "latencyMsP50",
+            "latencyMsP95",
+            "tokenSavings",
+            "jevCost",
+            "codexCost",
+            "totalCost",
+            "costStatusCounts",
+        ],
+    );
+    assert_has_keys(
+        &report["tokenSavings"],
+        &[
+            "measuredRecords",
+            "beforeTokens",
+            "afterTokens",
+            "savedTokens",
+            "reductionRate",
+        ],
+    );
 }
 
 #[test]

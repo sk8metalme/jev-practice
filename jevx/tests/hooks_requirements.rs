@@ -770,7 +770,7 @@ fn hook_correlation_loader_rejects_empty_and_secret_echo() {
         })
     };
     for (field, value) in [
-        ("schemaVersion", json!(3)),
+        ("schemaVersion", json!(4)),
         ("hookEventName", json!("Unknown")),
         ("mode", json!("unsafe mode")),
         ("sessionIdSha256", json!("unsafe session")),
@@ -818,7 +818,7 @@ fn append_shadow_record_rejects_untrusted_selected_skill() {
     let root = tempdir().expect("tempdir");
     let path = root.path().join("hook-records.jsonl");
     let record = HookShadowRecord {
-        schema_version: 2,
+        schema_version: 3,
         mode: "shadow".to_owned(),
         hook_event_name: "UserPromptSubmit".to_owned(),
         trigger: None,
@@ -838,6 +838,14 @@ fn append_shadow_record_rejects_untrusted_selected_skill() {
         output_tokens: None,
         error_code: None,
         codex: None,
+        dedupe_hit: false,
+        dedupe_key_sha256: None,
+        pre_compaction_usage: None,
+        compaction_usage: None,
+        post_compaction_usage: None,
+        post_compaction_cost: None,
+        compaction_elapsed_ms: None,
+        token_savings: None,
         cost: CostSummary::default(),
         elapsed_ms: 0,
     };

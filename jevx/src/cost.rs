@@ -227,17 +227,35 @@ impl CostSummary {
 #[serde(rename_all = "camelCase")]
 pub struct CodexUsage {
     pub model: Option<String>,
+    #[serde(
+        rename = "reasoningEffort",
+        alias = "reasoning_effort",
+        alias = "reasoning"
+    )]
     pub reasoning_effort: Option<String>,
+    #[serde(rename = "mainTurns", alias = "main_turns")]
     pub main_turns: Option<u32>,
+    #[serde(rename = "subagentCount", alias = "subagent_count")]
     pub subagent_count: Option<u32>,
+    #[serde(rename = "inputTokens", alias = "input_tokens")]
     pub input_tokens: Option<u64>,
+    #[serde(rename = "outputTokens", alias = "output_tokens")]
     pub output_tokens: Option<u64>,
+    #[serde(rename = "reasoningTokens", alias = "reasoning_tokens")]
     pub reasoning_tokens: Option<u64>,
     /// Fallback/escalationで追加されたToken。通常のusageと混ぜずに保持する。
+    #[serde(rename = "additionalInputTokens", alias = "additional_input_tokens")]
     pub additional_input_tokens: Option<u64>,
+    #[serde(rename = "additionalOutputTokens", alias = "additional_output_tokens")]
     pub additional_output_tokens: Option<u64>,
+    #[serde(
+        rename = "additionalReasoningTokens",
+        alias = "additional_reasoning_tokens"
+    )]
     pub additional_reasoning_tokens: Option<u64>,
+    #[serde(rename = "elapsedMs", alias = "elapsed_ms")]
     pub elapsed_ms: Option<u64>,
+    #[serde(rename = "fallbackStage", alias = "fallback_stage")]
     pub fallback_stage: Option<String>,
     #[serde(default)]
     pub cost: CostEstimate,

@@ -196,6 +196,12 @@ jevx hooks correlate --input /tmp/jevx-hooks.jsonl --json
 
 **境界**：出力はrecord数、event counts、重複集計などの安全な集計に限定され、会話全文や生IDを復元する機能ではありません。通常利用のために定期実行するコマンドではなく、記録を調べるときの診断用です。
 
+速度・dedupe・Token削減量・費用statusをまとめて見るときは、`hooks stats`を使います。標準Hook payloadにusage/costがない場合、削減量や費用は推測されず、nullまたはunavailableとして表示されます。
+
+```bash
+jevx hooks stats --input /tmp/jevx-hooks.jsonl --json
+```
+
 ### 3. Skill選択の品質・ばらつき測定（`eval` / `eval-repeat`）
 
 **こんなときに**：Skill選択を導入する前に、既存のローカル方式とJev方式の品質・速度・ばらつきを同じfixtureで比べたいとき。

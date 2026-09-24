@@ -8,6 +8,7 @@ mod error;
 pub mod evaluation;
 mod gateway;
 pub mod hook_config;
+mod hook_dedupe;
 pub mod hooks;
 mod ranking;
 pub mod recorder;

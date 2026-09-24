@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 
 use crate::JevxError;
 
-pub const DATA_SCHEMA_VERSION: u8 = 2;
+pub const DATA_SCHEMA_VERSION: u8 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DataFile {
@@ -41,9 +41,10 @@ pub struct PurgeReport {
 }
 
 /// jevxが書き込むファイルの種類と、`$JEVX_HOME` からの相対パス。
-const MANAGED_FILES: [(&str, &str); 6] = [
+const MANAGED_FILES: [(&str, &str); 7] = [
     ("telemetry", "events.jsonl"),
     ("hookRecords", "hooks.jsonl"),
+    ("hookDedupe", "hook-dedupe.json"),
     ("compactionRecords", "compaction/hook-records.jsonl"),
     ("compactionCheckpoints", "compaction/checkpoints.jsonl"),
     ("decisionReceipts", "decisions.jsonl"),
@@ -169,6 +170,7 @@ mod tests {
             [
                 "telemetry",
                 "hookRecords",
+                "hookDedupe",
                 "compactionRecords",
                 "compactionCheckpoints",
                 "decisionReceipts",
@@ -180,7 +182,7 @@ mod tests {
         assert!(!inventory.files[2].exists);
         assert_eq!(inventory.files[2].bytes, 0);
         assert_eq!(
-            inventory.files[3].path,
+            inventory.files[4].path,
             root.path().join("compaction/checkpoints.jsonl")
         );
     }
@@ -291,5 +293,33 @@ mod tests {
         );
         purge_data(&inventory, true).expect("purge");
         assert!(!root.path().join("decisions.jsonl").exists());
+    }
+
+    #[test]
+    fn hook_dedupe_state_is_listed_exported_and_purged() {
+        let root = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            root.path().join("hook-dedupe.json"),
+            "{\"schemaVersion\":1,\"entries\":[]}\n",
+        )
+        .expect("dedupe state");
+        let inventory = data_inventory(root.path()).expect("inventory");
+        let dedupe = inventory
+            .files
+            .iter()
+            .find(|file| file.kind == "hookDedupe")
+            .expect("dedupe state is managed");
+        assert!(dedupe.exists);
+        let exported = export_data(&inventory).expect("export");
+        assert_eq!(exported["records"]["hookDedupe"][0]["schemaVersion"], 1);
+        let preview = purge_data(&inventory, false).expect("preview");
+        assert!(
+            preview
+                .removed
+                .iter()
+                .any(|path| path.ends_with("hook-dedupe.json"))
+        );
+        purge_data(&inventory, true).expect("purge");
+        assert!(!root.path().join("hook-dedupe.json").exists());
     }
 }

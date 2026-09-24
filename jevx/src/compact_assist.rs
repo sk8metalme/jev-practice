@@ -7,12 +7,16 @@ use serde_json::{Value, json};
 
 use crate::Config;
 use crate::JevxError;
-use crate::hooks::{HookShadowRecord, append_shadow_record, run_shadow};
+use crate::cost::CostEstimate;
+use crate::hooks::{
+    HookShadowRecord, TokenSavings, TokenUsageSnapshot, append_shadow_record, run_shadow,
+};
 use crate::redaction::{redact, sha256_hex};
 use crate::storage::append_json_line;
 
 const CONTEXT_LIMIT: usize = 4_000;
 const CONTEXT_READ_LIMIT_BYTES: u64 = CONTEXT_LIMIT as u64 * 4 + 1;
+const COMPACT_CHECKPOINT_SCHEMA_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CompactAssistResult {
@@ -48,6 +52,24 @@ pub struct CompactCheckpoint {
     pub context_chars: usize,
     #[serde(rename = "contextAvailable")]
     pub context_available: bool,
+    #[serde(rename = "preCompactionUsage", skip_serializing_if = "Option::is_none")]
+    pub pre_compaction_usage: Option<TokenUsageSnapshot>,
+    #[serde(rename = "compactionUsage", skip_serializing_if = "Option::is_none")]
+    pub compaction_usage: Option<TokenUsageSnapshot>,
+    #[serde(
+        rename = "postCompactionUsage",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub post_compaction_usage: Option<TokenUsageSnapshot>,
+    #[serde(rename = "postCompactionCost", skip_serializing_if = "Option::is_none")]
+    pub post_compaction_cost: Option<CostEstimate>,
+    #[serde(
+        rename = "compactionElapsedMs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub compaction_elapsed_ms: Option<u64>,
+    #[serde(rename = "tokenSavings", skip_serializing_if = "Option::is_none")]
+    pub token_savings: Option<TokenSavings>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,7 +85,7 @@ pub async fn run_compact_assist(
     state_dir: &Path,
 ) -> Result<CompactAssistResult, JevxError> {
     let payload: Value = serde_json::from_str(input)?;
-    let shadow = run_shadow(input, None, &[], config, None).await?;
+    let mut shadow = run_shadow(input, None, &[], config, None).await?;
     let cwd = payload
         .get("cwd")
         .and_then(Value::as_str)
@@ -75,6 +97,12 @@ pub async fn run_compact_assist(
     } else {
         None
     };
+    let previous_pre_checkpoint = if is_post_compact(&payload) {
+        latest_pre_compaction_checkpoint(state_dir, shadow.record.session_id_sha256.as_deref())?
+    } else {
+        None
+    };
+    merge_previous_usage(&mut shadow.record, previous_pre_checkpoint.as_ref());
     let checkpoint = checkpoint_from(&payload, &shadow.record, &cwd, context.as_ref());
 
     fs::create_dir_all(state_dir)?;
@@ -100,7 +128,7 @@ fn checkpoint_from(
     context: Option<&ContextSnapshot>,
 ) -> CompactCheckpoint {
     CompactCheckpoint {
-        schema_version: 1,
+        schema_version: COMPACT_CHECKPOINT_SCHEMA_VERSION,
         mode: "compact-assist".to_owned(),
         hook_event_name: record.hook_event_name.clone(),
         trigger: safe_label(record.trigger.as_deref(), 32),
@@ -116,6 +144,36 @@ fn checkpoint_from(
         context_sha256: context.map(|value| value.hash.clone()),
         context_chars: context.map_or(0, |value| value.chars),
         context_available: context.is_some(),
+        pre_compaction_usage: record.pre_compaction_usage.clone(),
+        compaction_usage: record.compaction_usage.clone(),
+        post_compaction_usage: record.post_compaction_usage.clone(),
+        post_compaction_cost: record.post_compaction_cost.clone(),
+        compaction_elapsed_ms: record.compaction_elapsed_ms,
+        token_savings: record.token_savings.clone(),
+    }
+}
+
+fn merge_previous_usage(record: &mut HookShadowRecord, previous: Option<&CompactCheckpoint>) {
+    let Some(previous) = previous else {
+        return;
+    };
+    if record.pre_compaction_usage.is_none() {
+        record.pre_compaction_usage = previous.pre_compaction_usage.clone();
+    }
+    if record.compaction_usage.is_none() {
+        record.compaction_usage = previous.compaction_usage.clone();
+    }
+    if record.token_savings.is_none()
+        && let (Some(before), Some(after)) = (
+            record.pre_compaction_usage.as_ref(),
+            record.post_compaction_usage.as_ref(),
+        )
+    {
+        record.token_savings = Some(TokenSavings::from_snapshots(
+            Some(before),
+            Some(after),
+            "hook_checkpoint",
+        ));
     }
 }
 
@@ -127,6 +185,26 @@ fn latest_checkpoint(
     state_dir: &Path,
     session_id_sha256: Option<&str>,
 ) -> Result<Option<CompactCheckpoint>, JevxError> {
+    latest_checkpoint_where(state_dir, session_id_sha256, |event| {
+        matches!(event, "PreCompact" | "PostCompact")
+    })
+}
+
+fn latest_pre_compaction_checkpoint(
+    state_dir: &Path,
+    session_id_sha256: Option<&str>,
+) -> Result<Option<CompactCheckpoint>, JevxError> {
+    latest_checkpoint_where(state_dir, session_id_sha256, |event| event == "PreCompact")
+}
+
+fn latest_checkpoint_where<F>(
+    state_dir: &Path,
+    session_id_sha256: Option<&str>,
+    event_matches: F,
+) -> Result<Option<CompactCheckpoint>, JevxError>
+where
+    F: Fn(&str) -> bool,
+{
     let Some(session_id_sha256) = session_id_sha256 else {
         return Ok(None);
     };
@@ -141,10 +219,7 @@ fn latest_checkpoint(
             continue;
         };
         if checkpoint.session_id_sha256.as_deref() == Some(session_id_sha256)
-            && matches!(
-                checkpoint.hook_event_name.as_str(),
-                "PreCompact" | "PostCompact"
-            )
+            && event_matches(checkpoint.hook_event_name.as_str())
         {
             latest = Some(checkpoint);
         }
@@ -210,6 +285,10 @@ fn is_compact_session_start(payload: &Value) -> bool {
         && payload.get("source").and_then(Value::as_str) == Some("compact")
 }
 
+fn is_post_compact(payload: &Value) -> bool {
+    payload.get("hook_event_name").and_then(Value::as_str) == Some("PostCompact")
+}
+
 fn safe_label(value: Option<&str>, max_chars: usize) -> Option<String> {
     value
         .filter(|value| {
@@ -259,7 +338,7 @@ mod tests {
         );
 
         let checkpoint = CompactCheckpoint {
-            schema_version: 1,
+            schema_version: COMPACT_CHECKPOINT_SCHEMA_VERSION,
             mode: "compact-assist".to_owned(),
             hook_event_name: "PreCompact".to_owned(),
             trigger: Some("manual".to_owned()),
@@ -271,9 +350,18 @@ mod tests {
             context_sha256: None,
             context_chars: 0,
             context_available: false,
+            pre_compaction_usage: None,
+            compaction_usage: None,
+            post_compaction_usage: None,
+            post_compaction_cost: None,
+            compaction_elapsed_ms: None,
+            token_savings: None,
         };
         let checkpoint_path = root.path().join("nested/checkpoints.jsonl");
         append_checkpoint(&checkpoint_path, &checkpoint).expect("checkpoint");
+        let mut post_checkpoint = checkpoint.clone();
+        post_checkpoint.hook_event_name = "PostCompact".to_owned();
+        append_checkpoint(&checkpoint_path, &post_checkpoint).expect("post checkpoint");
         fs::OpenOptions::new()
             .append(true)
             .open(&checkpoint_path)
@@ -287,6 +375,16 @@ mod tests {
             )
             .expect("latest")
             .expect("checkpoint")
+            .hook_event_name,
+            "PostCompact"
+        );
+        assert_eq!(
+            latest_pre_compaction_checkpoint(
+                checkpoint_path.parent().expect("state dir"),
+                Some("session-hash")
+            )
+            .expect("latest pre")
+            .expect("pre checkpoint")
             .hook_event_name,
             "PreCompact"
         );

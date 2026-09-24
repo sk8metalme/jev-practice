@@ -26,6 +26,10 @@
 
 ### Codex
 
+OpenAI Responses API由来のusageを接続する場合は、input_tokens、output_tokens、total_tokensと、input_tokens_details.cached_tokens / cache_write_tokens、output_tokens_details.reasoning_tokensをcamelCase payloadへ正規化して受け取る。標準Codex Hookがusage/costを渡さない場合は、jevx側で推測せずunavailableのままにする。
+
+TokenSavingsはbeforeTokens、afterTokens、savedTokens、reductionRate、source、status（measured / estimated / unavailable / degraded）を持つ。before/afterの同一scopeが揃った場合だけ削減量を計算し、Token削減量を請求額の削減とは解釈しない。
+
 Hook payloadで任意に受け取る `codexUsage` は、model、reasoning、main turn、subagent数、input/output/reasoning Token、elapsed、fallback stage、costを保持する。model昇格やfallbackで追加された`additionalInputTokens`、`additionalOutputTokens`、`additionalReasoningTokens`、`additionalCost`も通常usageと分けて保持する。Skill選択・review・compact・planのどの観測に紐づくかは、対応するreceipt/eventの種類とtask/turn/session hashで区別する。欠落フィールドは欠落のままで、0に補完しない。
 
 ### 合算
@@ -53,13 +57,17 @@ Hook payloadで任意に受け取る `codexUsage` は、model、reasoning、main
 
 ## 保存先とschema
 
+Hookの短期dedupe状態はJEVX_HOME直下のhook-dedupe.jsonに保存する。生promptは保存せず、session/turn/model/event/trigger/source/promptのhashと正常な判定metadataだけを30秒保持する。dataコマンドで一覧・書き出し・削除できる。
+
+hooks statsコマンドはHook件数、event別p50/p95、dedupe hit、Token削減量、Jev/Codex/total費用の安全な合算、費用statusを集計する。標準Hook payloadにusage/costがなければ、削減量・費用はnullまたはunavailableのままになる。
+
 - `events.jsonl`: Skill選択Telemetry。`metrics.cost`にJev/Codex/totalとstatusを持つ。
 - `decisions.jsonl`: Decision Contract receipt。従来schema v1を読み込み、現行v2で費用を記録する。
 - `reviews.jsonl`: Review receipt（schema 2）。本文、Skill本文、Tool結果を含めず、digest・文字数・finding・route・fix・費用を記録する。`review-stats`には追加Token／fallback追加費用も出す。
 - `hooks.jsonl` / `compaction/*`: Hook/Compactionのsafe metadataと任意のCodex usage/cost。
 - `jevx hooks review-stats --input reviews.jsonl --json`: status、latency、calls/retry/cache、Token、追加Token、Jev/Codex/total、fallback追加費用、成功単価、task/turn/session hash単位の集計。
 
-`eval` / `eval-repeat`のレポートschemaはbaseline比較の追加に伴いv2。`baselineMode`は既定で`local_rank`、`comparisons`の各modeに`totalMsDelta`（mode - baseline）、`speedupRate`（baselineからの短縮率）、`additionalCost`（mode - baseline）を出す。値が欠ける場合は`null`で、速度だけを成功扱いしない。`jevx data path/export/purge`のinventory schemaは、review receipt追加に伴いv2。既存のv1データは削除せず読み取り互換を保つ。receiptにprompt本文、会話全文、Skill本文、raw Tool result、API keyを保存しない。
+`eval` / `eval-repeat`のレポートschemaはbaseline比較の追加に伴いv2。`baselineMode`は既定で`local_rank`、`comparisons`の各modeに`totalMsDelta`（mode - baseline）、`speedupRate`（baselineからの短縮率）、`additionalCost`（mode - baseline）を出す。値が欠ける場合は`null`で、速度だけを成功扱いしない。Hook recordはschema v3、Compaction checkpointはschema v2、`jevx data path/export/purge`のinventoryはhook dedupe状態追加に伴いschema v3。旧schemaは削除せず読み取り互換を保つ。receiptにprompt本文、会話全文、Skill本文、raw Tool result、API keyを保存しない。
 
 ## 評価手順
 

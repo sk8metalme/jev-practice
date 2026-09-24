@@ -67,6 +67,7 @@ jevx hooks compact-assist --state-dir /tmp/jevx-compaction
 jevx hooks compact-eval --runs 5 --json
 jevx hooks conversation-eval --input /tmp/conversation.jsonl --json
 jevx hooks correlate --input /tmp/hooks.jsonl --json
+jevx hooks stats --input /tmp/hooks.jsonl --json
 ```
 
 Jev判定は`AI_GATEWAY_API_KEY`を使い、Vercel AI Gatewayの`typesafe-ai/jev`へ候補 + `none` の `choice` として送信する。旧Node.js Webアプリの歴史的なyes/no質問は `boolean`、TypeSafe直接APIのyes/no質問は `noul` であり、現行jevxの `choice` と混同しない。`hooks install`自体は設定生成だけで外部送信せず、インストール後に実行される`UserPromptSubmit`の`hooks shadow`だけがJev判定を行う。
@@ -98,7 +99,7 @@ Jev判定は`AI_GATEWAY_API_KEY`を使い、Vercel AI Gatewayの`typesafe-ai/jev
 | Decision Contract・StatePlan・Recorder | 実装済み | typed answer、code-side gate、safe status、receipt、replayをRust APIで提供。権限Hookへ自動allowしない |
 | Telemetry・stats・doctor | 実装済み | prompt本文、APIキー、Jevのprobabilityは保存しない。doctorは導入状態と `nextSteps` を返す |
 | ローカルデータの確認・書き出し・削除（`data`） | 実装済み | `$JEVX_HOME` のjevx管理ファイルだけを扱い、`purge` は `--yes` まで削除しない |
-| Hook shadow・install・uninstall・compact-assist | 実装済み | 明示的な導入とCodex側のTrustが必要。uninstallはjevx管理のhandlerだけを外す |
+| Hook shadow・install・uninstall・compact-assist・stats | 実装済み | 明示的な導入とCodex側のTrustが必要。uninstallはjevx管理のhandlerだけを外し、statsは保存済みsafe metadataだけを集計する |
 | 公開JSONの契約テスト | 実装済み | `tests/contract_requirements.rs` が `--json` のキーと終了コードを固定する |
 | Skill選択・Compaction・会話評価Runner | 実装済み | controlled fixture metadataまたは検証済みJSONLを評価し、Codex/App Serverは起動しない |
 | 意味レビュー（4カテゴリ）・route候補・review-stats | 実装済み | Jevは推薦。本文の外部送信は`--allow-content`、route適用とfixはコード側証拠でgateする |
@@ -125,11 +126,13 @@ project-local HookはCodex側のプロジェクトTrustが必要であり、フ�
 `compact-assist`は要約器ではなく、次を行う決定的な補助とする。
 
 1. Hook JSONを検証し、既存の安全なshadow record形式へ変換する。
-2. session / turn / correlation / cwdはSHA-256、イベント識別子は安全なラベルだけ保存する。Hook recordの`trigger` / `source`はtrim後にASCII許可文字と最大長を検証し、`selectedSkill`も同じ境界（namespaceの`:`を含む）で検証する。新規write/appendでは空値・空白・制御文字・長さ超過を拒否し、既存schema v1のloadでは該当する任意metadataだけを正規化または欠損化して分析互換性を保つ。
+2. session / turn / correlation / cwdはSHA-256、イベント識別子は安全なラベルだけ保存する。Hook recordの`trigger` / `source`はtrim後にASCII許可文字と最大長を検証し、`selectedSkill`も同じ境界（namespaceの`:`を含む）で検証する。新規write/appendでは空値・空白・制御文字・長さ超過を拒否し、既存schema v1/v2のloadでは該当する任意metadataだけを正規化または欠損化して分析互換性を保つ。
 3. `.jevx/compact-context.md`があればredact後に最大4,000文字まで利用する。
 4. checkpointへmanifest本文や秘密値を保存しない。
 5. `SessionStart(source=compact)`では、最新checkpoint metadataとredacted manifestだけを`additionalContext`へ返す。
 6. contextがない場合もCodex処理を止めず、補助情報がないことを明示する。
+7. `UserPromptSubmit`の正常な判定は、session / turn / event / trigger / source / model / promptのhashをキーに30秒だけ再利用し、失敗・timeout・fallbackはキャッシュしない。
+8. Hook payloadにusage/costがある場合は前後Token、実費、p50/p95、dedupe率を記録し、欠落値を推測しない。
 
 公式Compactionの代替、会話全文の復元、現在のリポジトリ状態の保証はしない。
 
@@ -148,7 +151,7 @@ Jevへの送信境界は次のとおり。
 
 Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` / `Authorization: Basic <value>` の認識済み形式で値を保存・送信しない。通常文中の単独`Basic`は意味を保つためredactしない。完全なDLPではない。Telemetryには生の依頼文を保存せず、SHA-256、文字数、候補数、判定、選択時の`selectedSkill`（raw ID）、遅延、usageを保存し、Jevのprobabilityは保存しない。Skill ID自体を秘密値として扱う設計ではない。`--no-telemetry` はローカル記録を止めるだけで、Gatewayへの外部送信停止ではない。Hook recordとCompaction checkpointには生のsession ID、turn ID、model、manifest本文を保存しない。
 
-Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否し、既存schema v1のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。
+Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否し、既存schema v1/v2のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。
 
 ## 成功条件
 

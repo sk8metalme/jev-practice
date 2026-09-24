@@ -165,6 +165,7 @@ enum HooksCommand {
     CompactEval(CompactEvalArgs),
     ConversationEval(ConversationEvalArgs),
     Correlate(CorrelationArgs),
+    Stats(HookStatsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -282,6 +283,16 @@ struct ConversationEvalArgs {
 
 #[derive(Debug, Args)]
 struct CorrelationArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct HookStatsArgs {
     #[arg(long)]
     input: PathBuf,
     #[arg(long)]
