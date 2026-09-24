@@ -255,6 +255,8 @@ pub struct CodexUsage {
     pub cache_write_input_tokens: Option<u64>,
     #[serde(rename = "outputTokens", alias = "output_tokens")]
     pub output_tokens: Option<u64>,
+    #[serde(rename = "totalTokens", alias = "total_tokens")]
+    pub total_tokens: Option<u64>,
     #[serde(rename = "reasoningTokens", alias = "reasoning_tokens")]
     pub reasoning_tokens: Option<u64>,
     /// Fallback/escalationで追加されたToken。通常のusageと混ぜずに保持する。
@@ -284,6 +286,7 @@ impl CodexUsage {
             || self.cached_input_tokens.is_some()
             || self.cache_write_input_tokens.is_some()
             || self.output_tokens.is_some()
+            || self.total_tokens.is_some()
             || self.reasoning_tokens.is_some()
             || self.additional_input_tokens.is_some()
             || self.additional_output_tokens.is_some()
@@ -308,6 +311,25 @@ impl CodexUsage {
                 .additional_cost
                 .as_ref()
                 .is_none_or(CostEstimate::is_valid)
+            && self.total_usage_is_consistent()
+    }
+
+    fn total_usage_is_consistent(&self) -> bool {
+        let Some(total) = self.total_tokens else {
+            return true;
+        };
+        let Some(known) = self
+            .input_tokens
+            .unwrap_or_default()
+            .checked_add(self.output_tokens.unwrap_or_default())
+        else {
+            return false;
+        };
+        if self.input_tokens.is_some() && self.output_tokens.is_some() {
+            total == known
+        } else {
+            total >= known
+        }
     }
 }
 

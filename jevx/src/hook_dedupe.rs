@@ -64,6 +64,7 @@ pub(crate) enum DedupeClaim {
     Hit(CachedHookDecision),
     Owner,
     Wait,
+    Saturated,
 }
 
 #[derive(Debug, Clone)]
@@ -114,11 +115,13 @@ impl DedupeStore {
             {
                 return Ok((DedupeClaim::Hit(entry), changed));
             }
+            if state.pending.len() >= DEDUPE_CAPACITY {
+                return Ok((DedupeClaim::Saturated, changed));
+            }
             state.pending.push(PendingHookDecision {
                 key_sha256: key_sha256.to_owned(),
                 created_at_ms: now,
             });
-            trim_pending(&mut state.pending);
             changed = true;
             Ok((DedupeClaim::Owner, changed))
         })
@@ -342,13 +345,6 @@ fn trim_entries(entries: &mut Vec<CachedHookDecision>) {
     }
 }
 
-fn trim_pending(pending: &mut Vec<PendingHookDecision>) {
-    if pending.len() > DEDUPE_CAPACITY {
-        let remove_count = pending.len() - DEDUPE_CAPACITY;
-        pending.drain(..remove_count);
-    }
-}
-
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -429,16 +425,28 @@ mod tests {
     }
 
     #[test]
-    fn pending_claims_are_bounded() {
-        let mut pending = (0..=DEDUPE_CAPACITY)
-            .map(|index| PendingHookDecision {
-                key_sha256: format!("key-{index}"),
-                created_at_ms: 0,
-            })
-            .collect::<Vec<_>>();
-        trim_pending(&mut pending);
-        assert_eq!(pending.len(), DEDUPE_CAPACITY);
-        assert_eq!(pending.first().expect("oldest pending").key_sha256, "key-1");
+    fn active_pending_claims_are_not_evicted_at_capacity() {
+        let root = tempdir().expect("tempdir");
+        let store = DedupeStore::new(root.path());
+        for index in 0..DEDUPE_CAPACITY {
+            assert_eq!(
+                store.claim(&format!("key-{index}")).expect("owner claim"),
+                DedupeClaim::Owner
+            );
+        }
+
+        assert_eq!(
+            store.claim("overflow-key").expect("capacity result"),
+            DedupeClaim::Saturated,
+            "a full pending set must report explicit saturation"
+        );
+        assert_eq!(
+            store
+                .claim("key-0")
+                .expect("existing claim remains pending"),
+            DedupeClaim::Wait,
+            "capacity handling must preserve every in-flight claim"
+        );
     }
 
     #[test]

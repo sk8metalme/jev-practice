@@ -494,7 +494,7 @@ async fn compact_assist_carries_pre_usage_into_post_checkpoint() {
     .await
     .expect("post compact assist");
 
-    assert_eq!(post.checkpoint.schema_version, 3);
+    assert_eq!(post.checkpoint.schema_version, 4);
     assert_eq!(
         post.checkpoint
             .token_savings
@@ -649,7 +649,7 @@ async fn compact_assist_carries_pre_usage_into_post_checkpoint() {
 async fn provider_style_snake_case_usage_is_normalized_without_raw_payload() {
     let config = Config::for_test(tempdir().expect("tempdir").path().join("data"));
     let result = run_shadow(
-        r#"{"hook_event_name":"PostCompact","preCompactionUsage":{"input_tokens":900,"total_tokens":1000,"input_tokens_details":{"cached_tokens":700,"cache_write_tokens":10},"output_tokens_details":{"reasoning_tokens":40}},"postCompactionUsage":{"input_tokens":500,"total_tokens":600}}"#,
+        r#"{"hook_event_name":"PostCompact","preCompactionUsage":{"input_tokens":900,"output_tokens":100,"total_tokens":1000,"input_tokens_details":{"cached_tokens":700,"cache_write_tokens":10},"output_tokens_details":{"reasoning_tokens":40}},"postCompactionUsage":{"input_tokens":500,"output_tokens":100,"total_tokens":600}}"#,
         None,
         &[],
         &config,

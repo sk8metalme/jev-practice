@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::Config;
@@ -15,11 +15,12 @@ use crate::redaction::{redact, sha256_hex};
 use crate::storage::append_json_line;
 use crate::types::{CandidateDecision, Judge, SkillRecord, SuggestInput};
 
-pub const HOOK_SCHEMA_VERSION: u8 = 5;
+pub const HOOK_SCHEMA_VERSION: u8 = 6;
 const LEGACY_HOOK_SCHEMA_VERSION: u8 = 1;
 const OLDER_HOOK_SCHEMA_VERSION: u8 = 2;
 const PREVIOUS_HOOK_SCHEMA_VERSION: u8 = 3;
 const LEGACY_CURRENT_HOOK_SCHEMA_VERSION: u8 = 4;
+const PREVIOUS_CURRENT_HOOK_SCHEMA_VERSION: u8 = 5;
 const REQUIRED_FACTS: [&str; 3] = [
     "task_id=compact-fixture-1",
     "acceptance=preserve-tests",
@@ -32,6 +33,7 @@ enum DedupeAcquire {
     Hit(crate::hook_dedupe::CachedHookDecision),
     Owner(Duration),
     Timeout,
+    Saturated,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -284,36 +286,57 @@ impl TokenSavings {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TokenUsageSnapshot {
-    #[serde(rename = "inputTokens", alias = "input_tokens", default)]
     pub input_tokens: u64,
-    #[serde(rename = "cachedInputTokens", alias = "cached_input_tokens", default)]
+    #[doc(hidden)]
+    pub input_tokens_present: bool,
     pub cached_input_tokens: u64,
-    #[serde(
-        rename = "cacheWriteInputTokens",
-        alias = "cache_write_input_tokens",
-        default
-    )]
     pub cache_write_input_tokens: u64,
-    #[serde(rename = "outputTokens", alias = "output_tokens", default)]
     pub output_tokens: u64,
-    #[serde(
-        rename = "reasoningOutputTokens",
-        alias = "reasoning_output_tokens",
-        default
-    )]
+    #[doc(hidden)]
+    pub output_tokens_present: bool,
     pub reasoning_output_tokens: u64,
-    #[serde(rename = "totalTokens", alias = "total_tokens", default)]
     pub total_tokens: u64,
-    #[serde(
-        rename = "totalTokensPresent",
-        default,
-        skip_serializing_if = "is_false"
-    )]
     #[doc(hidden)]
     pub total_tokens_present: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenUsageSnapshotSerialization {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_tokens: Option<u64>,
+    cached_input_tokens: u64,
+    cache_write_input_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_tokens: Option<u64>,
+    reasoning_output_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "is_false")]
+    total_tokens_present: bool,
+}
+
+impl Serialize for TokenUsageSnapshot {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        TokenUsageSnapshotSerialization {
+            input_tokens: (self.input_tokens_present || self.input_tokens > 0)
+                .then_some(self.input_tokens),
+            cached_input_tokens: self.cached_input_tokens,
+            cache_write_input_tokens: self.cache_write_input_tokens,
+            output_tokens: (self.output_tokens_present || self.output_tokens > 0)
+                .then_some(self.output_tokens),
+            reasoning_output_tokens: self.reasoning_output_tokens,
+            total_tokens: (self.total_tokens_present || self.total_tokens > 0)
+                .then_some(self.total_tokens),
+            total_tokens_present: self.total_tokens_present,
+        }
+        .serialize(serializer)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -349,20 +372,32 @@ impl<'de> Deserialize<'de> for TokenUsageSnapshot {
         D: serde::Deserializer<'de>,
     {
         let value = Value::deserialize(deserializer)?;
-        let total_tokens_present = value
+        let input_tokens_present = value
+            .get("inputTokens")
+            .or_else(|| value.get("input_tokens"))
+            .is_some();
+        let output_tokens_present = value
+            .get("outputTokens")
+            .or_else(|| value.get("output_tokens"))
+            .is_some();
+        let total_tokens_key_present = value
             .get("totalTokens")
             .or_else(|| value.get("total_tokens"))
             .is_some();
         let wire: TokenUsageSnapshotWire = serde_json::from_value(value)
             .map_err(|error| serde::de::Error::custom(error.to_string()))?;
+        let total_tokens_present =
+            total_tokens_key_present && (wire.total_tokens_present || wire.total_tokens > 0);
         Ok(Self {
             input_tokens: wire.input_tokens,
+            input_tokens_present,
             cached_input_tokens: wire.cached_input_tokens,
             cache_write_input_tokens: wire.cache_write_input_tokens,
             output_tokens: wire.output_tokens,
+            output_tokens_present,
             reasoning_output_tokens: wire.reasoning_output_tokens,
             total_tokens: wire.total_tokens,
-            total_tokens_present: wire.total_tokens_present || total_tokens_present,
+            total_tokens_present,
         })
     }
 }
@@ -374,7 +409,48 @@ impl TokenUsageSnapshot {
                 "{context}: cachedInputTokens must not exceed inputTokens"
             )));
         }
+        if self.reasoning_output_tokens > self.output_tokens {
+            return Err(JevxError::InvalidInput(format!(
+                "{context}: reasoningOutputTokens must not exceed outputTokens"
+            )));
+        }
+        // Input/output may be partial usage metadata; total must never undercount the known parts.
+        let known_total = self
+            .input_tokens
+            .checked_add(self.output_tokens)
+            .ok_or_else(|| {
+                JevxError::InvalidInput(format!(
+                    "{context}: inputTokens plus outputTokens overflows u64"
+                ))
+            })?;
+        if self.has_total_tokens() && self.total_tokens < known_total {
+            return Err(JevxError::InvalidInput(format!(
+                "{context}: totalTokens must be at least inputTokens plus outputTokens"
+            )));
+        }
+        if self.has_total_tokens()
+            && self.has_input_tokens()
+            && self.has_output_tokens()
+            && self.total_tokens != known_total
+        {
+            return Err(JevxError::InvalidInput(format!(
+                "{context}: totalTokens must equal inputTokens plus outputTokens when both are present"
+            )));
+        }
         Ok(())
+    }
+
+    pub(crate) fn normalize_legacy_presence(&mut self) {
+        self.input_tokens_present = self.input_tokens > 0;
+        self.output_tokens_present = self.output_tokens > 0;
+    }
+
+    fn has_input_tokens(&self) -> bool {
+        self.input_tokens_present || self.input_tokens > 0
+    }
+
+    fn has_output_tokens(&self) -> bool {
+        self.output_tokens_present || self.output_tokens > 0
     }
 
     fn cache_hit_rate(&self) -> Option<f64> {
@@ -808,6 +884,13 @@ pub async fn run_shadow(
                     record.elapsed_ms = elapsed_ms(started);
                     return Ok(shadow_result(record));
                 }
+                Ok(DedupeAcquire::Saturated) => {
+                    record.cost.jev = CostEstimate::actual(0.0, None, None);
+                    record.dedupe_error = Some("capacity_exceeded".to_owned());
+                    apply_provider_cost(&mut record);
+                    record.elapsed_ms = elapsed_ms(started);
+                    return Ok(shadow_result(record));
+                }
                 Err(_) => dedupe_error = Some("claim_error"),
             }
         }
@@ -902,6 +985,7 @@ async fn wait_for_dedupe_claim(
             }
             DedupeClaim::Wait => return Ok(DedupeAcquire::Timeout),
             DedupeClaim::Hit(entry) => return Ok(DedupeAcquire::Hit(entry)),
+            DedupeClaim::Saturated => return Ok(DedupeAcquire::Saturated),
             DedupeClaim::Owner => {
                 return Ok(DedupeAcquire::Owner(
                     deadline.saturating_duration_since(Instant::now()),
@@ -923,6 +1007,14 @@ fn parse_token_usage(
     }
     let mut usage: TokenUsageSnapshot = serde_json::from_value(value.clone())
         .map_err(|_| JevxError::InvalidInput(format!("{field} must be a valid object")))?;
+    usage.input_tokens_present = value
+        .get("inputTokens")
+        .or_else(|| value.get("input_tokens"))
+        .is_some();
+    usage.output_tokens_present = value
+        .get("outputTokens")
+        .or_else(|| value.get("output_tokens"))
+        .is_some();
     usage.total_tokens_present = usage.total_tokens_present
         || value
             .get("totalTokens")
@@ -1081,6 +1173,9 @@ fn config_digest(config: &Config) -> String {
 }
 
 fn parse_codex_usage(payload: &Value) -> Result<Option<CodexUsage>, JevxError> {
+    let is_top_level_responses_usage = payload.get("usage").is_some()
+        && payload.get("codexUsage").is_none()
+        && payload.get("codex").is_none();
     let Some(value) = payload
         .get("codexUsage")
         .or_else(|| payload.get("codex"))
@@ -1122,6 +1217,12 @@ fn parse_codex_usage(payload: &Value) -> Result<Option<CodexUsage>, JevxError> {
             "reasoningTokens",
             "codexUsage",
         )?;
+    }
+    if is_top_level_responses_usage && usage.has_usage_tokens() && value.get("cost").is_none() {
+        usage.cost = CostEstimate::unknown(
+            usage.cost.currency.clone(),
+            usage.cost.price_version.clone(),
+        );
     }
     usage.model = sanitized_identifier(usage.model.as_deref(), 128);
     usage.reasoning_effort = sanitized_identifier(usage.reasoning_effort.as_deref(), 32);
@@ -1598,6 +1699,31 @@ fn validate_hook_record(record: &HookShadowRecord, context: &str) -> Result<(), 
             "{context}: unsupported hook event"
         )));
     }
+    if !record.cost.jev.is_valid() || !record.cost.codex.is_valid() || !record.cost.total.is_valid()
+    {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: hook record contains invalid cost metadata"
+        )));
+    }
+    if !cost_estimates_match(
+        &record.cost.total,
+        &total_cost(&record.cost.jev, &record.cost.codex),
+    ) {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: total cost must match Jev and Codex cost components"
+        )));
+    }
+    if record.token_savings.as_ref().is_some_and(|savings| {
+        savings.status == MeasurementStatus::Measured
+            && (savings.source != "hook_checkpoint"
+                || record.session_id_sha256.is_none()
+                || record.turn_id_sha256.is_none()
+                || record.correlation_id_sha256.is_none())
+    }) {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: measured tokenSavings requires a checkpoint source and cycle identity"
+        )));
+    }
     if !safe_identifier(&record.mode, 32)
         || record
             .trigger
@@ -1664,18 +1790,49 @@ fn validate_hook_record(record: &HookShadowRecord, context: &str) -> Result<(), 
     Ok(())
 }
 
+fn cost_estimates_match(actual: &CostEstimate, expected: &CostEstimate) -> bool {
+    let amounts_match = match (actual.amount, expected.amount) {
+        (Some(actual), Some(expected)) => {
+            (actual - expected).abs()
+                <= f64::EPSILON * actual.abs().max(expected.abs()).max(1.0) * 2.0
+        }
+        (None, None) => true,
+        _ => false,
+    };
+    amounts_match
+        && actual.status == expected.status
+        && actual.basis == expected.basis
+        && actual.currency == expected.currency
+        && actual.price_version == expected.price_version
+}
+
 fn normalize_loaded_hook_record(
     record: &mut HookShadowRecord,
     context: &str,
 ) -> Result<(), JevxError> {
-    if matches!(
+    let is_legacy_schema = matches!(
         record.schema_version,
         LEGACY_HOOK_SCHEMA_VERSION
             | OLDER_HOOK_SCHEMA_VERSION
             | PREVIOUS_HOOK_SCHEMA_VERSION
             | LEGACY_CURRENT_HOOK_SCHEMA_VERSION
-    ) {
+            | PREVIOUS_CURRENT_HOOK_SCHEMA_VERSION
+    );
+    if is_legacy_schema {
+        for usage in [
+            record.pre_compaction_usage.as_mut(),
+            record.compaction_usage.as_mut(),
+            record.post_compaction_usage.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            usage.normalize_legacy_presence();
+        }
         record.schema_version = HOOK_SCHEMA_VERSION;
+        if record.cost.jev.is_valid() && record.cost.codex.is_valid() {
+            record.cost.total = total_cost(&record.cost.jev, &record.cost.codex);
+        }
     }
     if record.schema_version == HOOK_SCHEMA_VERSION {
         record.trigger = sanitized_identifier(record.trigger.as_deref(), 32);
@@ -2218,6 +2375,7 @@ mod tests {
         let payload = serde_json::json!({
             "preCompactionUsage": {
                 "input_tokens": 100,
+                "output_tokens": 20,
                 "total_tokens": 120,
                 "input_tokens_details": {
                     "cached_tokens": 30,
@@ -2235,7 +2393,7 @@ mod tests {
 
         let explicit_zero = parse_token_usage(
             &serde_json::json!({
-                "preCompactionUsage": {"inputTokens": 100, "totalTokens": 0}
+                "preCompactionUsage": {"totalTokens": 0}
             }),
             "preCompactionUsage",
         )
@@ -2255,12 +2413,30 @@ mod tests {
             Some(100)
         );
         assert_eq!(
+            serde_json::to_value(&explicit_zero).expect("explicit zero json")["totalTokens"],
+            0
+        );
+        assert_eq!(
             serde_json::to_value(&explicit_zero).expect("explicit zero json")["totalTokensPresent"],
             true
         );
-        let direct_explicit_zero: TokenUsageSnapshot =
-            serde_json::from_value(serde_json::json!({"totalTokens": 0}))
-                .expect("direct explicit zero usage");
+        let missing_total = TokenUsageSnapshot::default();
+        let missing_total_value = serde_json::to_value(&missing_total).expect("missing total json");
+        assert!(missing_total_value.get("inputTokens").is_none());
+        assert!(missing_total_value.get("outputTokens").is_none());
+        assert!(missing_total_value.get("totalTokens").is_none());
+        let restored_missing_total: TokenUsageSnapshot =
+            serde_json::from_value(missing_total_value).expect("missing total round trip");
+        assert!(!restored_missing_total.has_total_tokens());
+        let marker_without_total: TokenUsageSnapshot =
+            serde_json::from_value(serde_json::json!({"totalTokensPresent": true}))
+                .expect("marker without total");
+        assert!(!marker_without_total.has_total_tokens());
+        let direct_explicit_zero: TokenUsageSnapshot = serde_json::from_value(serde_json::json!({
+            "totalTokens": 0,
+            "totalTokensPresent": true
+        }))
+        .expect("direct explicit zero usage");
         assert_eq!(
             TokenSavings::from_snapshots(
                 Some(&TokenUsageSnapshot {
@@ -2293,6 +2469,51 @@ mod tests {
         assert_eq!(codex_usage.cached_input_tokens, Some(30));
         assert_eq!(codex_usage.cache_write_input_tokens, Some(4));
         assert_eq!(codex_usage.reasoning_tokens, Some(8));
+        assert_eq!(codex_usage.cost.status, CostStatus::Unknown);
+
+        let total_only_usage = parse_codex_usage(&serde_json::json!({
+            "usage": {"total_tokens": 500}
+        }))
+        .expect("Responses total-only usage")
+        .expect("total-only usage must be recognized");
+        assert!(total_only_usage.has_usage_tokens());
+        assert_eq!(total_only_usage.cost.status, CostStatus::Unknown);
+        let complete_responses_usage = parse_codex_usage(&serde_json::json!({
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "total_tokens": 120
+            }
+        }))
+        .expect("complete Responses usage")
+        .expect("complete usage present");
+        assert!(complete_responses_usage.is_valid());
+        assert!(
+            parse_codex_usage(&serde_json::json!({
+                "usage": {
+                    "input_tokens": 1000,
+                    "output_tokens": 100,
+                    "total_tokens": 5000
+                }
+            }))
+            .is_err()
+        );
+        assert!(
+            parse_codex_usage(&serde_json::json!({
+                "usage": {"input_tokens": 100, "total_tokens": 99}
+            }))
+            .is_err()
+        );
+        assert!(
+            parse_codex_usage(&serde_json::json!({
+                "usage": {
+                    "input_tokens": u64::MAX,
+                    "output_tokens": 1,
+                    "total_tokens": u64::MAX
+                }
+            }))
+            .is_err()
+        );
 
         let invalid_usage = serde_json::json!({
             "preCompactionUsage": {"inputTokens": 1, "cachedInputTokens": 2}
@@ -2319,6 +2540,53 @@ mod tests {
             }
         });
         assert!(parse_token_usage(&invalid_nested_reasoning, "preCompactionUsage").is_err());
+        assert!(
+            parse_token_usage(
+                &serde_json::json!({
+                    "preCompactionUsage": {"inputTokens": 1000, "totalTokens": 100}
+                }),
+                "preCompactionUsage"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_token_usage(
+                &serde_json::json!({
+                    "preCompactionUsage": {
+                        "inputTokens": 1000,
+                        "outputTokens": 100,
+                        "totalTokens": 5000
+                    }
+                }),
+                "preCompactionUsage"
+            )
+            .is_err(),
+            "a provider total cannot exceed the known input/output components"
+        );
+        assert!(
+            parse_token_usage(
+                &serde_json::json!({
+                    "preCompactionUsage": {
+                        "inputTokens": u64::MAX,
+                        "outputTokens": 1
+                    }
+                }),
+                "preCompactionUsage"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_token_usage(
+                &serde_json::json!({
+                    "preCompactionUsage": {
+                        "outputTokens": 1,
+                        "reasoningOutputTokens": 2
+                    }
+                }),
+                "preCompactionUsage"
+            )
+            .is_err()
+        );
         let negative_nested_usage = serde_json::json!({
             "codexUsage": {
                 "inputTokens": 1,
@@ -2461,11 +2729,19 @@ mod tests {
                 total_tokens: 50,
                 ..TokenUsageSnapshot::default()
             }),
-            "test",
+            "hook_checkpoint",
         ));
-        records[0].cost.jev = CostEstimate::actual(0.1, None, None);
+        records[0].session_id_sha256 = Some("session-hash".to_owned());
+        records[0].turn_id_sha256 = Some("turn-hash".to_owned());
+        records[0].correlation_id_sha256 = Some("cycle-hash".to_owned());
+        records[0].cost.jev = CostEstimate::actual(
+            0.1,
+            Some("USD".to_owned()),
+            Some("fixture-price".to_owned()),
+        );
         records[0].cost.codex = CostEstimate::unknown(None, None);
-        records[0].cost.total = CostEstimate::unavailable();
+        records[0].cost.total =
+            CostEstimate::unknown(Some("USD".to_owned()), Some("fixture-price".to_owned()));
         let mut slow_prompt = record("UserPromptSubmit");
         slow_prompt.elapsed_ms = 10;
         records.push(slow_prompt);
@@ -2484,7 +2760,8 @@ mod tests {
         assert_eq!(report.token_savings.measured_records, 1);
         assert_eq!(report.cost_status_counts["jev:available"], 1);
         assert_eq!(report.cost_status_counts["codex:unknown"], 1);
-        assert_eq!(report.cost_status_counts["total:unavailable"], 7);
+        assert_eq!(report.cost_status_counts["total:unavailable"], 6);
+        assert_eq!(report.cost_status_counts["total:unknown"], 1);
         assert!(analyze_hook_stats(&[]).is_err());
 
         let mut priced = record("PostCompact");
@@ -2499,7 +2776,7 @@ mod tests {
                 Some("USD".to_owned()),
                 Some("provider-usage".to_owned()),
             ),
-            total: CostEstimate::available(
+            total: CostEstimate::actual(
                 0.3,
                 Some("USD".to_owned()),
                 Some("provider-usage".to_owned()),
@@ -2512,6 +2789,64 @@ mod tests {
     }
 
     #[test]
+    fn current_hook_records_reject_total_tokens_above_known_components() {
+        let mut value = record("PreCompact");
+        value.pre_compaction_usage = Some(TokenUsageSnapshot {
+            input_tokens: 1000,
+            output_tokens: 100,
+            total_tokens: 5000,
+            total_tokens_present: true,
+            ..TokenUsageSnapshot::default()
+        });
+        assert!(validate_hook_record(&value, "test").is_err());
+    }
+
+    #[test]
+    fn hook_record_rejects_unapproved_measured_source_and_inconsistent_total_cost() {
+        let mut unapproved = record("PostCompact");
+        unapproved.token_savings = Some(TokenSavings {
+            before_tokens: Some(100),
+            after_tokens: Some(50),
+            saved_tokens: Some(50),
+            reduction_rate: Some(0.5),
+            source: "hook_payload".to_owned(),
+            status: MeasurementStatus::Measured,
+        });
+        assert!(validate_hook_record(&unapproved, "test").is_err());
+
+        let mut missing_cycle = record("PostCompact");
+        missing_cycle.token_savings = Some(TokenSavings {
+            before_tokens: Some(100),
+            after_tokens: Some(50),
+            saved_tokens: Some(50),
+            reduction_rate: Some(0.5),
+            source: "hook_checkpoint".to_owned(),
+            status: MeasurementStatus::Measured,
+        });
+        assert!(validate_hook_record(&missing_cycle, "test").is_err());
+
+        let usd = Some("USD".to_owned());
+        let price = Some("fixture-price".to_owned());
+        let mut invalid_component = record("UserPromptSubmit");
+        invalid_component.cost.jev = CostEstimate::available(-1.0, usd.clone(), price.clone());
+        assert!(validate_hook_record(&invalid_component, "test").is_err());
+
+        let mut inconsistent = record("UserPromptSubmit");
+        inconsistent.cost = CostSummary {
+            jev: CostEstimate::available(1.0, usd.clone(), price.clone()),
+            codex: CostEstimate::available(2.0, usd.clone(), price.clone()),
+            total: CostEstimate::available(999.0, usd.clone(), price.clone()),
+        };
+        assert!(validate_hook_record(&inconsistent, "test").is_err());
+        inconsistent.cost.total = CostEstimate::unknown(None, None);
+        assert!(validate_hook_record(&inconsistent, "test").is_err());
+
+        inconsistent.token_savings = None;
+        inconsistent.cost.total = CostEstimate::available(3.0, usd, price);
+        assert!(validate_hook_record(&inconsistent, "test").is_ok());
+    }
+
+    #[test]
     fn hook_stats_rejects_token_sum_overflow() {
         let mut left = record("PostCompact");
         left.token_savings = Some(TokenSavings {
@@ -2519,9 +2854,12 @@ mod tests {
             after_tokens: Some(1),
             saved_tokens: Some(u64::MAX - 1),
             reduction_rate: Some(1.0),
-            source: "test".to_owned(),
+            source: "hook_checkpoint".to_owned(),
             status: MeasurementStatus::Measured,
         });
+        left.session_id_sha256 = Some("session-hash".to_owned());
+        left.turn_id_sha256 = Some("turn-hash".to_owned());
+        left.correlation_id_sha256 = Some("cycle-hash".to_owned());
         let right = left.clone();
         let error = analyze_hook_stats(&[left, right]).expect_err("stats must reject overflow");
         assert!(error.to_string().contains("beforeTokens total overflows"));
@@ -2535,9 +2873,12 @@ mod tests {
             after_tokens: Some(90),
             saved_tokens: Some(999),
             reduction_rate: Some(0.1),
-            source: "test".to_owned(),
+            source: "hook_checkpoint".to_owned(),
             status: MeasurementStatus::Measured,
         });
+        invalid.session_id_sha256 = Some("session-hash".to_owned());
+        invalid.turn_id_sha256 = Some("turn-hash".to_owned());
+        invalid.correlation_id_sha256 = Some("cycle-hash".to_owned());
         let error = analyze_hook_stats(&[invalid]).expect_err("invalid savings");
         assert!(error.to_string().contains("unsafe identifier"));
     }
@@ -2657,6 +2998,39 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn saturated_dedupe_records_degraded_state_without_calling_jev() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut config = Config::for_test(root.path().to_path_buf());
+        config.timeout = Duration::from_secs(60);
+        let store = DedupeStore::with_pending_ttl(root.path(), config.timeout);
+        for index in 0..256 {
+            assert_eq!(
+                store.claim(&format!("pending-{index}")).expect("claim"),
+                DedupeClaim::Owner
+            );
+        }
+
+        let payload = serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "select a relevant skill",
+            "session_id": "session",
+            "turn_id": "turn",
+            "cwd": root.path(),
+        })
+        .to_string();
+        let result = run_shadow(&payload, None, &[], &config, None)
+            .await
+            .expect("saturated shadow result");
+
+        assert_eq!(
+            result.record.dedupe_error.as_deref(),
+            Some("capacity_exceeded")
+        );
+        assert!(result.record.error_code.is_none());
+        assert!(result.record.decision.is_none());
+    }
+
     #[test]
     fn normalization_and_conversation_validation_remain_safe() {
         let mut value = record("SessionStart");
@@ -2669,10 +3043,38 @@ mod tests {
             fallback_stage: Some("unsafe fallback".to_owned()),
             ..CodexUsage::default()
         });
+        let usd = Some("USD".to_owned());
+        let price = Some("legacy-price".to_owned());
+        value.cost = CostSummary {
+            jev: CostEstimate::available(1.0, usd.clone(), price.clone()),
+            codex: CostEstimate::available(2.0, usd.clone(), price.clone()),
+            total: CostEstimate::available(999.0, usd, price),
+        };
         normalize_loaded_hook_record(&mut value, "test").expect("sanitize legacy record");
         assert_eq!(value.schema_version, HOOK_SCHEMA_VERSION);
+        assert_eq!(value.cost.total.amount, Some(3.0));
         assert!(value.trigger.is_none());
         assert!(value.codex.as_ref().expect("codex").model.is_none());
+
+        let mut legacy_v5 = serde_json::to_value(record("PreCompact")).expect("record json");
+        legacy_v5["schemaVersion"] = serde_json::json!(5);
+        legacy_v5["preCompactionUsage"] = serde_json::json!({
+            "inputTokens": 900,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 0
+        });
+        let mut legacy_v5: HookShadowRecord =
+            serde_json::from_value(legacy_v5).expect("legacy v5 record");
+        normalize_loaded_hook_record(&mut legacy_v5, "legacy v5").expect("migrate v5");
+        assert_eq!(legacy_v5.schema_version, HOOK_SCHEMA_VERSION);
+        let legacy_usage = legacy_v5.pre_compaction_usage.as_ref().expect("pre usage");
+        assert!(!legacy_usage.total_tokens_present);
+        assert!(legacy_usage.input_tokens_present);
+        assert!(!legacy_usage.output_tokens_present);
+        validate_hook_record(&legacy_v5, "legacy v5").expect("migrated legacy usage");
 
         let mut case = ConversationCompactionCase {
             case_id: "case".to_owned(),

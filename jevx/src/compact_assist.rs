@@ -19,7 +19,7 @@ use crate::storage::append_json_line;
 
 const CONTEXT_LIMIT: usize = 4_000;
 const CONTEXT_READ_LIMIT_BYTES: u64 = CONTEXT_LIMIT as u64 * 4 + 1;
-pub(crate) const COMPACT_CHECKPOINT_SCHEMA_VERSION: u8 = 3;
+pub(crate) const COMPACT_CHECKPOINT_SCHEMA_VERSION: u8 = 4;
 pub(crate) const COMPACT_ASSIST_LOCK_FILE_NAME: &str = ".compact-assist.lock";
 
 #[derive(Debug, Clone, Serialize)]
@@ -212,23 +212,31 @@ fn merge_previous_usage(record: &mut HookShadowRecord, previous: Option<&Compact
 }
 
 fn same_compaction_cycle(record: &HookShadowRecord, previous: &CompactCheckpoint) -> bool {
-    same_optional_identity(
+    same_known_cycle(
         record.turn_id_sha256.as_deref(),
-        previous.turn_id_sha256.as_deref(),
-    ) && same_optional_identity(
         record.correlation_id_sha256.as_deref(),
+        previous.turn_id_sha256.as_deref(),
         previous.correlation_id_sha256.as_deref(),
     )
 }
 
 fn same_checkpoint_cycle(left: &CompactCheckpoint, right: &CompactCheckpoint) -> bool {
-    same_optional_identity(
+    same_known_cycle(
         left.turn_id_sha256.as_deref(),
-        right.turn_id_sha256.as_deref(),
-    ) && same_optional_identity(
         left.correlation_id_sha256.as_deref(),
+        right.turn_id_sha256.as_deref(),
         right.correlation_id_sha256.as_deref(),
     )
+}
+
+fn same_known_cycle(
+    left_turn: Option<&str>,
+    left_correlation: Option<&str>,
+    right_turn: Option<&str>,
+    right_correlation: Option<&str>,
+) -> bool {
+    matches!((left_turn, right_turn), (Some(left), Some(right)) if left == right)
+        && same_optional_identity(left_correlation, right_correlation)
 }
 
 fn same_optional_identity(left: Option<&str>, right: Option<&str>) -> bool {
@@ -271,12 +279,7 @@ fn latest_pre_compaction_checkpoint(
         if line.trim().is_empty() {
             continue;
         }
-        let checkpoint = serde_json::from_str::<CompactCheckpoint>(line).map_err(|_| {
-            JevxError::InvalidInput(format!(
-                "invalid compaction checkpoint at line {}",
-                line_number + 1
-            ))
-        })?;
+        let checkpoint = parse_checkpoint(line, line_number + 1)?;
         if checkpoint.session_id_sha256.as_deref() != Some(session_id_sha256) {
             continue;
         }
@@ -294,8 +297,12 @@ fn latest_pre_compaction_checkpoint(
         }
     }
     Ok(pending.into_iter().rev().find(|pre| {
-        same_optional_identity(pre.turn_id_sha256.as_deref(), turn_id_sha256)
-            && same_optional_identity(pre.correlation_id_sha256.as_deref(), correlation_id_sha256)
+        same_known_cycle(
+            pre.turn_id_sha256.as_deref(),
+            pre.correlation_id_sha256.as_deref(),
+            turn_id_sha256,
+            correlation_id_sha256,
+        )
     }))
 }
 
@@ -320,12 +327,7 @@ where
         if line.trim().is_empty() {
             continue;
         }
-        let checkpoint = serde_json::from_str::<CompactCheckpoint>(line).map_err(|_| {
-            JevxError::InvalidInput(format!(
-                "invalid compaction checkpoint at line {}",
-                line_number + 1
-            ))
-        })?;
+        let checkpoint = parse_checkpoint(line, line_number + 1)?;
         if checkpoint.session_id_sha256.as_deref() == Some(session_id_sha256)
             && event_matches(checkpoint.hook_event_name.as_str())
         {
@@ -333,6 +335,37 @@ where
         }
     }
     Ok(latest)
+}
+
+fn parse_checkpoint(line: &str, line_number: usize) -> Result<CompactCheckpoint, JevxError> {
+    let mut checkpoint = serde_json::from_str::<CompactCheckpoint>(line).map_err(|_| {
+        JevxError::InvalidInput(format!(
+            "invalid compaction checkpoint at line {line_number}"
+        ))
+    })?;
+    let schema_version = checkpoint.schema_version;
+    if !matches!(
+        checkpoint.schema_version,
+        1 | 2 | 3 | COMPACT_CHECKPOINT_SCHEMA_VERSION
+    ) {
+        return Err(JevxError::InvalidInput(format!(
+            "unsupported compaction checkpoint schema at line {line_number}"
+        )));
+    }
+    if schema_version < COMPACT_CHECKPOINT_SCHEMA_VERSION {
+        for usage in [
+            checkpoint.pre_compaction_usage.as_mut(),
+            checkpoint.compaction_usage.as_mut(),
+            checkpoint.post_compaction_usage.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            usage.normalize_legacy_presence();
+        }
+    }
+    checkpoint.schema_version = COMPACT_CHECKPOINT_SCHEMA_VERSION;
+    Ok(checkpoint)
 }
 
 fn read_context(cwd: &Path) -> Result<Option<ContextSnapshot>, JevxError> {
@@ -423,6 +456,33 @@ mod tests {
     use std::io::Write;
     use tempfile::tempdir;
 
+    fn test_checkpoint(
+        schema_version: u8,
+        hook_event_name: &str,
+        turn_id_sha256: Option<&str>,
+    ) -> CompactCheckpoint {
+        CompactCheckpoint {
+            schema_version,
+            mode: "compact-assist".to_owned(),
+            hook_event_name: hook_event_name.to_owned(),
+            trigger: Some("manual".to_owned()),
+            source: None,
+            session_id_sha256: Some("session-hash".to_owned()),
+            turn_id_sha256: turn_id_sha256.map(str::to_owned),
+            correlation_id_sha256: turn_id_sha256.map(|_| "cycle-hash".to_owned()),
+            cwd_sha256: None,
+            context_sha256: None,
+            context_chars: 0,
+            context_available: false,
+            pre_compaction_usage: None,
+            compaction_usage: None,
+            post_compaction_usage: None,
+            post_compaction_cost: None,
+            compaction_elapsed_ms: None,
+            token_savings: None,
+        }
+    }
+
     #[test]
     fn helpers_filter_unsafe_labels_and_truncate_context() {
         assert_eq!(safe_label(Some("manual"), 32).as_deref(), Some("manual"));
@@ -446,26 +506,11 @@ mod tests {
                 .is_none()
         );
 
-        let checkpoint = CompactCheckpoint {
-            schema_version: COMPACT_CHECKPOINT_SCHEMA_VERSION,
-            mode: "compact-assist".to_owned(),
-            hook_event_name: "PreCompact".to_owned(),
-            trigger: Some("manual".to_owned()),
-            source: None,
-            session_id_sha256: Some("session-hash".to_owned()),
-            turn_id_sha256: None,
-            correlation_id_sha256: None,
-            cwd_sha256: None,
-            context_sha256: None,
-            context_chars: 0,
-            context_available: false,
-            pre_compaction_usage: None,
-            compaction_usage: None,
-            post_compaction_usage: None,
-            post_compaction_cost: None,
-            compaction_elapsed_ms: None,
-            token_savings: None,
-        };
+        let checkpoint = test_checkpoint(
+            COMPACT_CHECKPOINT_SCHEMA_VERSION,
+            "PreCompact",
+            Some("turn-hash"),
+        );
         let checkpoint_path = root.path().join("nested/checkpoints.jsonl");
         append_checkpoint(&checkpoint_path, &checkpoint).expect("checkpoint");
         let mut post_checkpoint = checkpoint.clone();
@@ -488,8 +533,8 @@ mod tests {
             latest_pre_compaction_checkpoint(
                 checkpoint_path.parent().expect("state dir"),
                 Some("session-hash"),
-                None,
-                None,
+                Some("turn-hash"),
+                Some("cycle-hash"),
             )
             .is_err()
         );
@@ -500,8 +545,8 @@ mod tests {
             latest_pre_compaction_checkpoint(
                 clean_checkpoint_path.parent().expect("state dir"),
                 Some("session-hash"),
-                None,
-                None,
+                Some("turn-hash"),
+                Some("cycle-hash"),
             )
             .expect("latest pre")
             .expect("next pre checkpoint")
@@ -513,8 +558,8 @@ mod tests {
             latest_pre_compaction_checkpoint(
                 clean_checkpoint_path.parent().expect("state dir"),
                 Some("session-hash"),
-                None,
-                None,
+                Some("turn-hash"),
+                Some("cycle-hash"),
             )
             .expect("latest pre after post")
             .is_none()
@@ -543,6 +588,101 @@ mod tests {
                 .as_str()
                 .expect("context")
                 .contains("not found")
+        );
+    }
+
+    #[test]
+    fn checkpoint_reads_migrate_supported_versions_and_reject_unknown_versions() {
+        let root = tempdir().expect("tempdir");
+        for version in [1, 2, 3] {
+            let legacy_root = root.path().join(format!("legacy-v{version}"));
+            let legacy = test_checkpoint(version, "PreCompact", Some("turn-hash"));
+            append_checkpoint(&legacy_root.join("checkpoints.jsonl"), &legacy)
+                .expect("legacy checkpoint");
+            let migrated = latest_checkpoint(&legacy_root, Some("session-hash"))
+                .expect("supported legacy schema")
+                .expect("legacy checkpoint found");
+            assert_eq!(migrated.schema_version, COMPACT_CHECKPOINT_SCHEMA_VERSION);
+        }
+
+        let future_root = root.path().join("future");
+        let future = test_checkpoint(99, "PreCompact", Some("turn-hash"));
+        append_checkpoint(&future_root.join("checkpoints.jsonl"), &future)
+            .expect("future checkpoint");
+        assert!(latest_checkpoint(&future_root, Some("session-hash")).is_err());
+    }
+
+    #[test]
+    fn legacy_v3_checkpoint_distinguishes_missing_total_from_explicit_zero() {
+        let root = tempdir().expect("tempdir");
+        let missing_root = root.path().join("missing-total");
+        fs::create_dir_all(&missing_root).expect("missing-total state directory");
+        let mut missing = serde_json::to_value(test_checkpoint(3, "PreCompact", Some("turn-hash")))
+            .expect("legacy checkpoint json");
+        missing["preCompactionUsage"] = serde_json::json!({
+            "inputTokens": 900,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 0
+        });
+        fs::write(
+            missing_root.join("checkpoints.jsonl"),
+            format!("{}\n", missing),
+        )
+        .expect("legacy missing-total checkpoint");
+        let migrated = latest_checkpoint(&missing_root, Some("session-hash"))
+            .expect("legacy checkpoint read")
+            .expect("checkpoint found");
+        assert_eq!(migrated.schema_version, COMPACT_CHECKPOINT_SCHEMA_VERSION);
+        let migrated_usage = migrated.pre_compaction_usage.as_ref().expect("pre usage");
+        assert!(
+            !migrated_usage.total_tokens_present && migrated_usage.total_tokens == 0,
+            "legacy serializer's default zero is not measured usage"
+        );
+
+        let explicit_root = root.path().join("explicit-zero");
+        fs::create_dir_all(&explicit_root).expect("explicit-zero state directory");
+        let mut explicit =
+            serde_json::to_value(test_checkpoint(3, "PreCompact", Some("turn-hash")))
+                .expect("legacy checkpoint json");
+        explicit["preCompactionUsage"] = serde_json::json!({
+            "inputTokens": 0,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 0,
+            "totalTokensPresent": true
+        });
+        fs::write(
+            explicit_root.join("checkpoints.jsonl"),
+            format!("{}\n", explicit),
+        )
+        .expect("legacy explicit-zero checkpoint");
+        let migrated = latest_checkpoint(&explicit_root, Some("session-hash"))
+            .expect("legacy checkpoint read")
+            .expect("checkpoint found");
+        assert!(
+            migrated
+                .pre_compaction_usage
+                .as_ref()
+                .expect("pre usage")
+                .total_tokens_present,
+            "legacy explicit zero marker remains measured usage"
+        );
+    }
+
+    #[test]
+    fn pre_compaction_checkpoint_without_turn_identity_is_not_measured() {
+        let root = tempdir().expect("tempdir");
+        let pre = test_checkpoint(COMPACT_CHECKPOINT_SCHEMA_VERSION, "PreCompact", None);
+        append_checkpoint(&root.path().join("checkpoints.jsonl"), &pre).expect("pre checkpoint");
+        assert!(
+            latest_pre_compaction_checkpoint(root.path(), Some("session-hash"), None, None)
+                .expect("lookup")
+                .is_none()
         );
     }
 

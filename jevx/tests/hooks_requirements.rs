@@ -464,6 +464,7 @@ fn conversation_compaction_records_codex_usage_and_fallback_extra_cost() {
         cached_input_tokens: None,
         cache_write_input_tokens: None,
         output_tokens: Some(20),
+        total_tokens: Some(120),
         reasoning_tokens: Some(10),
         elapsed_ms: Some(321),
         fallback_stage: Some("sol-to-terra".to_owned()),
@@ -530,7 +531,7 @@ fn conversation_evaluation_records_tool_recovery_and_token_cache_metrics() {
     let input = root.path().join("resilience.jsonl");
     fs::write(
         &input,
-        r#"{"caseId":"resilience-case","model":"gpt-5.6-sol","requiredFacts":["goal=keep-context","next=verify"],"followUpText":"goal=keep-context\nnext=verify\ndecoy_marker=redacted","secretMarkers":["DECOY_DO_NOT_OUTPUT"],"failureRecoveryRequired":true,"toolHistoryItems":3,"toolFailureCount":1,"interruptedTurns":1,"recoveryTurns":2,"recoveryCompleted":true,"preCompactionUsage":{"inputTokens":1000,"cachedInputTokens":400,"cacheWriteInputTokens":50,"outputTokens":80,"reasoningOutputTokens":20,"totalTokens":1100},"compactionUsage":{"inputTokens":200,"cachedInputTokens":100,"cacheWriteInputTokens":0,"outputTokens":40,"reasoningOutputTokens":10,"totalTokens":250},"postCompactionUsage":{"inputTokens":800,"cachedInputTokens":600,"cacheWriteInputTokens":0,"outputTokens":100,"reasoningOutputTokens":20,"totalTokens":920},"compactionCompleted":true,"compactionDurationMs":120,"inputChars":12400,"conversationTurns":10,"contextChars":12400,"observedEvents":["functionCallOutput","turn/interrupted","contextCompaction","turn/completed"]}"#,
+        r#"{"caseId":"resilience-case","model":"gpt-5.6-sol","requiredFacts":["goal=keep-context","next=verify"],"followUpText":"goal=keep-context\nnext=verify\ndecoy_marker=redacted","secretMarkers":["DECOY_DO_NOT_OUTPUT"],"failureRecoveryRequired":true,"toolHistoryItems":3,"toolFailureCount":1,"interruptedTurns":1,"recoveryTurns":2,"recoveryCompleted":true,"preCompactionUsage":{"inputTokens":1000,"cachedInputTokens":400,"cacheWriteInputTokens":50,"outputTokens":80,"reasoningOutputTokens":20,"totalTokens":1080},"compactionUsage":{"inputTokens":200,"cachedInputTokens":100,"cacheWriteInputTokens":0,"outputTokens":40,"reasoningOutputTokens":10,"totalTokens":240},"postCompactionUsage":{"inputTokens":800,"cachedInputTokens":600,"cacheWriteInputTokens":0,"outputTokens":100,"reasoningOutputTokens":20,"totalTokens":900},"compactionCompleted":true,"compactionDurationMs":120,"inputChars":12400,"conversationTurns":10,"contextChars":12400,"observedEvents":["functionCallOutput","turn/interrupted","contextCompaction","turn/completed"]}"#,
     )
     .expect("write resilience fixture");
 
@@ -554,7 +555,7 @@ fn conversation_evaluation_records_tool_recovery_and_token_cache_metrics() {
     assert_eq!(report.summary.total_cached_input_tokens, 600);
     assert_eq!(report.summary.total_cache_write_input_tokens, 0);
     assert_eq!(report.summary.total_output_tokens, 100);
-    assert_eq!(report.summary.total_tokens, 920);
+    assert_eq!(report.summary.total_tokens, 900);
 
     let json = serde_json::to_string(&report).expect("resilience report json");
     assert!(!json.contains("DECOY_DO_NOT_OUTPUT"));
@@ -853,7 +854,7 @@ fn append_shadow_record_rejects_untrusted_selected_skill() {
     let root = tempdir().expect("tempdir");
     let path = root.path().join("hook-records.jsonl");
     let record = HookShadowRecord {
-        schema_version: 5,
+        schema_version: jevx::hooks::HOOK_SCHEMA_VERSION,
         mode: "shadow".to_owned(),
         hook_event_name: "UserPromptSubmit".to_owned(),
         trigger: None,
