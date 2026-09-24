@@ -3,15 +3,18 @@
 //! 対象はjevxが自分で書き込むファイルだけで、利用者が作る `.jevx/compact-context.md` や
 //! Codexの `hooks.json` とそのbackupには触れない。
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+use fs2::FileExt;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::JevxError;
+use crate::hook_dedupe::{DEDUPE_LOCK_FILE_NAME, DEDUPE_TEMP_DIR_NAME};
 
-pub const DATA_SCHEMA_VERSION: u8 = 4;
+pub const DATA_SCHEMA_VERSION: u8 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DataFile {
@@ -41,11 +44,12 @@ pub struct PurgeReport {
 }
 
 /// jevxが書き込むファイルの種類と、`$JEVX_HOME` からの相対パス。
-const MANAGED_FILES: [(&str, &str); 8] = [
+const MANAGED_FILES: [(&str, &str); 9] = [
     ("telemetry", "events.jsonl"),
     ("hookRecords", "hooks.jsonl"),
     ("hookDedupe", "hook-dedupe.json"),
     ("hookDedupeLock", "hook-dedupe.lock"),
+    ("hookDedupeTemps", ".hook-dedupe-tmp"),
     ("compactionRecords", "compaction/hook-records.jsonl"),
     ("compactionCheckpoints", "compaction/checkpoints.jsonl"),
     ("decisionReceipts", "decisions.jsonl"),
@@ -68,17 +72,24 @@ pub fn data_inventory(data_home: &Path) -> Result<DataInventory, JevxError> {
                     records: 0,
                 };
             };
-            // 壊れた・UTF-8でないファイルでも一覧と削除ができるよう、読めなければ0件として扱う。
-            let records = fs::read(&path).map_or(0, |bytes| {
-                bytes
-                    .split(|byte| *byte == b'\n')
-                    .filter(|line| line.iter().any(|byte| !byte.is_ascii_whitespace()))
-                    .count()
-            });
+            let (bytes, records) = if metadata.is_dir() {
+                directory_stats(&path)
+            } else {
+                // 壊れた・UTF-8でないファイルでも一覧と削除ができるよう、読めなければ0件として扱う。
+                (
+                    metadata.len(),
+                    fs::read(&path).map_or(0, |bytes| {
+                        bytes
+                            .split(|byte| *byte == b'\n')
+                            .filter(|line| line.iter().any(|byte| !byte.is_ascii_whitespace()))
+                            .count()
+                    }),
+                )
+            };
             DataFile {
                 kind,
                 exists: true,
-                bytes: metadata.len(),
+                bytes,
                 records,
                 path,
             }
@@ -95,6 +106,13 @@ pub fn data_inventory(data_home: &Path) -> Result<DataInventory, JevxError> {
 pub fn export_data(inventory: &DataInventory) -> Result<Value, JevxError> {
     let mut records = Map::new();
     for file in &inventory.files {
+        if file.kind == "hookDedupeTemps" {
+            records.insert(
+                file.kind.to_owned(),
+                Value::Array(dedupe_temp_metadata(&file.path)?),
+            );
+            continue;
+        }
         let mut values = Vec::new();
         if file.exists {
             let content = String::from_utf8_lossy(&fs::read(&file.path)?).into_owned();
@@ -123,27 +141,112 @@ pub fn export_data(inventory: &DataInventory) -> Result<Value, JevxError> {
 
 /// `confirmed` がfalseなら削除対象を返すだけ。削除後に空になった管理ディレクトリも片付ける。
 pub fn purge_data(inventory: &DataInventory, confirmed: bool) -> Result<PurgeReport, JevxError> {
-    let removed: Vec<PathBuf> = inventory
-        .files
-        .iter()
-        .filter(|file| file.exists)
-        .map(|file| file.path.clone())
-        .collect();
-    if confirmed {
+    let mut removed = Vec::new();
+    for file in &inventory.files {
+        if !file.exists || file.kind == "hookDedupeLock" {
+            continue;
+        }
+        if file.kind == "hookDedupeTemps" {
+            removed.extend(dedupe_temp_paths(&file.path)?);
+        } else {
+            removed.push(file.path.clone());
+        }
+    }
+    let purge = || -> Result<(), JevxError> {
         for path in &removed {
-            fs::remove_file(path)?;
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let temp_dir = inventory.data_home.join(DEDUPE_TEMP_DIR_NAME);
+        if fs::symlink_metadata(&temp_dir).is_ok_and(|metadata| metadata.is_dir())
+            && fs::read_dir(&temp_dir)?.next().is_none()
+        {
+            fs::remove_dir(&temp_dir)?;
         }
         let dir = inventory.data_home.join(MANAGED_DIR);
         let is_real_dir = fs::symlink_metadata(&dir).is_ok_and(|metadata| metadata.is_dir());
         if is_real_dir && fs::read_dir(&dir)?.next().is_none() {
             fs::remove_dir(&dir)?;
         }
+        Ok(())
+    };
+    if confirmed && needs_dedupe_lock(inventory) {
+        with_dedupe_lock(&inventory.data_home, purge)?;
+    } else if confirmed {
+        purge()?;
     }
     Ok(PurgeReport {
         schema_version: DATA_SCHEMA_VERSION,
         dry_run: !confirmed,
         removed,
     })
+}
+
+fn directory_stats(path: &Path) -> (u64, usize) {
+    let Ok(entries) = fs::read_dir(path) else {
+        return (0, 0);
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.metadata().ok())
+        .fold((0_u64, 0_usize), |(bytes, records), metadata| {
+            (bytes.saturating_add(metadata.len()), records + 1)
+        })
+}
+
+fn dedupe_temp_paths(path: &Path) -> Result<Vec<PathBuf>, JevxError> {
+    if !fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
+        return Ok(Vec::new());
+    }
+    Ok(fs::read_dir(path)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|entry| fs::symlink_metadata(entry).is_ok_and(|metadata| metadata.is_file()))
+        .collect())
+}
+
+fn dedupe_temp_metadata(path: &Path) -> Result<Vec<Value>, JevxError> {
+    Ok(dedupe_temp_paths(path)?
+        .into_iter()
+        .map(|path| {
+            let bytes = fs::symlink_metadata(&path).map_or(0, |metadata| metadata.len());
+            json!({"path": path, "bytes": bytes})
+        })
+        .collect())
+}
+
+fn needs_dedupe_lock(inventory: &DataInventory) -> bool {
+    inventory.files.iter().any(|file| {
+        file.exists
+            && matches!(
+                file.kind,
+                "hookDedupe" | "hookDedupeLock" | "hookDedupeTemps"
+            )
+    })
+}
+
+fn with_dedupe_lock<T, F>(data_home: &Path, operation: F) -> Result<T, JevxError>
+where
+    F: FnOnce() -> Result<T, JevxError>,
+{
+    fs::create_dir_all(data_home)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(data_home.join(DEDUPE_LOCK_FILE_NAME))?;
+    lock.lock_exclusive()?;
+    let result = operation();
+    let unlock = lock.unlock();
+    match (result, unlock) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(JevxError::from(error)),
+    }
 }
 
 #[cfg(test)]
@@ -173,6 +276,7 @@ mod tests {
                 "hookRecords",
                 "hookDedupe",
                 "hookDedupeLock",
+                "hookDedupeTemps",
                 "compactionRecords",
                 "compactionCheckpoints",
                 "decisionReceipts",
@@ -184,7 +288,7 @@ mod tests {
         assert!(!inventory.files[2].exists);
         assert_eq!(inventory.files[2].bytes, 0);
         assert_eq!(
-            inventory.files[5].path,
+            inventory.files[6].path,
             root.path().join("compaction/checkpoints.jsonl")
         );
     }
@@ -217,6 +321,7 @@ mod tests {
         assert!(preview.dry_run);
         assert_eq!(preview.removed.len(), 3);
         assert!(root.path().join("events.jsonl").exists());
+        fs::remove_file(root.path().join("events.jsonl")).expect("simulate concurrent removal");
 
         let report = purge_data(&inventory, true).expect("purge");
         assert!(!report.dry_run);
@@ -227,6 +332,13 @@ mod tests {
             "empty managed dir is removed"
         );
         assert!(root.path().join("unrelated.txt").exists());
+
+        assert_eq!(directory_stats(&root.path().join("missing")), (0, 0));
+        let error = with_dedupe_lock(root.path(), || -> Result<(), JevxError> {
+            Err(JevxError::InvalidInput("operation failed".to_owned()))
+        })
+        .expect_err("lock operation error");
+        assert!(error.to_string().contains("operation failed"));
 
         let again =
             purge_data(&data_inventory(root.path()).expect("inventory"), true).expect("again");
@@ -323,5 +435,33 @@ mod tests {
         );
         purge_data(&inventory, true).expect("purge");
         assert!(!root.path().join("hook-dedupe.json").exists());
+    }
+
+    #[test]
+    fn orphaned_dedupe_temps_are_exported_and_purged_without_removing_lock() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let temp_dir = root.path().join(".hook-dedupe-tmp");
+        fs::create_dir_all(&temp_dir).expect("temp dir");
+        let temp_path = temp_dir.join(".hook-dedupe.json.1.0.tmp");
+        fs::write(&temp_path, "partial state").expect("temp state");
+        fs::write(root.path().join("hook-dedupe.lock"), "").expect("lock");
+
+        let inventory = data_inventory(root.path()).expect("inventory");
+        let temps = inventory
+            .files
+            .iter()
+            .find(|file| file.kind == "hookDedupeTemps")
+            .expect("temp inventory");
+        assert!(temps.exists);
+        assert_eq!(temps.records, 1);
+        let exported = export_data(&inventory).expect("export");
+        assert_eq!(exported["records"]["hookDedupeTemps"][0]["bytes"], 13);
+
+        let preview = purge_data(&inventory, false).expect("preview");
+        assert!(preview.removed.iter().any(|path| path == &temp_path));
+        purge_data(&inventory, true).expect("purge");
+        assert!(!temp_path.exists());
+        assert!(!temp_dir.exists());
+        assert!(root.path().join("hook-dedupe.lock").exists());
     }
 }

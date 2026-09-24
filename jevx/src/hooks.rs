@@ -665,6 +665,7 @@ pub async fn run_shadow(
                 Ok(DedupeAcquire::Timeout) => {
                     record.cost.jev = CostEstimate::actual(0.0, None, None);
                     record.dedupe_error = Some("wait_timeout".to_owned());
+                    apply_provider_cost(&mut record);
                     record.elapsed_ms = elapsed_ms(started);
                     return Ok(shadow_result(record));
                 }
@@ -674,6 +675,12 @@ pub async fn run_shadow(
         let Some(prompt) = prompt.map(str::trim).filter(|value| !value.is_empty()) else {
             record.cost.jev = CostEstimate::actual(0.0, None, None);
             record.error_code = Some("invalid_input".to_owned());
+            if let (Some(key), Some(store)) = (dedupe_key.as_deref(), dedupe_store.as_ref())
+                && store.release(key).is_err()
+                && dedupe_error.is_none()
+            {
+                dedupe_error = Some("release_error");
+            }
             record.dedupe_error = dedupe_error.map(str::to_owned);
             record.elapsed_ms = elapsed_ms(started);
             return Ok(shadow_result(record));
@@ -771,44 +778,38 @@ fn parse_token_usage(
     }
     let mut usage: TokenUsageSnapshot = serde_json::from_value(value.clone())
         .map_err(|_| JevxError::InvalidInput(format!("{field} must be a valid object")))?;
+    let nested_cached_input_tokens = nested_usage_token(
+        value,
+        "input_tokens_details",
+        "inputTokensDetails",
+        "cached_tokens",
+        "cachedTokens",
+        field,
+    )?;
     if usage.cached_input_tokens == 0 {
-        usage.cached_input_tokens = value
-            .get("input_tokens_details")
-            .or_else(|| value.get("inputTokensDetails"))
-            .and_then(Value::as_object)
-            .and_then(|details| {
-                details
-                    .get("cached_tokens")
-                    .or_else(|| details.get("cachedTokens"))
-            })
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+        usage.cached_input_tokens = nested_cached_input_tokens.unwrap_or(0);
     }
+    let nested_cache_write_input_tokens = nested_usage_token(
+        value,
+        "input_tokens_details",
+        "inputTokensDetails",
+        "cache_write_tokens",
+        "cacheWriteTokens",
+        field,
+    )?;
     if usage.cache_write_input_tokens == 0 {
-        usage.cache_write_input_tokens = value
-            .get("input_tokens_details")
-            .or_else(|| value.get("inputTokensDetails"))
-            .and_then(Value::as_object)
-            .and_then(|details| {
-                details
-                    .get("cache_write_tokens")
-                    .or_else(|| details.get("cacheWriteTokens"))
-            })
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+        usage.cache_write_input_tokens = nested_cache_write_input_tokens.unwrap_or(0);
     }
+    let nested_reasoning_output_tokens = nested_usage_token(
+        value,
+        "output_tokens_details",
+        "outputTokensDetails",
+        "reasoning_tokens",
+        "reasoningTokens",
+        field,
+    )?;
     if usage.reasoning_output_tokens == 0 {
-        usage.reasoning_output_tokens = value
-            .get("output_tokens_details")
-            .or_else(|| value.get("outputTokensDetails"))
-            .and_then(Value::as_object)
-            .and_then(|details| {
-                details
-                    .get("reasoning_tokens")
-                    .or_else(|| details.get("reasoningTokens"))
-            })
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+        usage.reasoning_output_tokens = nested_reasoning_output_tokens.unwrap_or(0);
     }
     usage.validate(field)?;
     Ok(Some(usage))
@@ -935,7 +936,8 @@ fn parse_codex_usage(payload: &Value) -> Result<Option<CodexUsage>, JevxError> {
             "inputTokensDetails",
             "cached_tokens",
             "cachedTokens",
-        );
+            "codexUsage",
+        )?;
     }
     if usage.cache_write_input_tokens.is_none() {
         usage.cache_write_input_tokens = nested_usage_token(
@@ -944,7 +946,8 @@ fn parse_codex_usage(payload: &Value) -> Result<Option<CodexUsage>, JevxError> {
             "inputTokensDetails",
             "cache_write_tokens",
             "cacheWriteTokens",
-        );
+            "codexUsage",
+        )?;
     }
     if usage.reasoning_tokens.is_none() {
         usage.reasoning_tokens = nested_usage_token(
@@ -953,7 +956,8 @@ fn parse_codex_usage(payload: &Value) -> Result<Option<CodexUsage>, JevxError> {
             "outputTokensDetails",
             "reasoning_tokens",
             "reasoningTokens",
-        );
+            "codexUsage",
+        )?;
     }
     usage.model = sanitized_identifier(usage.model.as_deref(), 128);
     usage.reasoning_effort = sanitized_identifier(usage.reasoning_effort.as_deref(), 32);
@@ -972,17 +976,30 @@ fn nested_usage_token(
     camel_section: &str,
     snake_field: &str,
     camel_field: &str,
-) -> Option<u64> {
-    value
+    context: &str,
+) -> Result<Option<u64>, JevxError> {
+    let Some(section) = value
         .get(snake_section)
         .or_else(|| value.get(camel_section))
-        .and_then(Value::as_object)
-        .and_then(|details| {
-            details
-                .get(snake_field)
-                .or_else(|| details.get(camel_field))
-        })
-        .and_then(Value::as_u64)
+    else {
+        return Ok(None);
+    };
+    let details = section.as_object().ok_or_else(|| {
+        JevxError::InvalidInput(format!(
+            "{context}.{snake_section} must be an object in usage metadata"
+        ))
+    })?;
+    let Some(token) = details
+        .get(snake_field)
+        .or_else(|| details.get(camel_field))
+    else {
+        return Ok(None);
+    };
+    token.as_u64().map(Some).ok_or_else(|| {
+        JevxError::InvalidInput(format!(
+            "{context}.{snake_section}.{snake_field} must be a non-negative integer"
+        ))
+    })
 }
 
 fn shadow_result(record: HookShadowRecord) -> HookShadowResult {
@@ -1130,7 +1147,9 @@ pub fn analyze_hook_stats(records: &[HookShadowRecord]) -> Result<HookStatsRepor
         if record.error_code.is_some() || record.dedupe_error.is_some() {
             error_count += 1;
         }
-        latencies.push(record.elapsed_ms);
+        if record.hook_event_name == "UserPromptSubmit" {
+            latencies.push(record.elapsed_ms);
+        }
         if record.dedupe_hit {
             dedupe_hit_count += 1;
             dedupe_latencies.push(record.elapsed_ms);
@@ -2071,6 +2090,27 @@ mod tests {
             "preCompactionUsage": {"inputTokens": 1, "cachedInputTokens": 2}
         });
         assert!(parse_token_usage(&invalid_usage, "preCompactionUsage").is_err());
+        let invalid_nested_usage = serde_json::json!({
+            "preCompactionUsage": {
+                "inputTokens": 1,
+                "input_tokens_details": {"cached_tokens": "not-a-number"}
+            }
+        });
+        assert!(parse_token_usage(&invalid_nested_usage, "preCompactionUsage").is_err());
+        let negative_nested_usage = serde_json::json!({
+            "codexUsage": {
+                "inputTokens": 1,
+                "input_tokens_details": {"cached_tokens": -1}
+            }
+        });
+        assert!(parse_codex_usage(&negative_nested_usage).is_err());
+        let invalid_nested_section = serde_json::json!({
+            "preCompactionUsage": {
+                "inputTokens": 1,
+                "input_tokens_details": "not-an-object"
+            }
+        });
+        assert!(parse_token_usage(&invalid_nested_section, "preCompactionUsage").is_err());
         assert!(
             parse_token_usage(
                 &serde_json::json!({"preCompactionUsage": null}),
@@ -2163,17 +2203,25 @@ mod tests {
         records[0].cost.jev = CostEstimate::actual(0.1, None, None);
         records[0].cost.codex = CostEstimate::unknown(None, None);
         records[0].cost.total = CostEstimate::unavailable();
+        let mut slow_prompt = record("UserPromptSubmit");
+        slow_prompt.elapsed_ms = 10;
+        records.push(slow_prompt);
+        let mut unrelated_slow_event = record("PostCompact");
+        unrelated_slow_event.elapsed_ms = 1_000;
+        records.push(unrelated_slow_event);
 
         let report = analyze_hook_stats(&records).expect("stats");
         assert_eq!(report.decision_counts.len(), 5);
         assert_eq!(report.error_count, 1);
         assert_eq!(report.dedupe_hit_count, 1);
         assert_eq!(report.dedupe_rate, Some(1.0));
+        assert_eq!(report.latency_ms_p50, Some(1));
+        assert_eq!(report.latency_ms_p95, Some(10));
         assert_eq!(report.usage_measured_records, 1);
         assert_eq!(report.token_savings.measured_records, 1);
         assert_eq!(report.cost_status_counts["jev:available"], 1);
         assert_eq!(report.cost_status_counts["codex:unknown"], 1);
-        assert_eq!(report.cost_status_counts["total:unavailable"], 5);
+        assert_eq!(report.cost_status_counts["total:unavailable"], 7);
         assert!(analyze_hook_stats(&[]).is_err());
 
         let mut priced = record("PostCompact");

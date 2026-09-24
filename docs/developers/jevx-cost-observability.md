@@ -57,9 +57,9 @@ Hook payloadで任意に受け取る `codexUsage` は、model、reasoning、main
 
 ## 保存先とschema
 
-Hookの短期dedupe状態はJEVX_HOME直下のhook-dedupe.jsonに保存し、同時実行のclaimをhook-dedupe.lockで直列化する。生promptは保存せず、session/turn/model/event/trigger/source/promptに加えてcwd、候補Skill集合、判定設定のdigestをキーへ含め、正常な判定metadataだけを30秒保持する。cache hitはdecisionとselectedSkillだけを再利用し、元呼び出しのlatency/Tokenを重複計上しない。claim・待機・永続化の障害は`dedupeError`へ分離してHookの主エラーを隠さない。状態は一時ファイルをsyncしてから原子的に置き換え、dataコマンドで一覧・書き出し・削除できる。
+Hookの短期dedupe状態はJEVX_HOME直下のhook-dedupe.jsonに保存し、同時実行のclaimをhook-dedupe.lockで直列化する。生promptは保存せず、session/turn/model/event/trigger/source/promptに加えてcwd、候補Skill集合、判定設定のdigestをキーへ含め、正常な判定metadataだけを30秒保持する。cache hitはdecisionとselectedSkillだけを再利用し、元呼び出しのlatency/Tokenを重複計上しない。claim・待機・永続化の障害は`dedupeError`へ分離してHookの主エラーを隠さない。状態は専用の`.hook-dedupe-tmp/`へsync済み一時ファイルを書いてから原子的に置き換え、クラッシュ残骸も`data`の一覧・書き出し（metadataのみ）・削除対象へ含める。purgeは安定lockを保持したまま削除し、実行中Hookが使うlock自体は消さない。
 
-hooks statsコマンドはHook件数、event別p50/p95、dedupe hit、Token削減量、Jev/Codex/total費用の安全な合算、費用statusを集計する。dedupe率の分母はkeyを持つUserPromptSubmitだけで、対象がなければnull。外部Jevを呼ばないHook eventのJev費用はコード側で確定した0円、Providerの実費がある場合はCodex/totalへ合算する。標準Hook payloadにusage/costがなければ、削減量・費用はnullまたはunavailableのままになる。
+hooks statsコマンドはHook件数、UserPromptSubmitのp50/p95、dedupe hitの待ち時間p50/p95、Token削減量、Jev/Codex/total費用の安全な合算、費用statusを集計する。eventCountsは全Hook eventを含むが、`latencyMsP50/P95`はUserPromptSubmitだけを対象にする。dedupe率の分母はkeyを持つUserPromptSubmitだけで、対象がなければnull。外部Jevを呼ばないHook eventのJev費用はコード側で確定した0円、Providerの実費がある場合はCodex/totalへ合算する。標準Hook payloadにusage/costがなければ、削減量・費用はnullまたはunavailableのままになる。
 
 - `events.jsonl`: Skill選択Telemetry。`metrics.cost`にJev/Codex/totalとstatusを持つ。
 - `decisions.jsonl`: Decision Contract receipt。従来schema v1を読み込み、現行v2で費用を記録する。
@@ -67,7 +67,7 @@ hooks statsコマンドはHook件数、event別p50/p95、dedupe hit、Token削�
 - `hooks.jsonl` / `compaction/*`: Hook/Compactionのsafe metadataと任意のCodex usage/cost。
 - `jevx hooks review-stats --input reviews.jsonl --json`: status、latency、calls/retry/cache、Token、追加Token、Jev/Codex/total、fallback追加費用、成功単価、task/turn/session hash単位の集計。
 
-`eval` / `eval-repeat`のレポートschemaはbaseline比較の追加に伴いv2。`baselineMode`は既定で`local_rank`、`comparisons`の各modeに`totalMsDelta`（mode - baseline）、`speedupRate`（baselineからの短縮率）、`additionalCost`（mode - baseline）を出す。値が欠ける場合は`null`で、速度だけを成功扱いしない。Hook recordはschema v4、Compaction checkpointはschema v2、`jevx data path/export/purge`のinventoryはdedupe lock追加に伴いschema v4。Hook recordは旧schema v1/v2/v3を読み取り時にv4へ移行し、receiptにprompt本文、会話全文、Skill本文、raw Tool result、API keyを保存しない。
+`eval` / `eval-repeat`のレポートschemaはbaseline比較の追加に伴いv2。`baselineMode`は既定で`local_rank`、`comparisons`の各modeに`totalMsDelta`（mode - baseline）、`speedupRate`（baselineからの短縮率）、`additionalCost`（mode - baseline）を出す。値が欠ける場合は`null`で、速度だけを成功扱いしない。Hook recordはschema v4、Compaction checkpointはschema v2、`jevx data path/export/purge`のinventoryはdedupeのtemp管理追加に伴いschema v5。Hook recordは旧schema v1/v2/v3を読み取り時にv4へ移行し、receiptにprompt本文、会話全文、Skill本文、raw Tool result、API keyを保存しない。
 
 ## 評価手順
 

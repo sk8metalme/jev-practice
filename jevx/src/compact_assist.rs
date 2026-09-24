@@ -1,7 +1,9 @@
 use std::fs;
+use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -18,6 +20,7 @@ use crate::storage::append_json_line;
 const CONTEXT_LIMIT: usize = 4_000;
 const CONTEXT_READ_LIMIT_BYTES: u64 = CONTEXT_LIMIT as u64 * 4 + 1;
 const COMPACT_CHECKPOINT_SCHEMA_VERSION: u8 = 2;
+const COMPACT_ASSIST_LOCK_FILE_NAME: &str = ".compact-assist.lock";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CompactAssistResult {
@@ -93,22 +96,25 @@ pub async fn run_compact_assist(
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     let context = read_context(&cwd)?;
-    let prior_checkpoint = if is_compact_session_start(&payload) {
-        latest_checkpoint(state_dir, shadow.record.session_id_sha256.as_deref())?
-    } else {
-        None
-    };
-    let previous_pre_checkpoint = if is_post_compact(&payload) {
-        latest_pre_compaction_checkpoint(state_dir, shadow.record.session_id_sha256.as_deref())?
-    } else {
-        None
-    };
-    merge_previous_usage(&mut shadow.record, previous_pre_checkpoint.as_ref());
-    let checkpoint = checkpoint_from(&payload, &shadow.record, &cwd, context.as_ref());
-
     fs::create_dir_all(state_dir)?;
-    append_shadow_record(&state_dir.join("hook-records.jsonl"), &shadow.record)?;
-    append_checkpoint(&state_dir.join("checkpoints.jsonl"), &checkpoint)?;
+    let (prior_checkpoint, checkpoint) = with_compaction_lock(state_dir, || {
+        let prior_checkpoint = if is_compact_session_start(&payload) {
+            latest_checkpoint(state_dir, shadow.record.session_id_sha256.as_deref())?
+        } else {
+            None
+        };
+        let previous_pre_checkpoint = if is_post_compact(&payload) {
+            latest_pre_compaction_checkpoint(state_dir, shadow.record.session_id_sha256.as_deref())?
+        } else {
+            None
+        };
+        merge_previous_usage(&mut shadow.record, previous_pre_checkpoint.as_ref());
+        let checkpoint = checkpoint_from(&payload, &shadow.record, &cwd, context.as_ref());
+
+        append_shadow_record(&state_dir.join("hook-records.jsonl"), &shadow.record)?;
+        append_checkpoint(&state_dir.join("checkpoints.jsonl"), &checkpoint)?;
+        Ok((prior_checkpoint, checkpoint))
+    })?;
 
     let response = if is_compact_session_start(&payload) {
         session_start_response(prior_checkpoint.as_ref(), context.as_ref())
@@ -120,6 +126,27 @@ pub async fn run_compact_assist(
         response,
         checkpoint,
     })
+}
+
+fn with_compaction_lock<T, F>(state_dir: &Path, operation: F) -> Result<T, JevxError>
+where
+    F: FnOnce() -> Result<T, JevxError>,
+{
+    let lock_path = state_dir.join(COMPACT_ASSIST_LOCK_FILE_NAME);
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)?;
+    lock.lock_exclusive()?;
+    let result = operation();
+    let unlock = lock.unlock();
+    match (result, unlock) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(JevxError::from(error)),
+    }
 }
 
 fn checkpoint_from(

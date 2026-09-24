@@ -132,7 +132,7 @@ project-local HookはCodex側のプロジェクトTrustが必要であり、フ�
 5. `SessionStart(source=compact)`では、最新checkpoint metadataとredacted manifestだけを`additionalContext`へ返す。
 6. contextがない場合もCodex処理を止めず、補助情報がないことを明示する。
 7. `UserPromptSubmit`の正常な判定は、session / turn / event / trigger / source / model / promptのhashをキーに30秒だけ再利用し、失敗・timeout・fallbackはキャッシュしない。
-8. Hook payloadにusage/costがある場合は前後Token、実費、p50/p95、dedupe率を記録し、欠落値を推測しない。
+8. Hook payloadにusage/costがある場合は前後Token、実費、UserPromptSubmitのp50/p95、dedupe hitの待ち時間p50/p95、dedupe率を記録し、欠落値を推測しない。SessionStart/PreCompact/PostCompactの処理時間をUserPromptSubmitのp95へ混ぜない。
 
 公式Compactionの代替、会話全文の復元、現在のリポジトリ状態の保証はしない。
 

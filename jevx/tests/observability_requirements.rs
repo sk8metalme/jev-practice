@@ -244,7 +244,7 @@ async fn concurrent_dedupe_wait_uses_the_existing_timeout_budget() {
         started: Arc::clone(&started),
         release: Arc::clone(&release),
     });
-    let input = r#"{"hook_event_name":"UserPromptSubmit","prompt":"PDFを処理したい","cwd":"/tmp/project","session_id":"session-timeout","turn_id":"turn-timeout"}"#;
+    let input = r#"{"hook_event_name":"UserPromptSubmit","prompt":"PDFを処理したい","cwd":"/tmp/project","session_id":"session-timeout","turn_id":"turn-timeout","codexUsage":{"inputTokens":10,"outputTokens":2,"cost":{"amount":0.25,"currency":"USD","priceVersion":"codex-fixture","status":"available","basis":"actual"}}}"#;
     let first_judge = Arc::clone(&judge);
     let first_config = config.clone();
     let first_skills = vec![skill(root.path())];
@@ -270,6 +270,8 @@ async fn concurrent_dedupe_wait_uses_the_existing_timeout_budget() {
     .await
     .expect("timeout hook");
     assert_eq!(second.record.dedupe_error.as_deref(), Some("wait_timeout"));
+    assert_eq!(second.record.cost.codex.amount, Some(0.25));
+    assert_eq!(second.record.cost.total.amount, Some(0.25));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     release.notify_one();
     tokio::task::yield_now().await;
@@ -279,6 +281,28 @@ async fn concurrent_dedupe_wait_uses_the_existing_timeout_budget() {
         .expect("first hook must release within timeout")
         .expect("first task")
         .expect("first hook");
+}
+
+#[tokio::test]
+async fn whitespace_prompt_releases_dedupe_claim() {
+    let root = tempdir().expect("tempdir");
+    let config = Config::for_test(root.path().join("data"));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let judge = CountingJudge {
+        calls: Arc::clone(&calls),
+    };
+    let empty = r#"{"hook_event_name":"UserPromptSubmit","prompt":"   ","cwd":"/tmp/project","session_id":"session-empty","turn_id":"turn-empty"}"#;
+    let first = run_shadow(empty, None, &[skill(root.path())], &config, Some(&judge))
+        .await
+        .expect("empty prompt hook");
+    assert_eq!(first.record.error_code.as_deref(), Some("invalid_input"));
+
+    let second = run_shadow(empty, None, &[skill(root.path())], &config, Some(&judge))
+        .await
+        .expect("retry after empty prompt");
+    assert_eq!(second.record.error_code.as_deref(), Some("invalid_input"));
+    assert!(!second.record.dedupe_hit);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -454,6 +478,40 @@ async fn compact_assist_carries_pre_usage_into_post_checkpoint() {
     .await
     .expect("mismatch post compact assist");
     assert!(mismatch_post.checkpoint.token_savings.is_none());
+
+    let concurrent_state_dir = root.path().join("compaction-concurrent");
+    run_compact_assist(
+        r#"{"hook_event_name":"PreCompact","session_id":"session-concurrent-compact","turn_id":"turn-concurrent-compact","preCompactionUsage":{"inputTokens":900,"totalTokens":1000}}"#,
+        &config,
+        &concurrent_state_dir,
+    )
+    .await
+    .expect("concurrent pre compact assist");
+    let (left, right) = tokio::join!(
+        run_compact_assist(
+            r#"{"hook_event_name":"PostCompact","session_id":"session-concurrent-compact","turn_id":"turn-concurrent-compact","postCompactionUsage":{"inputTokens":500,"totalTokens":600}}"#,
+            &config,
+            &concurrent_state_dir,
+        ),
+        run_compact_assist(
+            r#"{"hook_event_name":"PostCompact","session_id":"session-concurrent-compact","turn_id":"turn-concurrent-compact","postCompactionUsage":{"inputTokens":500,"totalTokens":600}}"#,
+            &config,
+            &concurrent_state_dir,
+        )
+    );
+    let left = left.expect("left concurrent post");
+    let right = right.expect("right concurrent post");
+    let measured = [left, right]
+        .into_iter()
+        .filter(|result| {
+            result
+                .checkpoint
+                .token_savings
+                .as_ref()
+                .is_some_and(|savings| savings.status == jevx::hooks::MeasurementStatus::Measured)
+        })
+        .count();
+    assert_eq!(measured, 1);
 }
 
 #[tokio::test]

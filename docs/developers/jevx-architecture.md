@@ -86,8 +86,8 @@ Codex Hook JSON
     ├─ .jevx/compact-context.mdを読む（任意）
     ├─ usage/cost payloadをtyped metadataへ正規化し、直接payloadの前後Tokenはunavailable、同一cycleのcheckpoint対だけMeasuredにする
     ├─ redact → 4,000文字制限 → SHA-256
-    ├─ hook-records.jsonl / checkpoints.jsonlへmetadataのみ追記
-    └─ SessionStart(source=compact)なら additionalContext、statsはp50/p95とcost statusを集計（hit時のcall metricsは再利用しない）
+    ├─ compact-assistのstate lock下でhook-records.jsonl / checkpoints.jsonlへmetadataのみ追記
+    └─ SessionStart(source=compact)なら additionalContext、statsはUserPromptSubmit/dedupe hitのp50/p95とcost statusを集計（hit時のcall metricsは再利用しない）
 ```
 
 checkpointへ保存するのはevent名、boundedなtrigger/source、各種SHA-256、文字数、context有無、任意のtyped usage/cost metadataだけ。Hook recordのselectedSkillもwrite前にbounded identifierへ正規化し、unsafeな値は欠損化する。appendはunsafe recordを拒否し、既存schema v1/v2/v3のloadはtrigger/source/selectedSkillを正規化してから分析へ渡すため、過去ログ1件で全体を壊さない。redacted本文はcheckpointへ保存せず、compact後のHook応答を組み立てるプロセス内でだけ使う。contextがない場合は「metadata not found」を返すが、Codexを停止しない。
@@ -135,6 +135,7 @@ Jev未設定時はローカル推測へフォールバックせず、`missing_ap
 - デフォルトHTTPタイムアウト: 1,500ms
 - 出力する時刻: `discoveryMs`、`jevResponseMs`、`totalMs`
 - Telemetry集計: 判定率、Jev/total p50・p95、平均input/output tokens、usage event数
+- Hook stats集計: UserPromptSubmitの`latencyMsP50/P95`、dedupe hitの`dedupeLatencyMsP50/P95`。SessionStart/PreCompact/PostCompactの処理時間は前者へ混ぜない
 - Decision/review receipt集計: accepted/none/unknown/defer/degraded、fallback率、cache hit、retry、latency p50/p95、Token、Jev/Codex/total cost、成功review/fix単価
 
 Jevの呼び出しは候補ごとに繰り返さず、候補を1つのChoice質問へまとめる。これで候補数に比例したネットワーク往復を避けつつ、速度とtoken usageを測定できる。

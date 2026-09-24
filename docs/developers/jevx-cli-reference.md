@@ -362,6 +362,7 @@ jevxがローカルに書くデータは、すべて `$JEVX_HOME`（既定 `~/.j
 | --- | --- | --- |
 | hookDedupe | hook-dedupe.json | UserPromptSubmitの正常な判定結果の短期再利用 |
 | hookDedupeLock | hook-dedupe.lock | UserPromptSubmitのclaim・完了書き込みの直列化 |
+| hookDedupeTemps | .hook-dedupe-tmp/ | 原子的置換に使う一時ファイルのmetadata。クラッシュ残骸も管理対象 |
 | `telemetry` | `events.jsonl` | `skills suggest`（Telemetry有効時） |
 | `hookRecords` | `hooks.jsonl` | `hooks install` で登録した `UserPromptSubmit` Hook |
 | `compactionRecords` | `compaction/hook-records.jsonl` | `hooks compact-assist` |
@@ -376,7 +377,7 @@ jevx data purge           # 削除対象を表示するだけ
 jevx data purge --yes     # 実際に削除する
 ```
 
-`purge` が消すのは上の8ファイルと、空になった `compaction/` だけ。利用者が作る `.jevx/compact-context.md`、Codexの `hooks.json` と `hooks.json.jevx.bak`、`--output` で指定した評価レポートには触れない。`export` は壊れた行があると、その内容を表示せずにファイル名と行番号だけを返す。inventory/export/purgeのdata schemaはhook dedupe lock追加に伴いv4。
+`purge` は上の9管理対象を同じdedupe lock下で確認し、hook-dedupe.jsonとクラッシュ残骸のtempファイル、通常のmanaged JSONLを削除する。安定lockのhook-dedupe.lock自体は消さず、空になった `.hook-dedupe-tmp/` と `compaction/` だけを片付ける。利用者が作る `.jevx/compact-context.md`、Codexの `hooks.json` と `hooks.json.jevx.bak`、`--output` で指定した評価レポートには触れない。`export` は壊れた行があると、その内容を表示せずにファイル名と行番号だけを返し、dedupe tempは内容を出さずpath/bytes metadataだけを返す。inventory/export/purgeのdata schemaはdedupe temp管理追加に伴いv5。
 
 ## Codex Skillとしてセットアップする
 
@@ -549,7 +550,7 @@ jevx hooks stats \
   --output /tmp/jevx-hook-stats.json
 ~~~
 
-JSONにはevent別件数、decision/error、全体およびdedupe hitのp50/p95、dedupe率、usage measured件数、before/after/saved Token、reduction rate、Jev/Codex/totalの費用合算とcost statusを含める。費用が混在・欠落して安全に合算できない場合は金額をnullにする。
+JSONにはevent別件数、decision/error、UserPromptSubmitの全体およびdedupe hitのp50/p95、dedupe率、usage measured件数、before/after/saved Token、reduction rate、Jev/Codex/totalの費用合算とcost statusを含める。`latencyMsP50/P95`はUserPromptSubmitだけを対象にし、SessionStart/PreCompact/PostCompactの処理時間を混ぜない。費用が混在・欠落して安全に合算できない場合は金額をnullにする。
 
 ## Compactionの評価
 

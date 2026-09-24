@@ -13,7 +13,9 @@ compact-assistが返すのは、checkpoint metadataと任意のredacted manifest
 
 Hook recordはschema v4、Compaction checkpointはschema v2。旧schema v1/v2/v3は読み取り時に安全なmetadataへ移行する。
 
-UserPromptSubmitはsession・turn・event・trigger/source・model・promptに加えてcwd・候補Skill・判定設定のdigestが一致する正常判定を30秒だけ再利用する。同時実行ではclaimを1件だけownerにし、ほかは完了を待ってhitを再利用する。再利用時はdecision/selectedSkillだけを戻してdedupeHitを記録し、元呼び出しのlatency/Tokenを二重計上しない。失敗・timeout・fallback結果はキャッシュしない。状態はJEVX_HOME/hook-dedupe.jsonと安定lockのhook-dedupe.lockに保存し、読み書き障害は主`errorCode`と分離した`dedupeError`としてrecordへ残しつつHook自体は継続する。jevx dataで確認・削除できる。
+UserPromptSubmitはsession・turn・event・trigger/source・model・promptに加えてcwd・候補Skill・判定設定のdigestが一致する正常判定を30秒だけ再利用する。同時実行ではclaimを1件だけownerにし、ほかは完了を待ってhitを再利用する。再利用時はdecision/selectedSkillだけを戻してdedupeHitを記録し、元呼び出しのlatency/Tokenを二重計上しない。失敗・timeout・fallback結果はキャッシュしない。状態はJEVX_HOME/hook-dedupe.jsonと安定lockのhook-dedupe.lockに保存し、原子的置換の一時ファイルは`.hook-dedupe-tmp/`に置く。読み書き障害は主`errorCode`と分離した`dedupeError`としてrecordへ残しつつHook自体は継続する。`jevx data export`はtempのpath/bytesだけを出し、`purge --yes`は安定lockを残してtempと状態を同じlock下で削除する。
+
+`hooks stats`の`latencyMsP50/P95`はUserPromptSubmitだけ、`dedupeLatencyMsP50/P95`はdedupe hitだけを対象にする。SessionStart/PreCompact/PostCompactはeventCountsとcost/usageへ含まれるが、UserPromptSubmitのp95へ混ぜない。
 
 Hook payloadにusage/costが含まれる場合はCompaction前後のToken・費用を記録する。直接payloadのbefore/afterはunavailableとして保存し、compact-assistで同一cycleのPreCompact/PostCompactを対応付けられた場合だけ削減量をMeasuredにする。標準Hookで取得できない値はunavailableのままとし、単価や実費を推測しない。集計は次で確認する。
 

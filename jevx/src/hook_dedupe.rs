@@ -15,6 +15,7 @@ const DEDUPE_SCHEMA_VERSION: u8 = 2;
 const PREVIOUS_DEDUPE_SCHEMA_VERSION: u8 = 1;
 const DEDUPE_TTL_MS: u64 = 30_000;
 const DEDUPE_CAPACITY: usize = 256;
+pub(crate) const DEDUPE_TEMP_DIR_NAME: &str = ".hook-dedupe-tmp";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct CachedHookDecision {
@@ -262,8 +263,10 @@ fn atomic_write_state(path: &Path, state: &DedupeState) -> Result<(), JevxError>
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("hook-dedupe.json");
+    let temp_dir = parent.join(DEDUPE_TEMP_DIR_NAME);
+    fs::create_dir_all(&temp_dir)?;
     for attempt in 0..100_u32 {
-        let temp = parent.join(format!(".{base}.{}.{}.tmp", std::process::id(), attempt));
+        let temp = temp_dir.join(format!(".{base}.{}.{}.tmp", std::process::id(), attempt));
         let mut file = match OpenOptions::new().create_new(true).write(true).open(&temp) {
             Ok(file) => file,
             Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
