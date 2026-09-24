@@ -63,6 +63,79 @@ async fn identical_user_prompt_hooks_reuse_a_successful_decision() {
     assert!(!first.record.dedupe_hit);
     assert!(second.record.dedupe_hit);
     assert_eq!(second.record.selected_skill.as_deref(), Some("pdf"));
+    assert!(second.record.discovery_ms.is_none());
+    assert!(second.record.jev_response_ms.is_none());
+    assert!(second.record.total_ms.is_none());
+    assert!(second.record.input_tokens.is_none());
+    assert!(second.record.output_tokens.is_none());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn changed_skill_set_or_decision_config_does_not_reuse_a_cached_decision() {
+    let root = tempdir().expect("tempdir");
+    let config = Config::for_test(root.path().join("data"));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let judge = CountingJudge {
+        calls: Arc::clone(&calls),
+    };
+    let input = r#"{"hook_event_name":"UserPromptSubmit","prompt":"PDFを処理したい","cwd":"/tmp/project","session_id":"session-state","turn_id":"turn-state","model":"model-1"}"#;
+    let skills = [skill(root.path())];
+
+    run_shadow(input, None, &skills, &config, Some(&judge))
+        .await
+        .expect("initial hook");
+    let changed_skill = SkillRecord::new(
+        "pdf".to_owned(),
+        "説明が変わった".to_owned(),
+        root.path().join("pdf/SKILL.md"),
+        "fixture".to_owned(),
+    );
+    let changed_skill_result = run_shadow(input, None, &[changed_skill], &config, Some(&judge))
+        .await
+        .expect("changed skill hook");
+    assert!(!changed_skill_result.record.dedupe_hit);
+
+    let mut changed_config = config.clone();
+    changed_config.min_margin = 0.2;
+    let changed_config_result = run_shadow(input, None, &skills, &changed_config, Some(&judge))
+        .await
+        .expect("changed config hook");
+    assert!(!changed_config_result.record.dedupe_hit);
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn dedupe_storage_errors_are_recorded_without_blocking_the_hook() {
+    let root = tempdir().expect("tempdir");
+    let config = Config::for_test(root.path().join("data"));
+    fs::create_dir_all(config.telemetry_path.parent().expect("data parent"))
+        .expect("data directory");
+    fs::write(
+        config
+            .telemetry_path
+            .parent()
+            .expect("data parent")
+            .join("hook-dedupe.json"),
+        "not-json\n",
+    )
+    .expect("corrupt dedupe state");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let judge = CountingJudge {
+        calls: Arc::clone(&calls),
+    };
+    let result = run_shadow(
+        r#"{"hook_event_name":"UserPromptSubmit","prompt":"PDFを処理したい","cwd":"/tmp/project","session_id":"session-dedupe-error","turn_id":"turn-dedupe-error"}"#,
+        None,
+        &[skill(root.path())],
+        &config,
+        Some(&judge),
+    )
+    .await
+    .expect("hook continues after dedupe error");
+
+    assert_eq!(result.record.error_code.as_deref(), Some("dedupe_error"));
+    assert!(!result.record.dedupe_hit);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
@@ -157,7 +230,7 @@ async fn hook_stats_reports_latency_dedupe_and_compaction_savings() {
     .await
     .expect("pre compact");
     let post = run_shadow(
-        r#"{"hook_event_name":"PostCompact","session_id":"session-1","turn_id":"turn-1","preCompactionUsage":{"inputTokens":900,"totalTokens":1000},"postCompactionUsage":{"inputTokens":500,"totalTokens":600}}"#,
+        r#"{"hook_event_name":"PostCompact","session_id":"session-1","turn_id":"turn-1","preCompactionUsage":{"inputTokens":900,"totalTokens":1000},"postCompactionUsage":{"inputTokens":500,"totalTokens":600},"postCompactionCost":{"amount":0.012,"currency":"USD","priceVersion":"provider-usage","status":"available","basis":"actual"}}"#,
         None,
         &[],
         &config,
@@ -166,12 +239,21 @@ async fn hook_stats_reports_latency_dedupe_and_compaction_savings() {
     .await
     .expect("post compact");
 
-    let report = analyze_hook_stats(&[pre.record, post.record]).expect("hook stats");
+    let report = analyze_hook_stats(&[pre.record, post.record.clone()]).expect("hook stats");
     assert_eq!(report.record_count, 2);
     assert_eq!(report.event_counts["PreCompact"], 1);
     assert_eq!(report.event_counts["PostCompact"], 1);
     assert_eq!(report.token_savings.saved_tokens, Some(400));
     assert_eq!(report.token_savings.measured_records, 1);
+    assert_eq!(report.dedupe_rate, None);
+    assert_eq!(report.jev_cost, Some(0.0));
+    assert_eq!(report.codex_cost, None);
+    assert_eq!(report.total_cost, None);
+
+    let priced_report = analyze_hook_stats(&[post.record]).expect("priced hook stats");
+    assert_eq!(priced_report.jev_cost, Some(0.0));
+    assert_eq!(priced_report.codex_cost, Some(0.012));
+    assert_eq!(priced_report.total_cost, Some(0.012));
 }
 
 #[tokio::test]

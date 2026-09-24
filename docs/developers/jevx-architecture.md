@@ -82,12 +82,12 @@ Codex Hook（明示的にinstall）
 ```text
 Codex Hook JSON
     │
-    ├─ run_shadow: event契約を検証し、正常なUserPromptSubmitは短期dedupeし、Hook recordを追記
+    ├─ run_shadow: event契約を検証し、cwd・候補Skill・判定設定を含むkeyで正常なUserPromptSubmitを短期dedupeし、Hook recordを追記
     ├─ .jevx/compact-context.mdを読む（任意）
     ├─ usage/cost payloadをtyped metadataへ正規化し、前後Token削減量を計算
     ├─ redact → 4,000文字制限 → SHA-256
     ├─ hook-records.jsonl / checkpoints.jsonlへmetadataのみ追記
-    └─ SessionStart(source=compact)なら additionalContext、statsはp50/p95とcost statusを集計
+    └─ SessionStart(source=compact)なら additionalContext、statsはp50/p95とcost statusを集計（hit時のcall metricsは再利用しない）
 ```
 
 checkpointへ保存するのはevent名、boundedなtrigger/source、各種SHA-256、文字数、context有無、任意のtyped usage/cost metadataだけ。Hook recordのselectedSkillもwrite前にbounded identifierへ正規化し、unsafeな値は欠損化する。appendはunsafe recordを拒否し、既存schema v1/v2のloadはtrigger/source/selectedSkillを正規化してから分析へ渡すため、過去ログ1件で全体を壊さない。redacted本文はcheckpointへ保存せず、compact後のHook応答を組み立てるプロセス内でだけ使う。contextがない場合は「metadata not found」を返すが、Codexを停止しない。

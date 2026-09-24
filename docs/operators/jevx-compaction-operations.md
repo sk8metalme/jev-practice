@@ -13,7 +13,7 @@ compact-assistが返すのは、checkpoint metadataと任意のredacted manifest
 
 Hook recordはschema v3、Compaction checkpointはschema v2。旧schema v1/v2は読み取り時に安全なmetadataへ移行する。
 
-UserPromptSubmitはsession・turn・event・trigger/source・model・promptのhashが一致する正常判定を30秒だけ再利用する。再利用時はdedupeHitを記録し、失敗・timeout・fallback結果はキャッシュしない。状態はJEVX_HOME/hook-dedupe.jsonに保存し、jevx dataで確認・削除できる。
+UserPromptSubmitはsession・turn・event・trigger/source・model・promptに加えてcwd・候補Skill・判定設定のdigestが一致する正常判定を30秒だけ再利用する。再利用時はdecision/selectedSkillだけを戻してdedupeHitを記録し、元呼び出しのlatency/Tokenを二重計上しない。失敗・timeout・fallback結果はキャッシュしない。状態はJEVX_HOME/hook-dedupe.jsonに保存し、読み書き障害は`dedupe_error`としてrecordへ残しつつHook自体は継続する。jevx dataで確認・削除できる。
 
 Hook payloadにusage/costが含まれる場合はCompaction前後のToken・費用を記録する。標準Hookで取得できない値はunavailableのままとし、単価や実費を推測しない。集計は次で確認する。
 

@@ -239,6 +239,18 @@ pub struct CodexUsage {
     pub subagent_count: Option<u32>,
     #[serde(rename = "inputTokens", alias = "input_tokens")]
     pub input_tokens: Option<u64>,
+    #[serde(
+        rename = "cachedInputTokens",
+        alias = "cached_input_tokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cached_input_tokens: Option<u64>,
+    #[serde(
+        rename = "cacheWriteInputTokens",
+        alias = "cache_write_input_tokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cache_write_input_tokens: Option<u64>,
     #[serde(rename = "outputTokens", alias = "output_tokens")]
     pub output_tokens: Option<u64>,
     #[serde(rename = "reasoningTokens", alias = "reasoning_tokens")]
@@ -265,6 +277,17 @@ pub struct CodexUsage {
 }
 
 impl CodexUsage {
+    pub fn has_usage_tokens(&self) -> bool {
+        self.input_tokens.is_some()
+            || self.cached_input_tokens.is_some()
+            || self.cache_write_input_tokens.is_some()
+            || self.output_tokens.is_some()
+            || self.reasoning_tokens.is_some()
+            || self.additional_input_tokens.is_some()
+            || self.additional_output_tokens.is_some()
+            || self.additional_reasoning_tokens.is_some()
+    }
+
     /// Checks metadata before it can enter a receipt or a report.
     pub fn is_valid(&self) -> bool {
         self.model

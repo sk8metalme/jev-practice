@@ -439,13 +439,13 @@ printf '%s\n' \
       --output /tmp/jevx-hooks.jsonl
 ```
 
-`--output` へ保存されるHook recordはschema v3。hashed IDsとprompt非保存を含む現行schemaの観測記録だよ。任意の`codexUsage`/`codex` payloadがあればmodel、reasoning、通常/昇格Token、fallback、costも残し、`cost`にはJev/Codex/totalとestimated/actual、通貨・価格版を記録する。取得不能な費用は`unknown`/`unavailable`のままだよ。`trigger`、`source`、`selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなrecordを拒否し、既存schema v1/v2のloadでは該当metadataを正規化・欠損化して分析互換性を保つよ。
+`--output` へ保存されるHook recordはschema v3。hashed IDsとprompt非保存を含む現行schemaの観測記録だよ。任意の`codexUsage`/`codex`/Responses API形式の`usage` payloadがあればmodel、reasoning、通常/昇格Token、fallback、costも残し、nested detailsのcached/cache-write/reasoning Tokenもtyped fieldへ正規化する。`cost`にはJev/Codex/totalとestimated/actual、通貨・価格版を記録する。取得不能な費用は`unknown`/`unavailable`のままだよ。`trigger`、`source`、`selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなrecordを拒否し、既存schema v1/v2のloadでは該当metadataを正規化・欠損化して分析互換性を保つよ。
 
 - `sessionIdSha256`、`turnIdSha256`、`modelSha256`、`correlationIdSha256`
 - `promptSha256`、`promptChars`
 - `decision`、`selectedSkill`
 - `discoveryMs`、`jevResponseMs`、`totalMs`、Token使用量、`errorCode`
-- `dedupeHit`、`dedupeKeySha256`、`preCompactionUsage`、`compactionUsage`、`postCompactionUsage`
+- `dedupeHit`、`dedupeKeySha256`、`preCompactionUsage`、`compactionUsage`、`postCompactionUsage`。dedupe keyはcwd・候補Skill・判定設定のdigestも含み、hit時に元呼び出しのlatency/Tokenを複製しない。状態障害は`errorCode=dedupe_error`として残す
 - `postCompactionCost`、`compactionElapsedMs`、`tokenSavings`（before/after/saved/reduction/status）
 
 生のセッションID・ターンID・モデル名・prompt本文は保存しない。Jevを使わないイベントでも、Hookの継続性を確認できる。

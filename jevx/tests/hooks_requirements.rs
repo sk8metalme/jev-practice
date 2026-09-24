@@ -157,7 +157,8 @@ async fn hook_shadow_records_codex_usage_without_treating_missing_total_as_zero(
         Some(0.07)
     );
     assert_eq!(result.record.cost.codex.amount, Some(0.42));
-    assert!(result.record.cost.total.amount.is_none());
+    assert_eq!(result.record.cost.jev.amount, Some(0.0));
+    assert_eq!(result.record.cost.total.amount, Some(0.42));
     let serialized = serde_json::to_string(&result.record).expect("record json");
     assert!(!serialized.contains("PRIVATE"));
 }
@@ -428,6 +429,8 @@ fn conversation_compaction_records_codex_usage_and_fallback_extra_cost() {
         main_turns: Some(1),
         subagent_count: Some(2),
         input_tokens: Some(100),
+        cached_input_tokens: None,
+        cache_write_input_tokens: None,
         output_tokens: Some(20),
         reasoning_tokens: Some(10),
         elapsed_ms: Some(321),

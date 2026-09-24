@@ -30,7 +30,7 @@ OpenAI Responses API由来のusageを接続する場合は、input_tokens、outp
 
 TokenSavingsはbeforeTokens、afterTokens、savedTokens、reductionRate、source、status（measured / estimated / unavailable / degraded）を持つ。before/afterの同一scopeが揃った場合だけ削減量を計算し、Token削減量を請求額の削減とは解釈しない。
 
-Hook payloadで任意に受け取る `codexUsage` は、model、reasoning、main turn、subagent数、input/output/reasoning Token、elapsed、fallback stage、costを保持する。model昇格やfallbackで追加された`additionalInputTokens`、`additionalOutputTokens`、`additionalReasoningTokens`、`additionalCost`も通常usageと分けて保持する。Skill選択・review・compact・planのどの観測に紐づくかは、対応するreceipt/eventの種類とtask/turn/session hashで区別する。欠落フィールドは欠落のままで、0に補完しない。
+Hook payloadで任意に受け取る `codexUsage` は、model、reasoning、main turn、subagent数、input/output/reasoning Token、elapsed、fallback stage、costを保持する。Responses API形式のtop-level `usage` も受け付け、`input_tokens_details.cached_tokens` / `cache_write_tokens` と `output_tokens_details.reasoning_tokens` をそれぞれ `cachedInputTokens` / `cacheWriteInputTokens` / `reasoningTokens` へ正規化する。model昇格やfallbackで追加された`additionalInputTokens`、`additionalOutputTokens`、`additionalReasoningTokens`、`additionalCost`も通常usageと分けて保持する。Skill選択・review・compact・planのどの観測に紐づくかは、対応するreceipt/eventの種類とtask/turn/session hashで区別する。欠落フィールドは欠落のままで、0に補完しない。`usageMeasuredRecords`はTokenフィールドが1つ以上あるrecordだけを数え、modelだけ・空objectは測定済みにしない。
 
 ### 合算
 
@@ -57,9 +57,9 @@ Hook payloadで任意に受け取る `codexUsage` は、model、reasoning、main
 
 ## 保存先とschema
 
-Hookの短期dedupe状態はJEVX_HOME直下のhook-dedupe.jsonに保存する。生promptは保存せず、session/turn/model/event/trigger/source/promptのhashと正常な判定metadataだけを30秒保持する。dataコマンドで一覧・書き出し・削除できる。
+Hookの短期dedupe状態はJEVX_HOME直下のhook-dedupe.jsonに保存する。生promptは保存せず、session/turn/model/event/trigger/source/promptに加えてcwd、候補Skill集合、判定設定のdigestをキーへ含め、正常な判定metadataだけを30秒保持する。cache hitはdecisionとselectedSkillだけを再利用し、元呼び出しのlatency/Tokenを重複計上しない。状態の読み書きに失敗してもHookは継続するが、recordへ`dedupe_error`を残す。dataコマンドで一覧・書き出し・削除できる。
 
-hooks statsコマンドはHook件数、event別p50/p95、dedupe hit、Token削減量、Jev/Codex/total費用の安全な合算、費用statusを集計する。標準Hook payloadにusage/costがなければ、削減量・費用はnullまたはunavailableのままになる。
+hooks statsコマンドはHook件数、event別p50/p95、dedupe hit、Token削減量、Jev/Codex/total費用の安全な合算、費用statusを集計する。dedupe率の分母はkeyを持つUserPromptSubmitだけで、対象がなければnull。外部Jevを呼ばないHook eventのJev費用はコード側で確定した0円、Providerの実費がある場合はCodex/totalへ合算する。標準Hook payloadにusage/costがなければ、削減量・費用はnullまたはunavailableのままになる。
 
 - `events.jsonl`: Skill選択Telemetry。`metrics.cost`にJev/Codex/totalとstatusを持つ。
 - `decisions.jsonl`: Decision Contract receipt。従来schema v1を読み込み、現行v2で費用を記録する。

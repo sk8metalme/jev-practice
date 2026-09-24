@@ -9,7 +9,8 @@ use crate::Config;
 use crate::JevxError;
 use crate::cost::CostEstimate;
 use crate::hooks::{
-    HookShadowRecord, TokenSavings, TokenUsageSnapshot, append_shadow_record, run_shadow,
+    HookShadowRecord, TokenSavings, TokenUsageSnapshot, append_shadow_record, hook_event_name,
+    run_shadow,
 };
 use crate::redaction::{redact, sha256_hex};
 use crate::storage::append_json_line;
@@ -286,7 +287,7 @@ fn is_compact_session_start(payload: &Value) -> bool {
 }
 
 fn is_post_compact(payload: &Value) -> bool {
-    payload.get("hook_event_name").and_then(Value::as_str) == Some("PostCompact")
+    hook_event_name(payload) == Some("PostCompact")
 }
 
 fn safe_label(value: Option<&str>, max_chars: usize) -> Option<String> {
@@ -326,6 +327,7 @@ mod tests {
             "hook_event_name": "SessionStart",
             "source": "startup"
         })));
+        assert!(is_post_compact(&json!({"event": "PostCompact"})));
     }
 
     #[test]
