@@ -126,10 +126,10 @@ pub(super) fn doctor_report(config: &Config, env: &DoctorEnv) -> Value {
         "pricing": {
             "currency": config.price_currency,
             "version": config.price_version,
-            "jevInputPricePerMillion": config.jev_input_price_per_million,
-            "jevOutputPricePerMillion": config.jev_output_price_per_million,
-            "jevConfigured": config.jev_input_price_per_million.is_some()
-                && config.jev_output_price_per_million.is_some(),
+            "jevInputPricePerMillion": Value::Null,
+            "jevOutputPricePerMillion": Value::Null,
+            "jevConfigured": false,
+            "source": "provider_usage",
         },
         "warnings": config.warnings,
         "nextSteps": next_steps,

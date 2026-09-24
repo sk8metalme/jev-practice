@@ -584,39 +584,9 @@ fn repeat_mode_summary(mode: &str, reports: &[EvaluationReport]) -> RepeatModeSu
                 .iter()
                 .filter_map(|metrics| metrics.4.map(|value| value as f64)),
         ),
-        jev_cost: distribution(
-            reports
-                .iter()
-                .flat_map(|report| report.cases.iter())
-                .filter_map(|case| {
-                    case.jevx
-                        .as_ref()
-                        .and_then(|jevx| jevx.cost.as_ref())
-                        .and_then(|cost| cost.jev.amount)
-                }),
-        ),
-        codex_cost: distribution(
-            reports
-                .iter()
-                .flat_map(|report| report.cases.iter())
-                .filter_map(|case| {
-                    case.jevx
-                        .as_ref()
-                        .and_then(|jevx| jevx.cost.as_ref())
-                        .and_then(|cost| cost.codex.amount)
-                }),
-        ),
-        total_cost: distribution(
-            reports
-                .iter()
-                .flat_map(|report| report.cases.iter())
-                .filter_map(|case| {
-                    case.jevx
-                        .as_ref()
-                        .and_then(|jevx| jevx.cost.as_ref())
-                        .and_then(|cost| cost.total.amount)
-                }),
-        ),
+        jev_cost: distribution(run_modes.iter().filter_map(|summary| summary.jev_cost)),
+        codex_cost: distribution(run_modes.iter().filter_map(|summary| summary.codex_cost)),
+        total_cost: distribution(run_modes.iter().filter_map(|summary| summary.total_cost)),
     }
 }
 
@@ -1229,6 +1199,39 @@ mod tests {
         assert_eq!(values.p50, Some(20.0));
         assert_eq!(values.p95, Some(30.0));
         assert!(values.stddev.is_some());
+    }
+
+    #[test]
+    fn repeat_cost_distributions_use_the_selected_mode_summary() {
+        let mut local_keyword = ModeSummary::not_run();
+        local_keyword.jev_cost = Some(0.0);
+        local_keyword.codex_cost = Some(0.0);
+        local_keyword.total_cost = Some(0.0);
+        let mut jevx = ModeSummary::not_run();
+        jevx.jev_cost = Some(0.5);
+        jevx.codex_cost = Some(0.2);
+        jevx.total_cost = Some(0.7);
+        let report = EvaluationReport {
+            schema_version: 2,
+            case_count: 1,
+            baseline_mode: "local_rank".to_owned(),
+            modes: BTreeMap::from([
+                ("local_keyword".to_owned(), local_keyword),
+                ("jevx".to_owned(), jevx),
+            ]),
+            comparisons: BTreeMap::new(),
+            cases: Vec::new(),
+        };
+
+        let local_summary = repeat_mode_summary("local_keyword", std::slice::from_ref(&report));
+        assert_eq!(local_summary.jev_cost.mean, Some(0.0));
+        assert_eq!(local_summary.codex_cost.mean, Some(0.0));
+        assert_eq!(local_summary.total_cost.mean, Some(0.0));
+
+        let jevx_summary = repeat_mode_summary("jevx", std::slice::from_ref(&report));
+        assert_eq!(jevx_summary.jev_cost.mean, Some(0.5));
+        assert_eq!(jevx_summary.codex_cost.mean, Some(0.2));
+        assert_eq!(jevx_summary.total_cost.mean, Some(0.7));
     }
 
     #[test]

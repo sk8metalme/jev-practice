@@ -489,6 +489,11 @@ fn parse_codex_usage(payload: &Value) -> Result<Option<CodexUsage>, JevxError> {
     usage.model = sanitized_identifier(usage.model.as_deref(), 128);
     usage.reasoning_effort = sanitized_identifier(usage.reasoning_effort.as_deref(), 32);
     usage.fallback_stage = sanitized_identifier(usage.fallback_stage.as_deref(), 64);
+    if !usage.is_valid() {
+        return Err(JevxError::InvalidInput(
+            "codexUsage contains invalid cost metadata".to_owned(),
+        ));
+    }
     Ok(Some(usage))
 }
 
@@ -762,28 +767,15 @@ fn validate_conversation_case(
             usage.validate(&format!("{context}: {label}"))?;
         }
     }
+    if let Some(cost) = &case.post_compaction_cost
+        && !cost.is_valid()
+    {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: postCompactionCost has invalid status, amount, or metadata"
+        )));
+    }
     if let Some(usage) = &case.codex_usage
-        && (usage
-            .model
-            .as_deref()
-            .is_some_and(|value| !safe_identifier(value, 128))
-            || usage
-                .reasoning_effort
-                .as_deref()
-                .is_some_and(|value| !safe_identifier(value, 32))
-            || usage
-                .fallback_stage
-                .as_deref()
-                .is_some_and(|value| !safe_identifier(value, 64))
-            || usage
-                .cost
-                .amount
-                .is_some_and(|value| !value.is_finite() || value < 0.0)
-            || usage
-                .additional_cost
-                .as_ref()
-                .and_then(|estimate| estimate.amount)
-                .is_some_and(|value| !value.is_finite() || value < 0.0))
+        && !usage.is_valid()
     {
         return Err(JevxError::InvalidInput(format!(
             "{context}: codexUsage contains unsafe metadata"
@@ -849,29 +841,7 @@ fn validate_hook_record(record: &HookShadowRecord, context: &str) -> Result<(), 
             .correlation_id_sha256
             .as_deref()
             .is_some_and(|value| !safe_identifier(value, 128))
-        || record.codex.as_ref().is_some_and(|codex| {
-            codex
-                .model
-                .as_deref()
-                .is_some_and(|value| !safe_identifier(value, 128))
-                || codex
-                    .reasoning_effort
-                    .as_deref()
-                    .is_some_and(|value| !safe_identifier(value, 32))
-                || codex
-                    .fallback_stage
-                    .as_deref()
-                    .is_some_and(|value| !safe_identifier(value, 64))
-                || codex
-                    .cost
-                    .amount
-                    .is_some_and(|value| !value.is_finite() || value < 0.0)
-                || codex
-                    .additional_cost
-                    .as_ref()
-                    .and_then(|estimate| estimate.amount)
-                    .is_some_and(|value| !value.is_finite() || value < 0.0)
-        })
+        || record.codex.as_ref().is_some_and(|codex| !codex.is_valid())
     {
         return Err(JevxError::InvalidInput(format!(
             "{context}: hook record contains an unsafe identifier"

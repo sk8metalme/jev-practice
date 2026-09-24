@@ -7,7 +7,9 @@ use jevx::hooks::{
     compact_evaluation, evaluate_conversation_compaction, load_conversation_cases,
     load_hook_records, run_shadow,
 };
-use jevx::{Config, CostSummary, JevxError, Judge, JudgeRequest, JudgeResponse, SkillRecord};
+use jevx::{
+    Config, CostEstimate, CostSummary, JevxError, Judge, JudgeRequest, JudgeResponse, SkillRecord,
+};
 use serde_json::json;
 use tempfile::tempdir;
 
@@ -536,6 +538,20 @@ fn conversation_evaluation_rejects_invalid_token_cache_metadata() {
 
     let error = load_conversation_cases(&input).expect_err("invalid usage must fail");
     assert!(error.to_string().contains("cachedInputTokens"));
+}
+
+#[test]
+fn conversation_evaluation_rejects_invalid_post_compaction_cost_metadata() {
+    let mut case = conversation_case("invalid-cost", "goal=keep-context\nnext=verify");
+    case.post_compaction_cost = Some(CostEstimate::actual(
+        -0.1,
+        Some("USD".to_owned()),
+        Some("fixture".to_owned()),
+    ));
+
+    let error = evaluate_conversation_compaction(&[case])
+        .expect_err("invalid post-compaction cost must fail");
+    assert!(error.to_string().contains("postCompactionCost"));
 }
 
 #[test]

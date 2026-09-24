@@ -12,11 +12,11 @@
 
 - `amount`: 金額。取得不能時は`null`。
 - `currency`: ISO風の通貨ラベル。未設定なら`null`。
-- `priceVersion`: 適用した価格表の版。未設定なら`null`。
+- `priceVersion`: Providerが返した価格・請求情報の版。未設定なら`null`。
 - `status`: `available`、`unknown`、`unavailable`。
-- `basis`: `estimated`（Tokenと価格表から算出）または`actual`（外部から渡された実績値）。
+- `basis`: `estimated`（Token・Providerの推定値など）または`actual`（外部から渡された実績値）。
 
-`cache hit`の価格表上の追加呼び出しは、外部呼び出しがないことが確定しているため、`available`かつ0円で記録できる。同様に、baselineのように外部モデルを呼んでいないことをコード側で確定できる観測は既知の0円として扱える。それ以外のusage欠落は0円にしない。JevとCodexの通貨または価格版が一致しない合算は`available`にしない。複数receiptの集計でも、unknown/unavailableや価格メタデータの不一致を既知の金額へ混ぜない。
+`cache hit`の追加呼び出しがないことをコード側で確定できる場合は、`available`かつ0円で記録できる。同様に、baselineのように外部モデルを呼んでいないことをコード側で確定できる観測は既知の0円として扱える。それ以外のusage欠落は0円にしない。JevとCodexの通貨または価格版が一致しない合算は`available`にしない。複数receiptの集計でも、unknown/unavailableや価格メタデータの不一致を既知の金額へ混ぜない。
 
 ## 記録項目
 
@@ -45,18 +45,11 @@ Hook payloadで任意に受け取る `codexUsage` は、model、reasoning、main
 
 未知の行を集計から消さず、status count（例: `total:unknown`）に残す。平均値は同一通貨・価格版で対象行の費用がすべて比較可能な場合だけ出し、欠けた行や混在があれば`null`にする。
 
-## 価格設定
+## 価格の出所
 
-現在のJev価格表は設定から読み取る。
+価格は利用者が追加設定する価格表ではなく、Jev／CodexのProvider usage/cost payloadから受け取る。実費がProviderから渡された場合は`actual`、Providerが返した推定値は`estimated`として、currencyとprice versionもpayloadの値を記録する。トークンだけで金額が渡されない経路は、勝手な単価を補わず`unknown`、usage自体がない経路は`unavailable`にする。
 
-```text
-JEVX_JEV_INPUT_PRICE_PER_MILLION
-JEVX_JEV_OUTPUT_PRICE_PER_MILLION
-JEVX_PRICE_CURRENCY       # default USD
-JEVX_PRICE_VERSION        # default unconfigured
-```
-
-価格値がない状態は、usageがあれば`unknown`、usageもなければ`unavailable`。負数・NaN・無限大は警告を出して価格を無効化する。価格設定を変えても費用上限や自動停止は発生しない。
+`doctor`の価格キーは公開JSON互換のため残しているが、`source=provider_usage`、単価は`null`、利用者が価格環境変数を追加設定する方式ではない。これにより、jevx独自の単価と実際のProvider請求額を混同しない。
 
 ## 保存先とschema
 

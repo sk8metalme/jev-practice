@@ -66,6 +66,7 @@ pub async fn suggest_with_optional_judge<J: Judge + ?Sized>(
                 discovery_ms,
                 total_ms: discovery_ms,
                 candidate_count: 1,
+                cost: Some(CostSummary::no_external_call()),
                 ..Metrics::default()
             },
             reason_code: Some("explicit_skill".to_owned()),
@@ -87,6 +88,7 @@ pub async fn suggest_with_optional_judge<J: Judge + ?Sized>(
                 discovery_ms,
                 total_ms: discovery_ms,
                 candidate_count: 0,
+                cost: Some(CostSummary::no_external_call()),
                 ..Metrics::default()
             },
             reason_code: Some("no_candidates".to_owned()),
@@ -179,11 +181,16 @@ pub async fn suggest_with_optional_judge<J: Judge + ?Sized>(
     let response_ms = execution.response_ms;
     let total_ms = elapsed_ms(started).max(discovery_ms.saturating_add(response_ms));
     let usage = execution.usage;
-    let jev_cost = config.jev_pricing().estimate_two_part(
-        usage.as_ref().map(|usage| usage.input_tokens),
-        usage.as_ref().map(|usage| usage.output_tokens),
-        execution.cache_hit,
-    );
+    let jev_cost = usage
+        .as_ref()
+        .and_then(|usage| usage.cost.as_ref().filter(|cost| cost.is_valid()).cloned())
+        .unwrap_or_else(|| {
+            config.jev_pricing().estimate_two_part(
+                usage.as_ref().map(|usage| usage.input_tokens),
+                usage.as_ref().map(|usage| usage.output_tokens),
+                execution.cache_hit,
+            )
+        });
     let codex_cost = CostEstimate::unavailable();
     let cost = CostSummary {
         total: total_cost(&jev_cost, &codex_cost),

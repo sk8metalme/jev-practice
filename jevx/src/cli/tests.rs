@@ -45,7 +45,7 @@ fn stats_human_output_includes_token_averages_and_home_requirements() {
 }
 
 #[test]
-fn review_content_only_adds_skill_and_settings_when_opted_in() {
+fn review_content_never_includes_skill_or_settings() {
     let payload = serde_json::json!({
         "prompt": "prompt fixture",
         "plan": "plan fixture",
@@ -62,8 +62,10 @@ fn review_content_only_adds_skill_and_settings_when_opted_in() {
     assert!(!without_opt_in.contains("must never be selected"));
     let with_opt_in =
         review_content(&payload, jevx::ReviewTarget::Turn, true).expect("opt-in review content");
-    assert!(with_opt_in.contains("skillBody"));
-    assert!(with_opt_in.contains("settings"));
+    assert!(with_opt_in.contains("prompt fixture"));
+    assert!(!with_opt_in.contains("skill secret"));
+    assert!(!with_opt_in.contains("skillBody"));
+    assert!(!with_opt_in.contains("settings"));
     assert!(!with_opt_in.contains("must never be selected"));
 }
 

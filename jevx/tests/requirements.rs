@@ -142,6 +142,14 @@ async fn ranking_handles_empty_prompt_missing_skill_and_no_candidates() {
     .expect("no candidates");
     assert_eq!(no_candidates.decision, CandidateDecision::NoCandidates);
     assert_eq!(no_candidates.reason_code.as_deref(), Some("no_candidates"));
+    assert_eq!(
+        no_candidates
+            .metrics
+            .cost
+            .as_ref()
+            .and_then(|cost| cost.total.amount),
+        Some(0.0)
+    );
 }
 
 #[tokio::test]
@@ -290,6 +298,14 @@ async fn explicit_skill_bypasses_jev() {
         result.selected.as_ref().map(|item| item.name.as_str()),
         Some("pdf")
     );
+    assert_eq!(
+        result
+            .metrics
+            .cost
+            .as_ref()
+            .and_then(|cost| cost.total.amount),
+        Some(0.0)
+    );
 }
 
 #[tokio::test]
@@ -426,7 +442,8 @@ fn serialized_types_accept_aliases_and_preserve_optional_fields() {
         usage,
         Usage {
             input_tokens: 4,
-            output_tokens: 2
+            output_tokens: 2,
+            cost: None,
         }
     );
     let response = JudgeResponse::selected("none", 0.9, 1, None);
@@ -564,6 +581,10 @@ fn telemetry_handles_missing_empty_and_error_events() {
         .expect("blank line");
     let stats = read_stats(&path).expect("stats");
     assert_eq!(stats.errors, 1);
+    assert_eq!(stats.jev_cost, None);
+    assert_eq!(stats.codex_cost, None);
+    assert_eq!(stats.total_cost, None);
+    assert_eq!(stats.cost_status_counts.get("total:unavailable"), Some(&1));
 }
 
 #[test]
@@ -706,7 +727,7 @@ async fn gateway_judge_parses_successful_gateway_response() {
     let handle = thread::spawn(move || {
         let (mut stream, _) = server.accept().expect("accept");
         read_request(&mut stream);
-        let body = r#"{"answers":{"skill":{"choice":"pdf","probabilities":{"pdf":0.9,"none":0.1}}},"usage":{"inputTokens":5,"outputTokens":2}}"#;
+        let body = r#"{"answers":{"skill":{"choice":"pdf","probabilities":{"pdf":0.9,"none":0.1}}},"usage":{"inputTokens":5,"outputTokens":2,"cost":{"amount":0.123,"currency":"USD","priceVersion":"provider-test","status":"available","basis":"actual"}}}"#;
         write_http_response(&mut stream, "200 OK", body);
     });
     let mut config = Config::for_test(tempdir().expect("tempdir").path().to_path_buf());
@@ -725,7 +746,12 @@ async fn gateway_judge_parses_successful_gateway_response() {
         .expect("response");
     handle.join().expect("server");
     assert_eq!(response.choice.as_deref(), Some("pdf"));
-    assert_eq!(response.usage.expect("usage").input_tokens, 5);
+    let usage = response.usage.expect("usage");
+    assert_eq!(usage.input_tokens, 5);
+    assert_eq!(
+        usage.cost.expect("provider cost").basis,
+        jevx::CostBasis::Actual
+    );
 }
 
 #[tokio::test]

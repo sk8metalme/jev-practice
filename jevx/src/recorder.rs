@@ -96,6 +96,10 @@ impl DecisionReceipt {
             execution.cache_hit,
             execution.response_ms,
             execution.error_code.clone(),
+            execution
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.cost.as_ref().filter(|cost| cost.is_valid()).cloned()),
             input_weight,
             output_weight,
             &TokenPricing::default(),
@@ -122,6 +126,10 @@ impl DecisionReceipt {
             execution.cache_hit,
             execution.response_ms,
             execution.error_code.clone(),
+            execution
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.cost.as_ref().filter(|cost| cost.is_valid()).cloned()),
             input_weight,
             output_weight,
             pricing,
@@ -151,6 +159,7 @@ impl DecisionReceipt {
             cache_hit,
             latency_ms,
             None,
+            None,
             1.0,
             1.0,
             &TokenPricing::default(),
@@ -170,6 +179,7 @@ impl DecisionReceipt {
         cache_hit: bool,
         latency_ms: u64,
         error_code: Option<String>,
+        reported_jev_cost: Option<CostEstimate>,
         input_weight: f64,
         output_weight: f64,
         pricing: &TokenPricing,
@@ -192,7 +202,8 @@ impl DecisionReceipt {
                 _ => None,
             }
         };
-        let jev_cost = pricing.estimate_two_part(input_tokens, output_tokens, cache_hit);
+        let jev_cost = reported_jev_cost
+            .unwrap_or_else(|| pricing.estimate_two_part(input_tokens, output_tokens, cache_hit));
         let codex_cost = CostEstimate::unavailable();
         let cost = CostSummary {
             total: total_cost(&jev_cost, &codex_cost),

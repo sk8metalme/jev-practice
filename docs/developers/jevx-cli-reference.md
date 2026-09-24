@@ -65,15 +65,11 @@ export JEVX_TELEMETRY=1
 | `JEVX_RETRY_BACKOFF_MS` | `25` | retry backoffの基準ミリ秒（0〜1,000）。n回目は基準×2^(n-1) |
 | `JEVX_DECISION_CACHE_CAPACITY` | `0` | process-local answer cacheの上限（0〜10,000）。0は無効 |
 | `JEVX_INPUT_COST_WEIGHT` / `JEVX_OUTPUT_COST_WEIGHT` | `1.0` / `1.0` | token proxyの相対cost重み（0〜1,000）。通貨ではない |
-| `JEVX_JEV_INPUT_PRICE_PER_MILLION` | なし | Jev input tokenの推定価格。未設定はusageありなら`unknown` |
-| `JEVX_JEV_OUTPUT_PRICE_PER_MILLION` | なし | Jev output tokenの推定価格。未設定は`unknown` |
-| `JEVX_PRICE_CURRENCY` | `USD` | 価格表とreceiptへ保存する通貨ラベル |
-| `JEVX_PRICE_VERSION` | `unconfigured` | receiptへ保存する価格表version |
 | `JEVX_MIN_PROBABILITY` | `0.60` | `selected` に必要なJev確率の下限（0〜1） |
 | `JEVX_MIN_MARGIN` | `0.10` | 1位と次点の確率差の下限（0〜1） |
 | `JEVX_MAX_CANDIDATES` | `32` | Jevへ送る候補数の上限（1〜256） |
 
-閾値3つ（`JEVX_MIN_PROBABILITY` / `JEVX_MIN_MARGIN` / `JEVX_MAX_CANDIDATES`）とDecision Contractの実行上限6つ（`JEVX_MAX_STATE_BYTES` / `JEVX_MAX_RETRIES` / `JEVX_RETRY_BACKOFF_MS` / `JEVX_DECISION_CACHE_CAPACITY` / `JEVX_INPUT_COST_WEIGHT` / `JEVX_OUTPUT_COST_WEIGHT`）は、最後の逃げ道として用意している。価格4つは費用観測のためで、速度や実行を止める上限ではない。既定値は評価で決めた値なので、変える前に `eval` / `eval-repeat` で同じ条件の比較を取ってね。範囲外・数値でない値・`NaN` / `inf` は既定値へ戻り、`doctor` が警告を出す。新しい設定項目は増やさない（[PHILOSOPHY.md](../../jevx/PHILOSOPHY.md)）。
+閾値3つ（`JEVX_MIN_PROBABILITY` / `JEVX_MIN_MARGIN` / `JEVX_MAX_CANDIDATES`）とDecision Contractの実行上限6つ（`JEVX_MAX_STATE_BYTES` / `JEVX_MAX_RETRIES` / `JEVX_RETRY_BACKOFF_MS` / `JEVX_DECISION_CACHE_CAPACITY` / `JEVX_INPUT_COST_WEIGHT` / `JEVX_OUTPUT_COST_WEIGHT`）は、最後の逃げ道として用意している。費用はProvider usage/cost payloadを使い、jevx独自の単価設定は持たない。既定値は評価で決めた値なので、変える前に `eval` / `eval-repeat` で同じ条件の比較を取ってね。範囲外・数値でない値・`NaN` / `inf` は既定値へ戻り、`doctor` が警告を出す。新しい設定項目は増やさない（[PHILOSOPHY.md](../../jevx/PHILOSOPHY.md)）。
 
 ### 診断と次の一手（`doctor`）
 
@@ -200,9 +196,9 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
     "inputTokens": 82,
     "outputTokens": 12,
     "cost": {
-      "jev": {"amount": null, "currency": "USD", "priceVersion": "unconfigured", "status": "unknown", "basis": "estimated"},
+      "jev": {"amount": null, "currency": "USD", "priceVersion": "provider-usage", "status": "unknown", "basis": "estimated"},
       "codex": {"amount": null, "currency": null, "priceVersion": null, "status": "unavailable", "basis": "estimated"},
-      "total": {"amount": null, "currency": "USD", "priceVersion": "unconfigured", "status": "unknown", "basis": "estimated"}
+      "total": {"amount": null, "currency": "USD", "priceVersion": "provider-usage", "status": "unknown", "basis": "estimated"}
     }
   },
   "mode": "shadow"
@@ -662,7 +658,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 ## セキュリティとデータの扱い
 
-- Jevへ送るのは、通常のSkill提案ではマスキングしたprompt、redactした作業ディレクトリ、rawの候補Skill ID/name、redactしたdescription。reviewで`--allow-content`を明示した場合だけ、対象として選択したprompt/plan/diff/final answer、Skill本文、設定をredactして送る。過去会話全文、raw Tool結果、APIキーは常に送らない。
+- Jevへ送るのは、通常のSkill提案ではマスキングしたprompt、redactした作業ディレクトリ、rawの候補Skill ID/name、redactしたdescription。reviewで`--allow-content`を明示した場合だけ、対象として選択したprompt/plan/diff/final answerをredactして送る。Skill本文、設定本文、過去会話全文、raw Tool結果、APIキーは常に送らない。`hooks install`でUserPromptSubmit shadowを登録すると、APIキー設定時はredact済みpromptがreviewのopt-inとは独立して送信される。
 - `AI_GATEWAY_API_KEY` は環境変数からBearer認証へ使い、レスポンスやTelemetryへ書き出さない。
 - Telemetryはprompt本文やprobabilityではなくハッシュ・文字数・判定・選択時の`selectedSkill`（raw ID）・計測値を保存するため、Skill ID自体を秘密値にしない。
 - Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` / `Authorization: Basic <value>` の認識済み形式で値を保存・送信しない。任意の `Basic` 文言や未知のPIIを除去する完全なDLPではない。

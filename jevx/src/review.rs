@@ -5,9 +5,9 @@
 //! 常にコード側で決める。
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::io::{BufRead, BufReader};
-use std::path::{Component, Path};
+use std::fs::{self, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -182,14 +182,10 @@ impl ReviewRequest {
             "skillBodyIncluded": self.skill_body_included,
             "settingsIncluded": self.settings_included,
         });
-        Ok(crate::decision::StatePlan::from_value(
-            payload,
-            self.file_count,
-            1,
-            Vec::new(),
-            Vec::new(),
-        )?
-        .with_budgets(config.max_state_bytes, config.max_candidates))
+        Ok(
+            crate::decision::StatePlan::from_value(payload, 0, 1, Vec::new(), Vec::new())?
+                .with_budgets(config.max_state_bytes, config.max_candidates),
+        )
     }
 }
 
@@ -572,7 +568,7 @@ fn add_unit_cost(
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct ReviewExecution {
     status: ReviewStatus,
     calls: u32,
@@ -581,6 +577,7 @@ struct ReviewExecution {
     response_ms: u64,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
+    reported_jev_cost: Option<CostEstimate>,
     fallback: Option<&'static str>,
 }
 
@@ -643,6 +640,7 @@ pub async fn review_with_optional_judge(
                 response_ms: 0,
                 input_tokens: None,
                 output_tokens: None,
+                reported_jev_cost: None,
                 fallback: Some("content_opt_in_required"),
             },
             codex_usage,
@@ -666,6 +664,7 @@ pub async fn review_with_optional_judge(
                 response_ms: 0,
                 input_tokens: None,
                 output_tokens: None,
+                reported_jev_cost: None,
                 fallback: Some("state_degraded"),
             },
             codex_usage,
@@ -688,6 +687,7 @@ pub async fn review_with_optional_judge(
                 response_ms: 0,
                 input_tokens: None,
                 output_tokens: None,
+                reported_jev_cost: None,
                 fallback: Some("missing_api_key"),
             },
             codex_usage,
@@ -749,6 +749,7 @@ pub async fn review_with_optional_judge(
                     response_ms,
                     input_tokens: None,
                     output_tokens: None,
+                    reported_jev_cost: None,
                     fallback,
                 },
                 codex_usage,
@@ -797,6 +798,10 @@ pub async fn review_with_optional_judge(
         response_ms: decision.response_ms,
         input_tokens: decision.usage.as_ref().map(|usage| usage.input_tokens),
         output_tokens: decision.usage.as_ref().map(|usage| usage.output_tokens),
+        reported_jev_cost: decision
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.cost.as_ref().filter(|cost| cost.is_valid()).cloned()),
         fallback: unresolved.then_some("low_confidence_or_contract_failure"),
     };
     Ok(build_response(
@@ -822,14 +827,23 @@ fn build_response(
     config: &Config,
     started: Instant,
 ) -> ReviewResponse {
-    let cost = if known_no_external_review(&execution, codex_usage) {
-        CostSummary::no_external_call()
+    let cost = if known_no_external_review(&execution) {
+        let jev = CostEstimate::actual(0.0, None, None);
+        let codex = codex_usage
+            .map(|usage| usage.cost.clone())
+            .unwrap_or_else(|| CostEstimate::actual(0.0, None, None));
+        CostSummary {
+            total: total_cost(&jev, &codex),
+            jev,
+            codex,
+        }
     } else {
         review_cost(
             config,
             execution.input_tokens,
             execution.output_tokens,
             codex_usage,
+            execution.reported_jev_cost.as_ref(),
         )
     };
     let status = execution.status;
@@ -884,12 +898,11 @@ fn build_response(
     }
 }
 
-fn known_no_external_review(execution: &ReviewExecution, codex_usage: Option<&CodexUsage>) -> bool {
-    codex_usage.is_none()
-        && matches!(
-            execution.fallback,
-            Some("content_opt_in_required" | "state_degraded" | "missing_api_key")
-        )
+fn known_no_external_review(execution: &ReviewExecution) -> bool {
+    matches!(
+        execution.fallback,
+        Some("content_opt_in_required" | "state_degraded" | "missing_api_key")
+    )
 }
 
 fn review_cost(
@@ -897,10 +910,13 @@ fn review_cost(
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     codex_usage: Option<&CodexUsage>,
+    reported_jev_cost: Option<&CostEstimate>,
 ) -> CostSummary {
-    let jev = config
-        .jev_pricing()
-        .estimate_two_part(input_tokens, output_tokens, false);
+    let jev = reported_jev_cost.cloned().unwrap_or_else(|| {
+        config
+            .jev_pricing()
+            .estimate_two_part(input_tokens, output_tokens, false)
+    });
     let codex = codex_usage
         .map(|usage| usage.cost.clone())
         .unwrap_or_else(CostEstimate::unavailable);
@@ -930,6 +946,11 @@ fn validate_codex_usage(usage: Option<&CodexUsage>) -> Result<(), JevxError> {
                 "codexUsage {label} must be a finite non-negative amount"
             )));
         }
+    }
+    if !usage.is_valid() {
+        return Err(JevxError::InvalidInput(
+            "codexUsage contains invalid metadata or cost".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -966,22 +987,8 @@ fn local_findings(target: ReviewTarget, content: &str) -> Vec<ReviewFinding> {
             true,
         ));
     }
-    let positive = ["必須", "必ず", "must", "always"];
-    let negative = ["不要", "禁止", "しない", "must not", "never"];
-    if positive
-        .iter()
-        .any(|mark| content.contains(mark) || lower.contains(mark))
-        && negative
-            .iter()
-            .any(|mark| content.contains(mark) || lower.contains(mark))
-    {
-        findings.push(local_finding(
-            ReviewCategory::TextContradiction,
-            "positive_and_negative_requirement",
-            crate::decision::Severity::Medium,
-            true,
-        ));
-    }
+    // 「必ず」と「しない」の共起だけでは、別の命題を誤って矛盾扱いする。
+    // 同一命題への否定を構文的に確定できない意味判定はJevへ委ねる。
     if target != ReviewTarget::Prompt
         && (lower.contains("must return true") && lower.contains("return false")
             || lower.contains("always true") && lower.contains("return false")
@@ -1125,7 +1132,10 @@ pub fn apply_fix_plan(
             skipped_count += 1;
             continue;
         }
-        let path = workspace.join(&operation.path);
+        let Some(path) = safe_workspace_file(workspace, &operation.path) else {
+            skipped_count += 1;
+            continue;
+        };
         let Ok(current) = fs::read(&path) else {
             skipped_count += 1;
             continue;
@@ -1144,7 +1154,7 @@ pub fn apply_fix_plan(
             skipped_count += 1;
             continue;
         }
-        if fs::write(path, replacement).is_ok() {
+        if write_without_following_symlink(&path, replacement).is_ok() {
             applied_count += 1;
         } else {
             skipped_count += 1;
@@ -1169,6 +1179,43 @@ pub fn apply_fix_plan(
             "fix_application_finished_without_backup".to_owned()
         },
     }
+}
+
+fn safe_workspace_file(workspace: &Path, relative: &str) -> Option<PathBuf> {
+    if !safe_fix_path(relative) {
+        return None;
+    }
+    let root = fs::canonicalize(workspace).ok()?;
+    let path = root.join(relative);
+    let mut current = root.clone();
+    for component in Path::new(relative).components() {
+        if let Component::Normal(value) = component {
+            current.push(value);
+            let metadata = fs::symlink_metadata(&current).ok()?;
+            if metadata.file_type().is_symlink() {
+                return None;
+            }
+        }
+    }
+    let canonical = fs::canonicalize(&path).ok()?;
+    canonical.starts_with(&root).then_some(path)
+}
+
+#[cfg(unix)]
+fn write_without_following_symlink(path: &Path, replacement: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    file.write_all(replacement.as_bytes())
+}
+
+#[cfg(not(unix))]
+fn write_without_following_symlink(path: &Path, replacement: &str) -> std::io::Result<()> {
+    fs::write(path, replacement)
 }
 
 fn safe_fix_path(path: &str) -> bool {
@@ -1318,6 +1365,7 @@ mod tests {
                         usage: Some(crate::types::Usage {
                             input_tokens: 10,
                             output_tokens: 2,
+                            cost: None,
                         }),
                         calls: 1,
                         retries: 0,
@@ -1352,9 +1400,22 @@ mod tests {
             .map(|finding| finding.category)
             .collect::<Vec<_>>();
         assert!(categories.contains(&ReviewCategory::JapaneseClarity));
-        assert!(categories.contains(&ReviewCategory::TextContradiction));
+        assert!(!categories.contains(&ReviewCategory::TextContradiction));
         assert!(categories.contains(&ReviewCategory::CodeContradiction));
         assert!(categories.contains(&ReviewCategory::CommentImplementationDrift));
+    }
+
+    #[test]
+    fn local_text_contradiction_detection_defers_without_same_proposition_proof() {
+        let findings = local_findings(
+            ReviewTarget::Turn,
+            "必須だが不要でもある。\n別の話として必ず確認する。",
+        );
+        assert!(
+            !findings
+                .iter()
+                .any(|finding| finding.category == ReviewCategory::TextContradiction)
+        );
     }
 
     #[test]
@@ -1366,11 +1427,12 @@ mod tests {
             Some(Path::new("/workspace")),
             true,
         )
-        .with_metadata(3, true, true)
+        .with_metadata(100, true, true)
         .with_identifiers(Some("task"), Some("session"), Some("turn"));
         let state = request.state_plan(&config).expect("state");
         assert!(!state.is_degraded());
-        assert_eq!(request.file_count, 3);
+        assert_eq!(state.candidate_count, 0);
+        assert_eq!(request.file_count, 100);
         assert!(request.skill_body_included);
         assert!(request.settings_included);
         assert_eq!(
@@ -1429,6 +1491,64 @@ mod tests {
         }
         assert!(safe_fix_path("src/file.rs"));
         assert!(safe_fix_path("./src/./file.rs"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fix_rejects_symlinked_files_and_parent_directories() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempdir().expect("workspace");
+        let outside = tempdir().expect("outside");
+        let outside_file = outside.path().join("target.txt");
+        std::fs::write(&outside_file, "old").expect("outside file");
+        symlink(&outside_file, workspace.path().join("link.txt")).expect("file symlink");
+
+        let finding = local_finding(
+            ReviewCategory::CodeContradiction,
+            "fixture",
+            crate::decision::Severity::High,
+            true,
+        );
+        let operation = FixOperation {
+            path: "link.txt".to_owned(),
+            expected_sha256: sha256_hex("old"),
+            replacement_sha256: sha256_hex("new"),
+            replacement: Some("new".to_owned()),
+        };
+        let result = apply_fix_plan(
+            &FixPlan::requested(vec![operation]),
+            workspace.path(),
+            true,
+            ReviewStatus::Completed,
+            std::slice::from_ref(&finding),
+        );
+        assert_eq!(result.status, FixStatus::Failed);
+        assert_eq!(
+            std::fs::read_to_string(&outside_file).expect("outside read"),
+            "old"
+        );
+
+        let outside_dir = outside.path().join("directory");
+        std::fs::create_dir(&outside_dir).expect("outside directory");
+        let nested = outside_dir.join("nested.txt");
+        std::fs::write(&nested, "old").expect("nested file");
+        symlink(&outside_dir, workspace.path().join("link-dir")).expect("directory symlink");
+        let operation = FixOperation {
+            path: "link-dir/nested.txt".to_owned(),
+            expected_sha256: sha256_hex("old"),
+            replacement_sha256: sha256_hex("new"),
+            replacement: Some("new".to_owned()),
+        };
+        let result = apply_fix_plan(
+            &FixPlan::requested(vec![operation]),
+            workspace.path(),
+            true,
+            ReviewStatus::Completed,
+            std::slice::from_ref(&finding),
+        );
+        assert_eq!(result.status, FixStatus::Failed);
+        assert_eq!(std::fs::read_to_string(nested).expect("nested read"), "old");
     }
 
     #[test]
@@ -1741,6 +1861,28 @@ mod tests {
         assert!(error.to_string().contains("finite non-negative"));
     }
 
+    #[tokio::test]
+    async fn review_rejects_unsafe_codex_cost_metadata() {
+        let config = Config::for_test(PathBuf::from("/tmp/jevx-review-test"));
+        let request =
+            ReviewRequest::from_content(ReviewTarget::Diff, Some("return false"), None, true);
+        let error = review_with_optional_judge(
+            &request,
+            &config,
+            None,
+            Some(&CodexUsage {
+                model: Some("model\nsecret".to_owned()),
+                cost: CostEstimate::actual(0.1, Some("USD".to_owned()), Some("fixture".to_owned())),
+                ..CodexUsage::default()
+            }),
+            None,
+            FixPlan::not_requested(),
+        )
+        .await
+        .expect_err("unsafe metadata must be rejected");
+        assert!(error.to_string().contains("invalid metadata"));
+    }
+
     #[test]
     fn review_stats_cover_status_route_and_unknown_cost_dimensions() {
         let root = tempdir().expect("data");
@@ -1895,6 +2037,7 @@ mod tests {
                 response_ms: 0,
                 input_tokens: None,
                 output_tokens: None,
+                reported_jev_cost: None,
                 fallback: Some("content_opt_in_required"),
             },
             None,
@@ -1937,7 +2080,7 @@ mod tests {
     #[test]
     fn local_and_helper_branches_are_explicit() {
         assert!(local_findings(ReviewTarget::Prompt, "plain").is_empty());
-        assert!(!local_findings(ReviewTarget::Diff, "must not return true").is_empty());
+        assert!(!local_findings(ReviewTarget::Diff, "must return true\nreturn false").is_empty());
         assert_eq!(status_label(ReviewStatus::Completed), "completed");
         assert_eq!(status_label(ReviewStatus::None), "none");
         assert_eq!(status_label(ReviewStatus::Unknown), "unknown");

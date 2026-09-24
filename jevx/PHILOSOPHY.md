@@ -35,10 +35,10 @@ jevxは、**Codexの作業を止めずに、決定的なローカル処理とJev
 
 ## データ境界
 
-既定では本文をJevへ送らない。hooks install --allow-content または hooks review --allow-content の明示opt-in時だけ、選択された本文をredactして送る。
+既定では本文をJevへ送らない。hooks install --allow-content または hooks review --allow-content の明示opt-in時だけ、選択されたprompt／plan／diff／final answerをredactして送る。
 
 - API key、資格情報、秘密値、raw Tool resultは常に除外する。
-- Skill本文と設定本文は、明示opt-inで対象として選んだ場合だけredactして送る。未実装の入力項目を暗黙に補完しない。
+- Skill本文と設定本文は、opt-inの有無にかかわらず送らない。Skill descriptionなど、候補探索に必要な限定メタデータだけをコード側で選ぶ。
 - $JEVX_HOMEへ保存するHook／review recordとreceiptには本文を入れず、digest、文字数、finding、route、latency、適用結果、費用だけを残す。
 - unknown／unavailableの費用は0円にしない。推定費用と実費を分け、通貨とprice versionを保存する。
 
@@ -46,7 +46,7 @@ jevxは、**Codexの作業を止めずに、決定的なローカル処理とJev
 
 - Skill本文の黙ったロード・実行、Jev確信度によるauto-allow、権限付与
 - Codex公式Compactionの置き換え、会話の勝手な要約・書き換え、Tool Resultの自動削除
-- 明示opt-inなしのprompt／plan／diff／Skill本文／設定本文の外部送信
+- prompt／plan／diff／final answerの明示opt-inなしの外部送信、Skill本文／設定本文の外部送信
 - API key、資格情報、秘密値、raw Tool resultの外部送信
 - HookだけでCodexのmodel／reasoning切替が必ず成功したという主張。証拠がなければdegraded
 - legacy/の現行機能化、Windows対応の約束、費用上限の導入（現段階は観測を優先）

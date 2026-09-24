@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::JevxError;
-use crate::cost::{CostAccumulator, CostStatus};
+use crate::cost::{CostAccumulator, CostEstimate, CostStatus};
 use crate::redaction::sha256_hex;
 use crate::storage::append_json_line;
 use crate::types::{CandidateDecision, CandidateResult, Metrics};
@@ -147,6 +147,18 @@ pub fn read_stats(path: &Path) -> Result<Stats, JevxError> {
             jev_cost.add(&cost.jev);
             codex_cost.add(&cost.codex);
             total_cost.add(&cost.total);
+        } else {
+            // Legacy events can lack the optional cost object. Keep the event count, but make
+            // the monetary aggregate unavailable instead of silently reporting only new rows.
+            for name in ["jev", "codex", "total"] {
+                *cost_status_counts
+                    .entry(format!("{name}:unavailable"))
+                    .or_insert(0) += 1;
+            }
+            let unavailable = CostEstimate::unavailable();
+            jev_cost.add(&unavailable);
+            codex_cost.add(&unavailable);
+            total_cost.add(&unavailable);
         }
     }
     if stats.events > 0 {

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// A cost can be measured only when both usage and a matching price table exist.
+/// A cost is measurable only when provider usage/cost metadata or a matching local price exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CostStatus {
@@ -10,7 +10,7 @@ pub enum CostStatus {
     Unavailable,
 }
 
-/// 金額の出所。価格表から算出した値と、外部の実績値を混同しない。
+/// 金額の出所。推定値と外部の実績値を混同しない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CostBasis {
@@ -91,6 +91,29 @@ impl CostEstimate {
             basis: CostBasis::Estimated,
         }
     }
+
+    /// Returns whether an externally supplied estimate is safe to persist and aggregate.
+    pub fn is_valid(&self) -> bool {
+        let metadata_valid = self
+            .currency
+            .as_deref()
+            .is_none_or(|value| safe_cost_metadata(value, 32))
+            && self
+                .price_version
+                .as_deref()
+                .is_none_or(|value| safe_cost_metadata(value, 128));
+        if !metadata_valid {
+            return false;
+        }
+        match self.status {
+            CostStatus::Available => self.amount.is_some_and(|amount| {
+                amount.is_finite()
+                    && amount >= 0.0
+                    && (amount == 0.0 || (self.currency.is_some() && self.price_version.is_some()))
+            }),
+            CostStatus::Unknown | CostStatus::Unavailable => self.amount.is_none(),
+        }
+    }
 }
 
 impl Default for CostEstimate {
@@ -118,12 +141,24 @@ pub struct CostAccumulator {
     saw_unknown: bool,
     saw_unavailable: bool,
     invalid_metadata: bool,
+    basis: Option<CostBasis>,
     currency: Option<String>,
     price_version: Option<String>,
 }
 
 impl CostAccumulator {
     pub fn add(&mut self, estimate: &CostEstimate) {
+        if !estimate.is_valid() {
+            self.invalid_metadata = true;
+            return;
+        }
+        if let Some(basis) = self.basis {
+            if basis != estimate.basis {
+                self.invalid_metadata = true;
+            }
+        } else {
+            self.basis = Some(estimate.basis);
+        }
         match estimate.status {
             CostStatus::Unknown => self.saw_unknown = true,
             CostStatus::Unavailable => self.saw_unavailable = true,
@@ -209,6 +244,28 @@ pub struct CodexUsage {
     /// `cost`とは別に、fallback/escalationで増えた実費または推定費用。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additional_cost: Option<CostEstimate>,
+}
+
+impl CodexUsage {
+    /// Checks metadata before it can enter a receipt or a report.
+    pub fn is_valid(&self) -> bool {
+        self.model
+            .as_deref()
+            .is_none_or(|value| safe_cost_metadata(value, 128))
+            && self
+                .reasoning_effort
+                .as_deref()
+                .is_none_or(|value| safe_cost_metadata(value, 32))
+            && self
+                .fallback_stage
+                .as_deref()
+                .is_none_or(|value| safe_cost_metadata(value, 64))
+            && self.cost.is_valid()
+            && self
+                .additional_cost
+                .as_ref()
+                .is_none_or(CostEstimate::is_valid)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -319,8 +376,16 @@ fn valid_price(value: f64) -> bool {
     value.is_finite() && value >= 0.0
 }
 
+fn safe_cost_metadata(value: &str, max_chars: usize) -> bool {
+    !value.is_empty()
+        && value.chars().count() <= max_chars
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "_-/.:".contains(character))
+}
+
 fn valid_available_component(estimate: &CostEstimate) -> bool {
-    if !matches!(estimate.status, CostStatus::Available) {
+    if !estimate.is_valid() || !matches!(estimate.status, CostStatus::Available) {
         return false;
     }
     let Some(amount) = estimate.amount else {
@@ -464,6 +529,15 @@ mod tests {
             total_cost(&jev, &mismatched_version).status,
             CostStatus::Unavailable
         );
+        let unsafe_metadata = CostEstimate::actual(
+            0.1,
+            Some("USD\nsecret".to_owned()),
+            Some("fixture-1".to_owned()),
+        );
+        assert_eq!(
+            total_cost(&jev, &unsafe_metadata).status,
+            CostStatus::Unavailable
+        );
         assert_eq!(
             total_cost(
                 &CostEstimate::unknown(Some("USD".to_owned()), None),
@@ -591,6 +665,19 @@ mod tests {
         let mut zero = CostAccumulator::default();
         zero.add(&CostSummary::no_external_call().total);
         assert_eq!(zero.amount(), Some(0.0));
+
+        let mut mixed_basis = CostAccumulator::default();
+        mixed_basis.add(&CostEstimate::available(
+            0.1,
+            Some("USD".to_owned()),
+            Some("fixture-1".to_owned()),
+        ));
+        mixed_basis.add(&CostEstimate::actual(
+            0.2,
+            Some("USD".to_owned()),
+            Some("fixture-1".to_owned()),
+        ));
+        assert_eq!(mixed_basis.amount(), None);
 
         let partial = TokenPricing {
             input_per_million: Some(1.0),

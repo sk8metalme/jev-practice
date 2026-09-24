@@ -118,7 +118,7 @@ checkpointへ保存するのはevent名、boundedなtrigger/source、各種SHA-2
 | Skill ID / name | 送る（raw） | 候補識別に使用 |
 | Skill description | 送る（redact後） | Skill本文は送らない |
 | 会話全文 / raw Tool結果 / APIキー | 送らない | 常に対象外 |
-| reviewで明示選択した本文・Skill本文・設定 | `--allow-content`時だけredactして送る | receiptには本文を保存しない |
+| reviewで明示選択したprompt/plan/diff/final answer | `--allow-content`時だけredactして送る | Skill本文・設定本文は常に対象外。receiptにも本文を保存しない |
 | probability | Gateway応答にはあり得るが送信対象ではない | Telemetry schemaへ保存しない |
 
 Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` / `Authorization: Basic <value>` の認識済み形式で値を保存・送信しない。未知のPIIや任意の `Basic` 文言まで除去するDLPではない。`--no-telemetry` はローカル記録を止めるだけで、Jev/Gatewayへの外部送信停止ではない。

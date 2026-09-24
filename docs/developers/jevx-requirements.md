@@ -88,7 +88,7 @@ Jev判定は`AI_GATEWAY_API_KEY`を使い、Vercel AI Gatewayの`typesafe-ai/jev
 - cache: 既定無効（`JEVX_DECISION_CACHE_CAPACITY=0`）
 - token proxy cost: input/outputとも既定weight 1.0
 - Hook state: Telemetry親ディレクトリ配下の`hooks.jsonl` / `compaction/`
-- Jev価格: `JEVX_JEV_INPUT_PRICE_PER_MILLION`、`JEVX_JEV_OUTPUT_PRICE_PER_MILLION`、`JEVX_PRICE_CURRENCY`、`JEVX_PRICE_VERSION`。未取得費用は`unknown`/`unavailable`で記録する
+- Jev/Codex価格: Provider usage/cost payloadを記録し、未取得費用は`unknown`/`unavailable`で記録する。jevx独自の単価環境変数は持たない
 
 ## 実装対応表
 
@@ -144,7 +144,7 @@ Jevへの送信境界は次のとおり。
 | Skill ID / name | 送る（raw） | 候補識別子として含む |
 | Skill description | 送る（redact後） | Skill本文は送らない |
 | APIキー | 送らない | Bearer認証ヘッダーにのみ使用 |
-| Skill本文、過去会話、Tool結果 | 既定は送らない | Skill本文/設定は対象選択と`--allow-content`が両方ある場合のみredactして送る。raw Tool resultは常に対象外 |
+| Skill本文、設定本文、過去会話、Tool結果 | 送らない | Skill descriptionなどの限定メタデータは候補探索で使うが、本文・設定本文・raw Tool resultは常に対象外 |
 
 Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` / `Authorization: Basic <value>` の認識済み形式で値を保存・送信しない。通常文中の単独`Basic`は意味を保つためredactしない。完全なDLPではない。Telemetryには生の依頼文を保存せず、SHA-256、文字数、候補数、判定、選択時の`selectedSkill`（raw ID）、遅延、usageを保存し、Jevのprobabilityは保存しない。Skill ID自体を秘密値として扱う設計ではない。`--no-telemetry` はローカル記録を止めるだけで、Gatewayへの外部送信停止ではない。Hook recordとCompaction checkpointには生のsession ID、turn ID、model、manifest本文を保存しない。
 

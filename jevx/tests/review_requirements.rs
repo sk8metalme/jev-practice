@@ -59,6 +59,11 @@ impl DecisionJudge for ReviewJudge {
             usage: Some(Usage {
                 input_tokens: 100,
                 output_tokens: 20,
+                cost: Some(CostEstimate::available(
+                    0.00014,
+                    Some("USD".to_owned()),
+                    Some("test".to_owned()),
+                )),
             }),
             calls: 1,
             retries: 0,
@@ -107,10 +112,39 @@ async fn content_requires_explicit_opt_in_and_is_safe_by_default() {
 }
 
 #[tokio::test]
+async fn no_external_review_keeps_known_codex_cost_separate_from_zero_jev() {
+    let config = Config::for_test(PathBuf::from("/tmp/jevx-review-requirement"));
+    let request = ReviewRequest::from_content(
+        ReviewTarget::Turn,
+        Some("適宜対応 secret=fixture-only"),
+        None,
+        false,
+    );
+    let codex = jevx::CodexUsage {
+        cost: CostEstimate::actual(0.42, Some("USD".to_owned()), Some("test".to_owned())),
+        ..jevx::CodexUsage::default()
+    };
+    let response = review_with_optional_judge(
+        &request,
+        &config,
+        None,
+        Some(&codex),
+        None,
+        FixPlan::not_requested(),
+    )
+    .await
+    .expect("review response");
+
+    assert_eq!(response.receipt.cost.jev.amount, Some(0.0));
+    assert_eq!(response.receipt.cost.codex.amount, Some(0.42));
+    assert_eq!(response.receipt.cost.total.amount, Some(0.42));
+    assert_eq!(response.receipt.cost.codex.status, CostStatus::Available);
+    assert_eq!(response.receipt.cost.total.status, CostStatus::Available);
+}
+
+#[tokio::test]
 async fn one_typed_jev_request_carries_findings_route_and_both_cost_sides() {
-    let mut config = Config::for_test(PathBuf::from("/tmp/jevx-review-requirement"));
-    config.jev_input_price_per_million = Some(1.0);
-    config.jev_output_price_per_million = Some(2.0);
+    let config = Config::for_test(PathBuf::from("/tmp/jevx-review-requirement"));
     let seen_state = Arc::new(Mutex::new(None));
     let judge = ReviewJudge {
         seen_state: Arc::clone(&seen_state),

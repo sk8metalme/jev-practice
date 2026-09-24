@@ -156,7 +156,7 @@ printf '%s\n' '{"diff":"// always returns true\\nreturn false;"}' | \
 jevx hooks review-stats --input "${JEVX_HOME:-$HOME/.jevx}/reviews.jsonl" --json
 ```
 
-`--auto-fix`は既定無効で、`--yes`、高信頼度、期待hash一致、安全な相対pathが全て必要です。backup/rollbackは作らないため、迷ったらreview-onlyを使ってください。費用が取得できないときは0円ではなく`unknown`または`unavailable`です。価格表からの`estimated`と外部usageの`actual`、通貨、price versionを分けて読みます。詳しくは[費用観測契約](../developers/jevx-cost-observability.md)を参照してください。
+`--auto-fix`は既定無効で、`--yes`、高信頼度、期待hash一致、安全な相対pathが全て必要です。backup/rollbackは作らないため、迷ったらreview-onlyを使ってください。費用が取得できないときは0円ではなく`unknown`または`unavailable`です。Providerが返した推定値`estimated`と外部usageの実績値`actual`、通貨、price versionを分けて読みます。詳しくは[費用観測契約](../developers/jevx-cost-observability.md)を参照してください。
 
 ## jevxの検証・評価用機能
 
@@ -319,7 +319,7 @@ Jevへの外部リクエスト境界は次のとおりです。
 | Skill ID / name | 送る（raw） | 候補識別のため送る |
 | Skill description | 送る（redact後） | promptと同じ限定パターンのredaction。Skill本文は送らない |
 | APIキー | 送る（`Authorization: Bearer`ヘッダー） | request bodyやTelemetryには含めない |
-| Skill本文/設定 | 明示対象として`--allow-content`した場合だけredactして送る | receiptには保存しない |
+| Skill本文/設定 | 送らない | Skill descriptionなどの限定メタデータは候補探索で使うが、本文・設定本文は常に対象外 |
 | 自動取得した過去の会話、Tool結果 | 送らない | raw Tool resultは常に対象外。promptへ利用者が明示貼付した文字列は選択対象の本文として扱う |
 
 Basic redactionは、`Authorization=Basic <value>`、`Authorization:Basic <value>`、`Authorization: Basic <value>` の認識済み形式を保護します。通常文中の単独の単語 `Basic` は意味を保つためredactしません。未知のPII・ラベルなし秘密まで除去する完全なDLPではないため、送信前に内容を確認してください。

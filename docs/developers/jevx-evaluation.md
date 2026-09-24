@@ -55,8 +55,8 @@ Jevを使う価値を、Skill選択・意味レビュー・route・Compaction/�
 | cache hit rate | 同一contract・policy・state digestでcacheを再利用した割合 |
 | retry rate / average retries | retryが発生した実行の割合と実行あたりのretry平均 |
 | relative cost | input/output tokenへ設定weightを掛けたproxy cost。価格そのものではない |
-| `jevCost` / `codexCost` / `totalCost` | 価格表または外部usageから算出したcomponent/合算。`unknown`/`unavailable`を0にしない |
-| cost basis | `estimated`（価格表から算出）と`actual`（外部実績値）を分離 |
+| `jevCost` / `codexCost` / `totalCost` | Provider usage/cost payloadから得たcomponent/合算。`unknown`/`unavailable`を0にしない |
+| cost basis | `estimated`（Providerの推定値など）と`actual`（外部実績値）を分離 |
 | task/turn/session cost | receiptのhash IDごとのJev/Codex/total合計。raw IDや本文は保存しない |
 | successful review/fix cost | Completed/None review、Applied fixに紐づくtotalCost |
 | speed vs cost | `baselineMode=local_rank`に対する`totalMsDelta`、`speedupRate`、`additionalCost`を同じrun条件で提示。`eval-repeat`は各値を分布化 |

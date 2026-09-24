@@ -77,7 +77,7 @@ APIキーがなくても、`jevx skills list`、`jevx doctor`、`jevx eval --dry
 
 - jevxが自動で書くデータは `$JEVX_HOME`（既定 `~/.jevx`）の下だけです。`jevx data path` で一覧、`jevx data export` で書き出し、`jevx data purge --yes` で削除できます。例外は、利用者が明示したファイル（`hooks install` / `uninstall` が変更するCodexの `hooks.json`、`--output` で指定したレポート）です。
 - Telemetryにはprompt本文・APIキー・Jevの確率を保存しません。止めるときは `JEVX_TELEMETRY=off`。
-- Jevへ送る本文は既定でありません。`hooks review --allow-content` または `hooks install --allow-content` を明示したときだけ、選択したprompt/plan/diff/final answerと対象に指定したSkill本文・設定をredactして送ります。API key、資格情報、raw Tool result、会話全文は常に除外します。
+- Jevへ送る本文は既定でありません。`hooks review --allow-content` または `hooks install --allow-content` を明示したときだけ、選択したprompt/plan/diff/final answerをredactして送ります。Skill本文・設定本文・API key・資格情報・raw Tool result・会話全文は常に送信しません。`hooks install`後のUserPromptSubmit shadowは、APIキーが設定されていればredact済みpromptを送るため、外部送信を避ける場合はAPIキーを設定せず、またはHookをuninstallしてください。
 - `reviews.jsonl`には本文を保存せず、digest・文字数・finding・route・fix・Jev/Codex/合算費用だけを記録します。費用の取得不能は`unknown`/`unavailable`で、0円ではありません。
 - Hookを入れたら `jevx hooks uninstall` で戻せます。jevxのhandlerだけを取り除き、ほかのHookは残します。
 
@@ -87,7 +87,7 @@ APIキーがなくても、`jevx skills list`、`jevx doctor`、`jevx eval --dry
 - 会話の要約・書き換え、Codex公式Compactionの代替
 - HookだけでCodexのmodel/reasoning切替を保証すること。証拠なしは`degraded`です。
 - 費用上限や速度だけを成功条件にすること。速度・品質・費用を同時に評価します。
-- 設定オプションを増やすこと（既存の閾値・実行上限・価格観測の環境変数は逃げ道として用意し、既定値の改善を優先します。一覧は[CLIリファレンス](../docs/developers/jevx-cli-reference.md#apiキーと設定)）
+- 設定オプションを増やすこと（既存の閾値・実行上限を維持し、価格はProvider usage/cost payloadを使います。一覧は[CLIリファレンス](../docs/developers/jevx-cli-reference.md#apiキーと設定)）
 
 理由と代替手段は [PHILOSOPHY.md](PHILOSOPHY.md#やらないことnon-goals) にあります。
 

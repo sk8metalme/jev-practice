@@ -113,14 +113,6 @@ pub(super) async fn run_hook_review_from_reader<R: Read>(
         .get("files")
         .and_then(serde_json::Value::as_array)
         .map_or(0, Vec::len);
-    let skill_body_included = args.allow_content
-        && ["skillBody", "skill_body"]
-            .iter()
-            .any(|key| payload.get(*key).and_then(review_value_text).is_some());
-    let settings_included = args.allow_content
-        && ["settings", "settingsText"]
-            .iter()
-            .any(|key| payload.get(*key).and_then(review_value_text).is_some());
     let request = ReviewRequest::from_content(
         target,
         content.as_deref(),
@@ -138,7 +130,8 @@ pub(super) async fn run_hook_review_from_reader<R: Read>(
             .or_else(|| payload.get("turn_id"))
             .and_then(serde_json::Value::as_str),
     )
-    .with_metadata(file_count, skill_body_included, settings_included);
+    // Skill本文・設定はopt-inでも外部送信しない。flagsも「送信した内容」を表すためfalseに固定する。
+    .with_metadata(file_count, false, false);
     let codex_usage = payload
         .get("codexUsage")
         .or_else(|| payload.get("codex"))
@@ -215,7 +208,7 @@ fn review_target(target: ReviewTargetArg) -> ReviewTarget {
 pub(super) fn review_content(
     payload: &serde_json::Value,
     target: ReviewTarget,
-    allow_content: bool,
+    _allow_content: bool,
 ) -> Option<String> {
     let keys: &[&str] = match target {
         ReviewTarget::Prompt => &["prompt", "content"],
@@ -224,17 +217,10 @@ pub(super) fn review_content(
         ReviewTarget::FinalAnswer => &["finalAnswer", "content"],
         ReviewTarget::Turn => &["content", "prompt", "plan", "diff", "finalAnswer"],
     };
-    let mut chunks = keys
+    let chunks = keys
         .iter()
         .filter_map(|key| payload.get(*key).and_then(review_value_text))
         .collect::<Vec<_>>();
-    if allow_content {
-        for key in ["skillBody", "skill_body", "settings", "settingsText"] {
-            if let Some(value) = payload.get(key).and_then(review_value_text) {
-                chunks.push(format!("{key}:\n{value}"));
-            }
-        }
-    }
     (!chunks.is_empty()).then(|| chunks.join("\n\n"))
 }
 

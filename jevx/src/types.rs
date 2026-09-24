@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::cost::CostSummary;
+use crate::cost::{CostEstimate, CostSummary};
 use crate::error::JevxError;
 
 pub const SUGGESTION_SCHEMA_VERSION: u8 = 2;
@@ -103,12 +103,14 @@ impl CandidateResult {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
     #[serde(rename = "inputTokens", alias = "input_tokens")]
     pub input_tokens: u64,
     #[serde(rename = "outputTokens", alias = "output_tokens")]
     pub output_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<CostEstimate>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -210,6 +212,7 @@ impl JudgeResponse {
             usage: usage.map(|(input_tokens, output_tokens)| Usage {
                 input_tokens,
                 output_tokens,
+                cost: None,
             }),
         }
     }
