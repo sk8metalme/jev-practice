@@ -12,9 +12,10 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::JevxError;
+use crate::compact_assist::COMPACT_ASSIST_LOCK_FILE_NAME;
 use crate::hook_dedupe::{DEDUPE_LOCK_FILE_NAME, DEDUPE_TEMP_DIR_NAME};
 
-pub const DATA_SCHEMA_VERSION: u8 = 5;
+pub const DATA_SCHEMA_VERSION: u8 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DataFile {
@@ -44,12 +45,13 @@ pub struct PurgeReport {
 }
 
 /// jevxが書き込むファイルの種類と、`$JEVX_HOME` からの相対パス。
-const MANAGED_FILES: [(&str, &str); 9] = [
+const MANAGED_FILES: [(&str, &str); 10] = [
     ("telemetry", "events.jsonl"),
     ("hookRecords", "hooks.jsonl"),
     ("hookDedupe", "hook-dedupe.json"),
     ("hookDedupeLock", "hook-dedupe.lock"),
     ("hookDedupeTemps", ".hook-dedupe-tmp"),
+    ("compactionLock", "compaction/.compact-assist.lock"),
     ("compactionRecords", "compaction/hook-records.jsonl"),
     ("compactionCheckpoints", "compaction/checkpoints.jsonl"),
     ("decisionReceipts", "decisions.jsonl"),
@@ -143,7 +145,7 @@ pub fn export_data(inventory: &DataInventory) -> Result<Value, JevxError> {
 pub fn purge_data(inventory: &DataInventory, confirmed: bool) -> Result<PurgeReport, JevxError> {
     let mut removed = Vec::new();
     for file in &inventory.files {
-        if !file.exists || file.kind == "hookDedupeLock" {
+        if !file.exists || matches!(file.kind, "hookDedupeLock" | "compactionLock") {
             continue;
         }
         if file.kind == "hookDedupeTemps" {
@@ -173,10 +175,8 @@ pub fn purge_data(inventory: &DataInventory, confirmed: bool) -> Result<PurgeRep
         }
         Ok(())
     };
-    if confirmed && needs_dedupe_lock(inventory) {
-        with_dedupe_lock(&inventory.data_home, purge)?;
-    } else if confirmed {
-        purge()?;
+    if confirmed {
+        with_purge_locks(inventory, purge)?;
     }
     Ok(PurgeReport {
         schema_version: DATA_SCHEMA_VERSION,
@@ -228,6 +228,33 @@ fn needs_dedupe_lock(inventory: &DataInventory) -> bool {
     })
 }
 
+fn needs_compaction_lock(inventory: &DataInventory) -> bool {
+    inventory.files.iter().any(|file| {
+        file.exists
+            && matches!(
+                file.kind,
+                "compactionLock" | "compactionRecords" | "compactionCheckpoints"
+            )
+    })
+}
+
+fn with_purge_locks<F>(inventory: &DataInventory, operation: F) -> Result<(), JevxError>
+where
+    F: FnOnce() -> Result<(), JevxError>,
+{
+    match (
+        needs_dedupe_lock(inventory),
+        needs_compaction_lock(inventory),
+    ) {
+        (true, true) => with_dedupe_lock(&inventory.data_home, || {
+            with_compaction_lock(&inventory.data_home, operation)
+        }),
+        (true, false) => with_dedupe_lock(&inventory.data_home, operation),
+        (false, true) => with_compaction_lock(&inventory.data_home, operation),
+        (false, false) => operation(),
+    }
+}
+
 fn with_dedupe_lock<T, F>(data_home: &Path, operation: F) -> Result<T, JevxError>
 where
     F: FnOnce() -> Result<T, JevxError>,
@@ -239,6 +266,28 @@ where
         .write(true)
         .truncate(false)
         .open(data_home.join(DEDUPE_LOCK_FILE_NAME))?;
+    lock.lock_exclusive()?;
+    let result = operation();
+    let unlock = lock.unlock();
+    match (result, unlock) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(JevxError::from(error)),
+    }
+}
+
+fn with_compaction_lock<T, F>(data_home: &Path, operation: F) -> Result<T, JevxError>
+where
+    F: FnOnce() -> Result<T, JevxError>,
+{
+    let compaction_dir = data_home.join(MANAGED_DIR);
+    fs::create_dir_all(&compaction_dir)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(compaction_dir.join(COMPACT_ASSIST_LOCK_FILE_NAME))?;
     lock.lock_exclusive()?;
     let result = operation();
     let unlock = lock.unlock();
@@ -277,6 +326,7 @@ mod tests {
                 "hookDedupe",
                 "hookDedupeLock",
                 "hookDedupeTemps",
+                "compactionLock",
                 "compactionRecords",
                 "compactionCheckpoints",
                 "decisionReceipts",
@@ -288,7 +338,7 @@ mod tests {
         assert!(!inventory.files[2].exists);
         assert_eq!(inventory.files[2].bytes, 0);
         assert_eq!(
-            inventory.files[6].path,
+            inventory.files[7].path,
             root.path().join("compaction/checkpoints.jsonl")
         );
     }
@@ -327,9 +377,10 @@ mod tests {
         assert!(!report.dry_run);
         assert_eq!(report.removed, preview.removed);
         assert!(!root.path().join("events.jsonl").exists());
+        assert!(root.path().join("compaction").exists());
         assert!(
-            !root.path().join("compaction").exists(),
-            "empty managed dir is removed"
+            root.path().join("compaction/.compact-assist.lock").exists(),
+            "stable compact lock is retained"
         );
         assert!(root.path().join("unrelated.txt").exists());
 

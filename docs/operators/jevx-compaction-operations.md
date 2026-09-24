@@ -11,13 +11,11 @@ compact-assistが返すのは、checkpoint metadataと任意のredacted manifest
 
 ## Hook契約
 
-Hook recordはschema v4、Compaction checkpointはschema v2。旧schema v1/v2/v3は読み取り時に安全なmetadataへ移行する。
+現行のHook record、Compaction checkpoint、dedupe、Token/費用、data inventoryの正本は[費用観測契約](../developers/jevx-cost-observability.md)です。現在の出力はHook record v5、checkpoint v3、data inventory v6で、旧Hook schema v1〜v4を読み取り時に移行します。運用上は、pending claimのleaseが評価予算に連動すること、Compaction用の安定lockもdata管理対象であること、壊れたcheckpoint行を黙って再利用しないことを確認します。
 
-UserPromptSubmitはsession・turn・event・trigger/source・model・promptに加えてcwd・候補Skill・判定設定のdigestが一致する正常判定を30秒だけ再利用する。同時実行ではclaimを1件だけownerにし、ほかは完了を待ってhitを再利用する。再利用時はdecision/selectedSkillだけを戻してdedupeHitを記録し、元呼び出しのlatency/Tokenを二重計上しない。失敗・timeout・fallback結果はキャッシュしない。状態はJEVX_HOME/hook-dedupe.jsonと安定lockのhook-dedupe.lockに保存し、原子的置換の一時ファイルは`.hook-dedupe-tmp/`に置く。読み書き障害は主`errorCode`と分離した`dedupeError`としてrecordへ残しつつHook自体は継続する。`jevx data export`はtempのpath/bytesだけを出し、`purge --yes`は安定lockを残してtempと状態を同じlock下で削除する。
+`hooks stats`の`latencyMsP50/P95`はUserPromptSubmitだけ、`dedupeLatencyMsP50/P95`はdedupe hitだけを対象にする、という集計境界も上記の正本に従います。集計は次で確認する。
 
-`hooks stats`の`latencyMsP50/P95`はUserPromptSubmitだけ、`dedupeLatencyMsP50/P95`はdedupe hitだけを対象にする。SessionStart/PreCompact/PostCompactはeventCountsとcost/usageへ含まれるが、UserPromptSubmitのp95へ混ぜない。
-
-Hook payloadにusage/costが含まれる場合はCompaction前後のToken・費用を記録する。直接payloadのbefore/afterはunavailableとして保存し、compact-assistで同一cycleのPreCompact/PostCompactを対応付けられた場合だけ削減量をMeasuredにする。標準Hookで取得できない値はunavailableのままとし、単価や実費を推測しない。集計は次で確認する。
+Hook payloadにusage/costが含まれる場合はCompaction前後のToken・費用を記録します。直接payloadのbefore/afterはunavailableとして保存し、compact-assistで同一cycleのPreCompact/PostCompactを対応付けられた場合だけ削減量をMeasuredにします。標準Hookで取得できない値はunavailableのままとし、単価や実費を推測しません。
 
 ~~~bash
 jevx hooks stats --input "$JEVX_HOME/hooks.jsonl" --json
@@ -41,7 +39,7 @@ jevx hooks stats --input "$JEVX_HOME/hooks.jsonl" --json
 
 - 実験・実測は合成入力だけで行い、APIキー、認証ファイル、生の会話、Tool Result、manifest本文をリポジトリへ保存しない。
 - Hook recordとcheckpointにはprompt、session ID、turn ID、model ID、cwdを生で保存せず、hashまたは文字数だけを残す。
-- `trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否する。既存schema v1/v2/v3のloadでは該当metadataを正規化・欠損化して読み続けるため、過去ログの分析を止めない。
+- `trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否する。既存schema v1〜v4のloadでは該当metadataを正規化・欠損化して読み続けるため、過去ログの分析を止めない。
 - `SessionStart`の追加contextへ出すmanifestもredact後の最大4,000文字だけにし、秘密値を含むファイルを指定しない。
 - `UserPromptSubmit`のJev判定失敗は `errorCode` に変換し、Hookは `continue: true` でCodexの処理を止めない。
 - `hooks review`は既定で本文をJevへ送らず、redact済みローカル検出だけを行う。`--allow-content`を付けたinstall/reviewだけが選択したprompt/plan/diff/final answerを送る。Skill本文・設定本文、raw Tool result、API key、資格情報は常に除外する。install後のUserPromptSubmit shadowは、APIキー設定時にredact済みpromptを送る。

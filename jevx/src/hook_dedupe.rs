@@ -1,7 +1,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,7 @@ const PREVIOUS_DEDUPE_SCHEMA_VERSION: u8 = 1;
 const DEDUPE_TTL_MS: u64 = 30_000;
 const DEDUPE_CAPACITY: usize = 256;
 pub(crate) const DEDUPE_TEMP_DIR_NAME: &str = ".hook-dedupe-tmp";
+const DEDUPE_PENDING_GRACE_MS: u64 = 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct CachedHookDecision {
@@ -69,19 +70,35 @@ pub(crate) enum DedupeClaim {
 pub(crate) struct DedupeStore {
     path: PathBuf,
     lock_path: PathBuf,
+    pending_ttl_ms: u64,
 }
 
 impl DedupeStore {
+    #[cfg(test)]
     pub(crate) fn new(data_home: &Path) -> Self {
+        Self::with_pending_ttl(data_home, Duration::from_millis(DEDUPE_TTL_MS))
+    }
+
+    pub(crate) fn with_pending_ttl(data_home: &Path, timeout: Duration) -> Self {
         Self {
             path: data_home.join(DEDUPE_FILE_NAME),
             lock_path: data_home.join(DEDUPE_LOCK_FILE_NAME),
+            pending_ttl_ms: timeout
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX)
+                .saturating_add(DEDUPE_PENDING_GRACE_MS),
         }
     }
 
     pub(crate) fn claim(&self, key_sha256: &str) -> Result<DedupeClaim, JevxError> {
         self.with_state(|state, now| {
-            let mut changed = prune_expired(&mut state.entries, &mut state.pending, now);
+            let mut changed = prune_expired(
+                &mut state.entries,
+                &mut state.pending,
+                now,
+                self.pending_ttl_ms,
+            );
             if state
                 .pending
                 .iter()
@@ -110,7 +127,12 @@ impl DedupeStore {
     #[cfg(test)]
     pub(crate) fn lookup(&self, key_sha256: &str) -> Result<Option<CachedHookDecision>, JevxError> {
         self.with_state(|state, now| {
-            let changed = prune_expired(&mut state.entries, &mut state.pending, now);
+            let changed = prune_expired(
+                &mut state.entries,
+                &mut state.pending,
+                now,
+                self.pending_ttl_ms,
+            );
             let hit = state
                 .entries
                 .iter()
@@ -123,7 +145,12 @@ impl DedupeStore {
     #[cfg(test)]
     pub(crate) fn insert(&self, mut entry: CachedHookDecision) -> Result<(), JevxError> {
         self.with_state(|state, now| {
-            prune_expired(&mut state.entries, &mut state.pending, now);
+            prune_expired(
+                &mut state.entries,
+                &mut state.pending,
+                now,
+                self.pending_ttl_ms,
+            );
             state
                 .pending
                 .retain(|pending| pending.key_sha256 != entry.key_sha256);
@@ -188,7 +215,12 @@ impl DedupeStore {
                 .pending
                 .retain(|pending| pending.key_sha256 != key_sha256);
             let changed = before != state.pending.len();
-            let changed_by_prune = prune_expired(&mut state.entries, &mut state.pending, now);
+            let changed_by_prune = prune_expired(
+                &mut state.entries,
+                &mut state.pending,
+                now,
+                self.pending_ttl_ms,
+            );
             Ok(((), changed || changed_by_prune))
         })
     }
@@ -294,11 +326,12 @@ fn prune_expired(
     entries: &mut Vec<CachedHookDecision>,
     pending: &mut Vec<PendingHookDecision>,
     now: u64,
+    pending_ttl_ms: u64,
 ) -> bool {
     let original_len = entries.len();
     entries.retain(|entry| now.saturating_sub(entry.created_at_ms) <= DEDUPE_TTL_MS);
     let original_pending_len = pending.len();
-    pending.retain(|entry| now.saturating_sub(entry.created_at_ms) <= DEDUPE_TTL_MS);
+    pending.retain(|entry| now.saturating_sub(entry.created_at_ms) <= pending_ttl_ms);
     entries.len() != original_len || pending.len() != original_pending_len
 }
 
@@ -406,6 +439,19 @@ mod tests {
         trim_pending(&mut pending);
         assert_eq!(pending.len(), DEDUPE_CAPACITY);
         assert_eq!(pending.first().expect("oldest pending").key_sha256, "key-1");
+    }
+
+    #[test]
+    fn pending_claim_lease_uses_evaluation_timeout_not_cache_ttl() {
+        let mut entries = Vec::new();
+        let mut pending = vec![PendingHookDecision {
+            key_sha256: "long-running".to_owned(),
+            created_at_ms: 0,
+        }];
+        assert!(!prune_expired(&mut entries, &mut pending, 30_001, 60_000));
+        assert_eq!(pending.len(), 1);
+        assert!(prune_expired(&mut entries, &mut pending, 60_001, 60_000));
+        assert!(pending.is_empty());
     }
 
     #[test]

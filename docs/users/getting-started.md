@@ -142,7 +142,7 @@ jevx data purge          # 削除対象の表示だけ
 jevx data purge --yes    # 実際に削除
 ```
 
-**境界**：`purge` が消すのはjevxが書いたTelemetry・Hook記録・Compaction checkpointだけです。`.jevx/compact-context.md`、Codexの `hooks.json`、評価で `--output` に指定したファイルには触れません。
+**境界**：`purge` が消すのはjevxが書いたTelemetry・Hook記録・Compaction checkpointと一時状態です。実行中のHookと競合しないよう安定lock自体は残します。`.jevx/compact-context.md`、Codexの `hooks.json`、評価で `--output` に指定したファイルには触れません。保存契約は[費用観測契約](../developers/jevx-cost-observability.md)を参照してください。
 
 ### 6. 意味レビューと費用の見方
 

@@ -853,7 +853,7 @@ fn append_shadow_record_rejects_untrusted_selected_skill() {
     let root = tempdir().expect("tempdir");
     let path = root.path().join("hook-records.jsonl");
     let record = HookShadowRecord {
-        schema_version: 4,
+        schema_version: 5,
         mode: "shadow".to_owned(),
         hook_event_name: "UserPromptSubmit".to_owned(),
         trigger: None,

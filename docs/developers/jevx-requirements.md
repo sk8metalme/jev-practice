@@ -126,13 +126,13 @@ project-local HookはCodex側のプロジェクトTrustが必要であり、フ�
 `compact-assist`は要約器ではなく、次を行う決定的な補助とする。
 
 1. Hook JSONを検証し、既存の安全なshadow record形式へ変換する。
-2. session / turn / correlation / cwdはSHA-256、イベント識別子は安全なラベルだけ保存する。Hook recordの`trigger` / `source`はtrim後にASCII許可文字と最大長を検証し、`selectedSkill`も同じ境界（namespaceの`:`を含む）で検証する。新規write/appendでは空値・空白・制御文字・長さ超過を拒否し、既存schema v1/v2/v3のloadでは該当する任意metadataだけを正規化または欠損化して分析互換性を保つ。
+2. session / turn / correlation / cwdはSHA-256、イベント識別子は安全なラベルだけ保存する。Hook recordの`trigger` / `source`はtrim後にASCII許可文字と最大長を検証し、`selectedSkill`も同じ境界（namespaceの`:`を含む）で検証する。新規write/appendでは空値・空白・制御文字・長さ超過を拒否し、既存schema v1〜v4のloadでは該当する任意metadataだけを正規化または欠損化して分析互換性を保つ。cwd、候補Skill集合、判定設定は生値ではなくdedupe keyのdigestへ含める。
 3. `.jevx/compact-context.md`があればredact後に最大4,000文字まで利用する。
 4. checkpointへmanifest本文や秘密値を保存しない。
 5. `SessionStart(source=compact)`では、最新checkpoint metadataとredacted manifestだけを`additionalContext`へ返す。
 6. contextがない場合もCodex処理を止めず、補助情報がないことを明示する。
 7. `UserPromptSubmit`の正常な判定は、session / turn / event / trigger / source / model / promptのhashをキーに30秒だけ再利用し、失敗・timeout・fallbackはキャッシュしない。
-8. Hook payloadにusage/costがある場合は前後Token、実費、UserPromptSubmitのp50/p95、dedupe hitの待ち時間p50/p95、dedupe率を記録し、欠落値を推測しない。SessionStart/PreCompact/PostCompactの処理時間をUserPromptSubmitのp95へ混ぜない。
+8. Hook payloadにusage/costがある場合は前後Token、実費、UserPromptSubmitのp50/p95、dedupe hitの待ち時間p50/p95、dedupe率を記録し、欠落値を推測しない。SessionStart/PreCompact/PostCompactの処理時間をUserPromptSubmitのp95へ混ぜない。型・保存先・schemaの詳細は[費用観測契約](jevx-cost-observability.md)を正本とする。
 
 公式Compactionの代替、会話全文の復元、現在のリポジトリ状態の保証はしない。
 
@@ -151,7 +151,7 @@ Jevへの送信境界は次のとおり。
 
 Basic redactionは `Authorization=Basic <value>` / `Authorization:Basic <value>` / `Authorization: Basic <value>` の認識済み形式で値を保存・送信しない。通常文中の単独`Basic`は意味を保つためredactしない。完全なDLPではない。Telemetryには生の依頼文を保存せず、SHA-256、文字数、候補数、判定、選択時の`selectedSkill`（raw ID）、遅延、usageを保存し、Jevのprobabilityは保存しない。Skill ID自体を秘密値として扱う設計ではない。`--no-telemetry` はローカル記録を止めるだけで、Gatewayへの外部送信停止ではない。Hook recordとCompaction checkpointには生のsession ID、turn ID、model、manifest本文を保存しない。
 
-Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否し、既存schema v1/v2/v3のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。
+Hook metadataの`trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否し、既存schema v1〜v4のloadでは該当metadataを正規化・欠損化して分析互換性を保つ。現行のToken/費用・dedupe・lock契約は[費用観測契約](jevx-cost-observability.md)を正本とする。
 
 ## 成功条件
 

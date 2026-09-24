@@ -19,8 +19,8 @@ use crate::storage::append_json_line;
 
 const CONTEXT_LIMIT: usize = 4_000;
 const CONTEXT_READ_LIMIT_BYTES: u64 = CONTEXT_LIMIT as u64 * 4 + 1;
-const COMPACT_CHECKPOINT_SCHEMA_VERSION: u8 = 2;
-const COMPACT_ASSIST_LOCK_FILE_NAME: &str = ".compact-assist.lock";
+pub(crate) const COMPACT_CHECKPOINT_SCHEMA_VERSION: u8 = 3;
+pub(crate) const COMPACT_ASSIST_LOCK_FILE_NAME: &str = ".compact-assist.lock";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CompactAssistResult {
@@ -104,7 +104,12 @@ pub async fn run_compact_assist(
             None
         };
         let previous_pre_checkpoint = if is_post_compact(&payload) {
-            latest_pre_compaction_checkpoint(state_dir, shadow.record.session_id_sha256.as_deref())?
+            latest_pre_compaction_checkpoint(
+                state_dir,
+                shadow.record.session_id_sha256.as_deref(),
+                shadow.record.turn_id_sha256.as_deref(),
+                shadow.record.correlation_id_sha256.as_deref(),
+            )?
         } else {
             None
         };
@@ -216,6 +221,16 @@ fn same_compaction_cycle(record: &HookShadowRecord, previous: &CompactCheckpoint
     )
 }
 
+fn same_checkpoint_cycle(left: &CompactCheckpoint, right: &CompactCheckpoint) -> bool {
+    same_optional_identity(
+        left.turn_id_sha256.as_deref(),
+        right.turn_id_sha256.as_deref(),
+    ) && same_optional_identity(
+        left.correlation_id_sha256.as_deref(),
+        right.correlation_id_sha256.as_deref(),
+    )
+}
+
 fn same_optional_identity(left: Option<&str>, right: Option<&str>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => left == right,
@@ -240,6 +255,8 @@ fn latest_checkpoint(
 fn latest_pre_compaction_checkpoint(
     state_dir: &Path,
     session_id_sha256: Option<&str>,
+    turn_id_sha256: Option<&str>,
+    correlation_id_sha256: Option<&str>,
 ) -> Result<Option<CompactCheckpoint>, JevxError> {
     let Some(session_id_sha256) = session_id_sha256 else {
         return Ok(None);
@@ -249,21 +266,37 @@ fn latest_pre_compaction_checkpoint(
         return Ok(None);
     }
     let content = fs::read_to_string(path)?;
-    let mut latest = None;
-    for line in content.lines().filter(|line| !line.trim().is_empty()) {
-        let Ok(checkpoint) = serde_json::from_str::<CompactCheckpoint>(line) else {
+    let mut pending = Vec::new();
+    for (line_number, line) in content.lines().enumerate() {
+        if line.trim().is_empty() {
             continue;
-        };
+        }
+        let checkpoint = serde_json::from_str::<CompactCheckpoint>(line).map_err(|_| {
+            JevxError::InvalidInput(format!(
+                "invalid compaction checkpoint at line {}",
+                line_number + 1
+            ))
+        })?;
         if checkpoint.session_id_sha256.as_deref() != Some(session_id_sha256) {
             continue;
         }
         match checkpoint.hook_event_name.as_str() {
-            "PreCompact" => latest = Some(checkpoint),
-            "PostCompact" => latest = None,
+            "PreCompact" => pending.push(checkpoint),
+            "PostCompact" => {
+                if let Some(index) = pending
+                    .iter()
+                    .rposition(|pre| same_checkpoint_cycle(pre, &checkpoint))
+                {
+                    pending.remove(index);
+                }
+            }
             _ => {}
         }
     }
-    Ok(latest)
+    Ok(pending.into_iter().rev().find(|pre| {
+        same_optional_identity(pre.turn_id_sha256.as_deref(), turn_id_sha256)
+            && same_optional_identity(pre.correlation_id_sha256.as_deref(), correlation_id_sha256)
+    }))
 }
 
 fn latest_checkpoint_where<F>(
@@ -283,10 +316,16 @@ where
     }
     let content = fs::read_to_string(path)?;
     let mut latest = None;
-    for line in content.lines().filter(|line| !line.trim().is_empty()) {
-        let Ok(checkpoint) = serde_json::from_str::<CompactCheckpoint>(line) else {
+    for (line_number, line) in content.lines().enumerate() {
+        if line.trim().is_empty() {
             continue;
-        };
+        }
+        let checkpoint = serde_json::from_str::<CompactCheckpoint>(line).map_err(|_| {
+            JevxError::InvalidInput(format!(
+                "invalid compaction checkpoint at line {}",
+                line_number + 1
+            ))
+        })?;
         if checkpoint.session_id_sha256.as_deref() == Some(session_id_sha256)
             && event_matches(checkpoint.hook_event_name.as_str())
         {
@@ -350,7 +389,7 @@ fn session_start_response(
 }
 
 fn is_compact_session_start(payload: &Value) -> bool {
-    payload.get("hook_event_name").and_then(Value::as_str) == Some("SessionStart")
+    hook_event_name(payload) == Some("SessionStart")
         && payload.get("source").and_then(Value::as_str) == Some("compact")
 }
 
@@ -438,38 +477,51 @@ mod tests {
             .expect("open checkpoint")
             .write_all(b"{not-json}\n")
             .expect("invalid checkpoint");
-        assert_eq!(
+        assert!(
             latest_checkpoint(
                 checkpoint_path.parent().expect("state dir"),
                 Some("session-hash")
             )
-            .expect("latest")
-            .expect("checkpoint")
-            .hook_event_name,
-            "PostCompact"
+            .is_err()
         );
         assert!(
             latest_pre_compaction_checkpoint(
                 checkpoint_path.parent().expect("state dir"),
-                Some("session-hash")
+                Some("session-hash"),
+                None,
+                None,
             )
-            .expect("latest pre")
-            .is_none()
+            .is_err()
         );
-        append_checkpoint(&checkpoint_path, &checkpoint).expect("next pre checkpoint");
+        let clean_state_dir = root.path().join("clean-state");
+        let clean_checkpoint_path = clean_state_dir.join("checkpoints.jsonl");
+        append_checkpoint(&clean_checkpoint_path, &checkpoint).expect("next pre checkpoint");
         assert_eq!(
             latest_pre_compaction_checkpoint(
-                checkpoint_path.parent().expect("state dir"),
-                Some("session-hash")
+                clean_checkpoint_path.parent().expect("state dir"),
+                Some("session-hash"),
+                None,
+                None,
             )
             .expect("latest pre")
             .expect("next pre checkpoint")
             .hook_event_name,
             "PreCompact"
         );
+        append_checkpoint(&clean_checkpoint_path, &post_checkpoint).expect("clean post");
+        assert!(
+            latest_pre_compaction_checkpoint(
+                clean_checkpoint_path.parent().expect("state dir"),
+                Some("session-hash"),
+                None,
+                None,
+            )
+            .expect("latest pre after post")
+            .is_none()
+        );
         assert!(
             latest_checkpoint(
-                checkpoint_path.parent().expect("state dir"),
+                clean_checkpoint_path.parent().expect("state dir"),
                 Some("other-session")
             )
             .expect("other session")

@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -65,7 +66,7 @@ fn skill(root: &std::path::Path) -> SkillRecord {
 async fn identical_user_prompt_hooks_reuse_a_successful_decision() {
     let root = tempdir().expect("tempdir");
     let mut config = Config::for_test(root.path().join("data"));
-    config.timeout = Duration::ZERO;
+    config.timeout = Duration::from_millis(100);
     let calls = Arc::new(AtomicUsize::new(0));
     let judge = CountingJudge {
         calls: Arc::clone(&calls),
@@ -88,6 +89,29 @@ async fn identical_user_prompt_hooks_reuse_a_successful_decision() {
     assert!(second.record.input_tokens.is_none());
     assert!(second.record.output_tokens.is_none());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn zero_timeout_owner_releases_without_calling_jev() {
+    let root = tempdir().expect("tempdir");
+    let mut config = Config::for_test(root.path().join("data"));
+    config.timeout = Duration::ZERO;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let judge = CountingJudge {
+        calls: Arc::clone(&calls),
+    };
+    let result = run_shadow(
+        r#"{"hook_event_name":"UserPromptSubmit","prompt":"PDFを処理したい","cwd":"/tmp/project","session_id":"session-zero","turn_id":"turn-zero"}"#,
+        None,
+        &[skill(root.path())],
+        &config,
+        Some(&judge),
+    )
+    .await
+    .expect("zero timeout hook");
+
+    assert_eq!(result.record.dedupe_error.as_deref(), Some("wait_timeout"));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -246,7 +270,8 @@ async fn concurrent_dedupe_wait_uses_the_existing_timeout_budget() {
     });
     let input = r#"{"hook_event_name":"UserPromptSubmit","prompt":"PDFを処理したい","cwd":"/tmp/project","session_id":"session-timeout","turn_id":"turn-timeout","codexUsage":{"inputTokens":10,"outputTokens":2,"cost":{"amount":0.25,"currency":"USD","priceVersion":"codex-fixture","status":"available","basis":"actual"}}}"#;
     let first_judge = Arc::clone(&judge);
-    let first_config = config.clone();
+    let mut first_config = config.clone();
+    first_config.timeout = Duration::from_secs(1);
     let first_skills = vec![skill(root.path())];
     let first = tokio::spawn(async move {
         run_shadow(
@@ -303,6 +328,33 @@ async fn whitespace_prompt_releases_dedupe_claim() {
     assert_eq!(second.record.error_code.as_deref(), Some("invalid_input"));
     assert!(!second.record.dedupe_hit);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn early_user_prompt_returns_preserve_provider_cost() {
+    let root = tempdir().expect("tempdir");
+    let config = Config::for_test(root.path().join("data"));
+    let empty = r#"{"hook_event_name":"UserPromptSubmit","prompt":"   ","cwd":"/tmp/project","session_id":"session-empty-cost","turn_id":"turn-empty-cost","codexUsage":{"inputTokens":10,"outputTokens":2,"cost":{"amount":0.25,"currency":"USD","priceVersion":"codex-fixture","status":"available","basis":"actual"}}}"#;
+    let empty_result = run_shadow(empty, None, &[], &config, None)
+        .await
+        .expect("empty prompt hook");
+    assert_eq!(
+        empty_result.record.error_code.as_deref(),
+        Some("invalid_input")
+    );
+    assert_eq!(empty_result.record.cost.codex.amount, Some(0.25));
+    assert_eq!(empty_result.record.cost.total.amount, Some(0.25));
+
+    let missing_judge = r#"{"hook_event_name":"UserPromptSubmit","prompt":"valid prompt","cwd":"/tmp/project","session_id":"session-missing-cost","turn_id":"turn-missing-cost","codexUsage":{"inputTokens":10,"outputTokens":2,"cost":{"amount":0.5,"currency":"USD","priceVersion":"codex-fixture","status":"available","basis":"actual"}}}"#;
+    let missing_result = run_shadow(missing_judge, None, &[], &config, None)
+        .await
+        .expect("missing judge hook");
+    assert_eq!(
+        missing_result.record.error_code.as_deref(),
+        Some("missing_api_key")
+    );
+    assert_eq!(missing_result.record.cost.codex.amount, Some(0.5));
+    assert_eq!(missing_result.record.cost.total.amount, Some(0.5));
 }
 
 #[tokio::test]
@@ -442,7 +494,7 @@ async fn compact_assist_carries_pre_usage_into_post_checkpoint() {
     .await
     .expect("post compact assist");
 
-    assert_eq!(post.checkpoint.schema_version, 2);
+    assert_eq!(post.checkpoint.schema_version, 3);
     assert_eq!(
         post.checkpoint
             .token_savings
@@ -452,6 +504,19 @@ async fn compact_assist_carries_pre_usage_into_post_checkpoint() {
     );
     let records = fs::read_to_string(state_dir.join("hook-records.jsonl")).expect("records");
     assert!(records.contains("\"savedTokens\":400"));
+
+    let alias_resume = run_compact_assist(
+        r#"{"event":"SessionStart","source":"compact","session_id":"session-1"}"#,
+        &config,
+        &state_dir,
+    )
+    .await
+    .expect("event alias compact resume");
+    assert!(
+        alias_resume.response["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .is_some()
+    );
 
     let second_post = run_compact_assist(
         r#"{"hook_event_name":"PostCompact","session_id":"session-1","turn_id":"turn-1","postCompactionUsage":{"inputTokens":400,"totalTokens":500}}"#,
@@ -512,6 +577,72 @@ async fn compact_assist_carries_pre_usage_into_post_checkpoint() {
         })
         .count();
     assert_eq!(measured, 1);
+
+    let interleaved_state_dir = root.path().join("compaction-interleaved");
+    for (turn, total) in [("turn-a", 1_000), ("turn-b", 2_000)] {
+        run_compact_assist(
+            &format!(
+                "{{\"hook_event_name\":\"PreCompact\",\"session_id\":\"session-interleaved\",\"turn_id\":\"{turn}\",\"preCompactionUsage\":{{\"inputTokens\":900,\"totalTokens\":{total}}}}}"
+            ),
+            &config,
+            &interleaved_state_dir,
+        )
+        .await
+        .expect("interleaved pre compact");
+    }
+    let post_a = run_compact_assist(
+        r#"{"hook_event_name":"PostCompact","session_id":"session-interleaved","turn_id":"turn-a","postCompactionUsage":{"inputTokens":800,"totalTokens":900}}"#,
+        &config,
+        &interleaved_state_dir,
+    )
+    .await
+    .expect("interleaved post a");
+    let post_b = run_compact_assist(
+        r#"{"hook_event_name":"PostCompact","session_id":"session-interleaved","turn_id":"turn-b","postCompactionUsage":{"inputTokens":1400,"totalTokens":1500}}"#,
+        &config,
+        &interleaved_state_dir,
+    )
+    .await
+    .expect("interleaved post b");
+    assert_eq!(
+        post_a
+            .checkpoint
+            .token_savings
+            .as_ref()
+            .and_then(|savings| savings.saved_tokens),
+        Some(100)
+    );
+    assert_eq!(
+        post_b
+            .checkpoint
+            .token_savings
+            .as_ref()
+            .and_then(|savings| savings.saved_tokens),
+        Some(500)
+    );
+
+    let broken_state_dir = root.path().join("compaction-broken");
+    run_compact_assist(
+        r#"{"hook_event_name":"PreCompact","session_id":"session-broken","turn_id":"turn-broken","preCompactionUsage":{"inputTokens":900,"totalTokens":1000}}"#,
+        &config,
+        &broken_state_dir,
+    )
+    .await
+    .expect("broken pre compact");
+    fs::OpenOptions::new()
+        .append(true)
+        .open(broken_state_dir.join("checkpoints.jsonl"))
+        .expect("open broken checkpoint")
+        .write_all(b"{broken-checkpoint}\n")
+        .expect("write broken checkpoint");
+    let error = run_compact_assist(
+        r#"{"hook_event_name":"PostCompact","session_id":"session-broken","turn_id":"turn-broken","postCompactionUsage":{"inputTokens":500,"totalTokens":600}}"#,
+        &config,
+        &broken_state_dir,
+    )
+    .await
+    .expect_err("broken checkpoint must fail explicitly");
+    assert!(error.to_string().contains("invalid compaction checkpoint"));
 }
 
 #[tokio::test]
