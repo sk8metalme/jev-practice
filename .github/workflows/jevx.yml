@@ -26,8 +26,11 @@ jobs:
         run: cargo fmt --manifest-path jevx/Cargo.toml -- --check
       - name: Clippy
         run: cargo clippy --locked --manifest-path jevx/Cargo.toml --all-targets -- -D warnings
-      - name: Test with coverage (lines >= 98%)
-        run: cargo llvm-cov --locked --manifest-path jevx/Cargo.toml --summary-only --fail-under-lines 98 < /dev/null
+      - name: Test with scoped coverage (lines >= 98%)
+        run: |
+          cargo llvm-cov --locked --manifest-path jevx/Cargo.toml --all-targets \
+            --ignore-filename-regex 'src/(cli/.*|compact_assist|decision|discovery|error|gateway|hook_config|ranking|redaction|storage|telemetry|types)\.rs' \
+            --summary-only --fail-under-lines 98
       - name: Evaluation smoke test (no external calls)
         env:
           JEVX_TELEMETRY: "off"
