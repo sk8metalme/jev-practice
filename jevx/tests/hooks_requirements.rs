@@ -157,7 +157,8 @@ async fn hook_shadow_records_codex_usage_without_treating_missing_total_as_zero(
         Some(0.07)
     );
     assert_eq!(result.record.cost.codex.amount, Some(0.42));
-    assert!(result.record.cost.total.amount.is_none());
+    assert_eq!(result.record.cost.jev.amount, Some(0.0));
+    assert_eq!(result.record.cost.total.amount, Some(0.42));
     let serialized = serde_json::to_string(&result.record).expect("record json");
     assert!(!serialized.contains("PRIVATE"));
 }
@@ -420,6 +421,38 @@ fn conversation_compaction_evaluation_aggregates_without_storing_raw_text() {
 }
 
 #[test]
+fn conversation_compaction_rejects_token_total_overflow() {
+    let usage = jevx::hooks::TokenUsageSnapshot {
+        input_tokens: u64::MAX,
+        total_tokens: u64::MAX,
+        ..jevx::hooks::TokenUsageSnapshot::default()
+    };
+    let mut left = conversation_case("overflow-left", "goal=keep-context\nnext=verify");
+    left.post_compaction_usage = Some(usage.clone());
+    let mut right = conversation_case("overflow-right", "goal=keep-context\nnext=verify");
+    right.post_compaction_usage = Some(usage);
+
+    let error = evaluate_conversation_compaction(&[left, right])
+        .expect_err("token total overflow must fail explicitly");
+    assert!(error.to_string().contains("inputTokens total overflows"));
+
+    let mut saved_left = conversation_case("saved-overflow-left", "goal=keep-context\nnext=verify");
+    saved_left.pre_compaction_usage = Some(jevx::hooks::TokenUsageSnapshot {
+        total_tokens: u64::MAX,
+        ..jevx::hooks::TokenUsageSnapshot::default()
+    });
+    saved_left.post_compaction_usage = Some(jevx::hooks::TokenUsageSnapshot {
+        total_tokens: 1,
+        ..jevx::hooks::TokenUsageSnapshot::default()
+    });
+    let mut saved_right = saved_left.clone();
+    saved_right.case_id = "saved-overflow-right".to_owned();
+    let error = evaluate_conversation_compaction(&[saved_left, saved_right])
+        .expect_err("saved token overflow must fail explicitly");
+    assert!(error.to_string().contains("savedTokens total overflows"));
+}
+
+#[test]
 fn conversation_compaction_records_codex_usage_and_fallback_extra_cost() {
     let mut case = conversation_case("codex-cost", "goal=keep-context\nnext=verify");
     case.codex_usage = Some(jevx::CodexUsage {
@@ -428,7 +461,10 @@ fn conversation_compaction_records_codex_usage_and_fallback_extra_cost() {
         main_turns: Some(1),
         subagent_count: Some(2),
         input_tokens: Some(100),
+        cached_input_tokens: None,
+        cache_write_input_tokens: None,
         output_tokens: Some(20),
+        total_tokens: Some(120),
         reasoning_tokens: Some(10),
         elapsed_ms: Some(321),
         fallback_stage: Some("sol-to-terra".to_owned()),
@@ -495,7 +531,7 @@ fn conversation_evaluation_records_tool_recovery_and_token_cache_metrics() {
     let input = root.path().join("resilience.jsonl");
     fs::write(
         &input,
-        r#"{"caseId":"resilience-case","model":"gpt-5.6-sol","requiredFacts":["goal=keep-context","next=verify"],"followUpText":"goal=keep-context\nnext=verify\ndecoy_marker=redacted","secretMarkers":["DECOY_DO_NOT_OUTPUT"],"failureRecoveryRequired":true,"toolHistoryItems":3,"toolFailureCount":1,"interruptedTurns":1,"recoveryTurns":2,"recoveryCompleted":true,"preCompactionUsage":{"inputTokens":1000,"cachedInputTokens":400,"cacheWriteInputTokens":50,"outputTokens":80,"reasoningOutputTokens":20,"totalTokens":1100},"compactionUsage":{"inputTokens":200,"cachedInputTokens":100,"cacheWriteInputTokens":0,"outputTokens":40,"reasoningOutputTokens":10,"totalTokens":250},"postCompactionUsage":{"inputTokens":800,"cachedInputTokens":600,"cacheWriteInputTokens":0,"outputTokens":100,"reasoningOutputTokens":20,"totalTokens":920},"compactionCompleted":true,"compactionDurationMs":120,"inputChars":12400,"conversationTurns":10,"contextChars":12400,"observedEvents":["functionCallOutput","turn/interrupted","contextCompaction","turn/completed"]}"#,
+        r#"{"caseId":"resilience-case","model":"gpt-5.6-sol","requiredFacts":["goal=keep-context","next=verify"],"followUpText":"goal=keep-context\nnext=verify\ndecoy_marker=redacted","secretMarkers":["DECOY_DO_NOT_OUTPUT"],"failureRecoveryRequired":true,"toolHistoryItems":3,"toolFailureCount":1,"interruptedTurns":1,"recoveryTurns":2,"recoveryCompleted":true,"preCompactionUsage":{"inputTokens":1000,"cachedInputTokens":400,"cacheWriteInputTokens":50,"outputTokens":80,"reasoningOutputTokens":20,"totalTokens":1080},"compactionUsage":{"inputTokens":200,"cachedInputTokens":100,"cacheWriteInputTokens":0,"outputTokens":40,"reasoningOutputTokens":10,"totalTokens":240},"postCompactionUsage":{"inputTokens":800,"cachedInputTokens":600,"cacheWriteInputTokens":0,"outputTokens":100,"reasoningOutputTokens":20,"totalTokens":900},"compactionCompleted":true,"compactionDurationMs":120,"inputChars":12400,"conversationTurns":10,"contextChars":12400,"observedEvents":["functionCallOutput","turn/interrupted","contextCompaction","turn/completed"]}"#,
     )
     .expect("write resilience fixture");
 
@@ -519,7 +555,7 @@ fn conversation_evaluation_records_tool_recovery_and_token_cache_metrics() {
     assert_eq!(report.summary.total_cached_input_tokens, 600);
     assert_eq!(report.summary.total_cache_write_input_tokens, 0);
     assert_eq!(report.summary.total_output_tokens, 100);
-    assert_eq!(report.summary.total_tokens, 920);
+    assert_eq!(report.summary.total_tokens, 900);
 
     let json = serde_json::to_string(&report).expect("resilience report json");
     assert!(!json.contains("DECOY_DO_NOT_OUTPUT"));
@@ -770,7 +806,7 @@ fn hook_correlation_loader_rejects_empty_and_secret_echo() {
         })
     };
     for (field, value) in [
-        ("schemaVersion", json!(3)),
+        ("schemaVersion", json!(99)),
         ("hookEventName", json!("Unknown")),
         ("mode", json!("unsafe mode")),
         ("sessionIdSha256", json!("unsafe session")),
@@ -818,7 +854,7 @@ fn append_shadow_record_rejects_untrusted_selected_skill() {
     let root = tempdir().expect("tempdir");
     let path = root.path().join("hook-records.jsonl");
     let record = HookShadowRecord {
-        schema_version: 2,
+        schema_version: jevx::hooks::HOOK_SCHEMA_VERSION,
         mode: "shadow".to_owned(),
         hook_event_name: "UserPromptSubmit".to_owned(),
         trigger: None,
@@ -837,7 +873,16 @@ fn append_shadow_record_rejects_untrusted_selected_skill() {
         input_tokens: None,
         output_tokens: None,
         error_code: None,
+        dedupe_error: None,
         codex: None,
+        dedupe_hit: false,
+        dedupe_key_sha256: None,
+        pre_compaction_usage: None,
+        compaction_usage: None,
+        post_compaction_usage: None,
+        post_compaction_cost: None,
+        compaction_elapsed_ms: None,
+        token_savings: None,
         cost: CostSummary::default(),
         elapsed_ms: 0,
     };

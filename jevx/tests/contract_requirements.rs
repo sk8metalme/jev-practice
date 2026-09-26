@@ -2,6 +2,7 @@
 //! キーを消したり名前を変えたりするときは `schemaVersion` を上げ、PHILOSOPHY.md の互換性の約束に従う。
 
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
@@ -121,6 +122,31 @@ fn hooks_install_and_uninstall_json_contract_round_trip() {
             "config",
         ],
     );
+    let default_compact_command =
+        install["config"]["hooks"]["PreCompact"][0]["hooks"][0]["command"]
+            .as_str()
+            .expect("default compact command");
+    assert!(!default_compact_command.contains("--allow-compact-context"));
+    let opted_in = json_output(
+        home.path(),
+        &repo,
+        &[
+            "hooks",
+            "install",
+            "--scope",
+            "project",
+            "--repo",
+            repo_arg,
+            "--allow-compact-context",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    let opted_in_command = opted_in["config"]["hooks"]["PreCompact"][0]["hooks"][0]["command"]
+        .as_str()
+        .expect("opted-in compact command");
+    assert!(opted_in_command.contains("--allow-compact-context"));
+    assert!(!opted_in_command.contains("--allow-content"));
     let preview = json_output(
         home.path(),
         &repo,
@@ -166,10 +192,89 @@ fn hooks_install_and_uninstall_json_contract_round_trip() {
 }
 
 #[test]
+fn compact_assist_checkpoint_schema_v5_contract() {
+    let home = tempdir().expect("home");
+    let repo = home.path().join("repo");
+    let state = home.path().join("compaction-state");
+    std::fs::create_dir_all(&repo).expect("repo");
+    std::fs::create_dir_all(repo.join(".jevx")).expect("manifest directory");
+    std::fs::write(
+        repo.join(".jevx/compact-context.md"),
+        "goal: synthetic release smoke test",
+    )
+    .expect("synthetic manifest");
+    let canonical_repo = std::fs::canonicalize(&repo).expect("canonical repo");
+    let state_arg = state.to_str().expect("state path");
+    let payload = serde_json::json!({
+        "hook_event_name": "PreCompact",
+        "session_id": "contract-session",
+        "turn_id": "contract-turn",
+        "cwd": canonical_repo
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_jevx"))
+        .args([
+            "hooks",
+            "compact-assist",
+            "--state-dir",
+            state_arg,
+            "--allow-compact-context",
+        ])
+        .current_dir(&repo)
+        .env_clear()
+        .env("HOME", home.path())
+        .env("JEVX_HOME", home.path().join(".jevx"))
+        .env("JEVX_TELEMETRY", "off")
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn compact assist");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(payload.to_string().as_bytes())
+        .expect("write hook payload");
+    let output = child.wait_with_output().expect("compact assist output");
+    assert!(
+        output.status.success(),
+        "compact assist failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: Value = serde_json::from_slice(&output.stdout).expect("hook response");
+    assert_eq!(response["continue"], true);
+
+    let checkpoint_text =
+        std::fs::read_to_string(state.join("checkpoints.jsonl")).expect("checkpoint file");
+    let checkpoint: Value =
+        serde_json::from_str(checkpoint_text.lines().next().expect("checkpoint line"))
+            .expect("checkpoint json");
+    assert_eq!(checkpoint["schemaVersion"], 5);
+    assert_eq!(checkpoint["contextAvailable"], true);
+    assert_has_keys(
+        &checkpoint,
+        &[
+            "schemaVersion",
+            "mode",
+            "hookEventName",
+            "contextAvailable",
+            "contextChars",
+        ],
+    );
+    assert!(checkpoint.get("decisionReplayId").is_none());
+    assert!(!checkpoint_text.contains("synthetic release smoke test"));
+    let hook_records =
+        std::fs::read_to_string(state.join("hook-records.jsonl")).expect("hook records");
+    assert!(hook_records.contains("missing_api_key"));
+    assert!(!hook_records.contains("synthetic release smoke test"));
+}
+
+#[test]
 fn data_json_contract() {
     let home = tempdir().expect("home");
     let inventory = json_output(home.path(), home.path(), &["data", "path", "--json"]);
-    assert_eq!(inventory["schemaVersion"], 2);
+    assert_eq!(inventory["schemaVersion"], 7);
     assert_has_keys(&inventory, &["schemaVersion", "dataHome", "files"]);
     assert_has_keys(
         &inventory["files"][0],
@@ -177,9 +282,56 @@ fn data_json_contract() {
     );
     let exported = json_output(home.path(), home.path(), &["data", "export"]);
     assert_has_keys(&exported, &["schemaVersion", "dataHome", "records"]);
+    assert_eq!(exported["schemaVersion"], 7);
     let purge = json_output(home.path(), home.path(), &["data", "purge", "--json"]);
     assert_has_keys(&purge, &["schemaVersion", "dryRun", "removed"]);
+    assert_eq!(purge["schemaVersion"], 7);
     assert_eq!(purge["dryRun"], true);
+}
+
+#[test]
+fn hook_stats_json_contract() {
+    let home = tempdir().expect("home");
+    let input = home.path().join("hooks.jsonl");
+    std::fs::write(
+        &input,
+        r#"{"schemaVersion":3,"mode":"shadow","hookEventName":"PreCompact","elapsedMs":4}"#,
+    )
+    .expect("hook records");
+    let input_arg = input.to_str().expect("input path");
+    let report = json_output(
+        home.path(),
+        home.path(),
+        &["hooks", "stats", "--input", input_arg, "--json"],
+    );
+    assert_eq!(report["schemaVersion"], 6);
+    assert_has_keys(
+        &report,
+        &[
+            "schemaVersion",
+            "recordCount",
+            "eventCounts",
+            "decisionCounts",
+            "dedupeHitCount",
+            "latencyMsP50",
+            "latencyMsP95",
+            "tokenSavings",
+            "jevCost",
+            "codexCost",
+            "totalCost",
+            "costStatusCounts",
+        ],
+    );
+    assert_has_keys(
+        &report["tokenSavings"],
+        &[
+            "measuredRecords",
+            "beforeTokens",
+            "afterTokens",
+            "savedTokens",
+            "reductionRate",
+        ],
+    );
 }
 
 #[test]

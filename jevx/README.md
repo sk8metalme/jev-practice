@@ -65,9 +65,9 @@ APIキーがなくても、`jevx skills list`、`jevx doctor`、`jevx eval --dry
 | `jevx doctor` | 設定・導入状態・次の一手 | なし |
 | `jevx stats` | ローカルTelemetryの集計 | なし |
 | `jevx data path` / `export` / `purge` | ローカルデータの場所・書き出し・削除 | なし |
-| `jevx hooks install` / `uninstall` | Codex Hookの登録・解除（`--dry-run` で差分確認） | なし |
+| `jevx hooks install` / `uninstall` | Codex Hookの登録・解除（`--dry-run` で差分確認） | install時の`--allow-content` / `--allow-compact-context`で選択した対象だけ |
 | `jevx hooks review` / `review-stats` | 4カテゴリの意味レビュー、route、費用・task/turn/session集計 | `--allow-content`時だけ選択本文をJevへ送る |
-| `jevx hooks compact-assist` | Compaction前後のcheckpointと補助context | なし |
+| `jevx hooks compact-assist` | Compaction前後のcheckpointと補助context | 既定なし。`--allow-compact-context`時だけredacted manifestをPreCompactでJevへ送る |
 | `jevx eval` / `eval-repeat` | Skill選択の品質・速度・ばらつきを測る | `--dry-run` 以外はJevへ送る |
 | `jevx hooks shadow` / `correlate` / `compact-eval` / `conversation-eval` | Hookの観測と評価 | UserPromptSubmitのみJevへ送る |
 
@@ -77,7 +77,7 @@ APIキーがなくても、`jevx skills list`、`jevx doctor`、`jevx eval --dry
 
 - jevxが自動で書くデータは `$JEVX_HOME`（既定 `~/.jevx`）の下だけです。`jevx data path` で一覧、`jevx data export` で書き出し、`jevx data purge --yes` で削除できます。例外は、利用者が明示したファイル（`hooks install` / `uninstall` が変更するCodexの `hooks.json`、`--output` で指定したレポート）です。
 - Telemetryにはprompt本文・APIキー・Jevの確率を保存しません。止めるときは `JEVX_TELEMETRY=off`。
-- Jevへ送る本文は既定でありません。`hooks review --allow-content` または `hooks install --allow-content` を明示したときだけ、選択したprompt/plan/diff/final answerをredactして送ります。Skill本文・設定本文・API key・資格情報・raw Tool result・会話全文は常に送信しません。`hooks install`後のUserPromptSubmit shadowは、APIキーが設定されていればredact済みpromptを送るため、外部送信を避ける場合はAPIキーを設定せず、またはHookをuninstallしてください。
+- Jevへの本文送信は既定でありません。review対象は`--allow-content`、Compaction補助manifestは別の`--allow-compact-context`が必要です。後者は通常ファイルの `.jevx/compact-context.md` のredacted・上限付き内容をPreCompactで推薦判定するだけで、cwd・`.jevx`・manifestのsymlinkは追わずCompactionや再開contextを変更しません。既知のcredential assignment、Bearer、PEM private-key形式をredactするので、opt-in前にmanifestを確認してください。会話全文・Skill本文・設定本文・API key・資格情報・raw Tool resultは送信対象にしません。`hooks install`後のUserPromptSubmit shadowは、APIキーが設定されていればredact済みpromptを送るため、外部送信を避ける場合はAPIキーを設定せず、またはHookをuninstallしてください。
 - `reviews.jsonl`には本文を保存せず、digest・文字数・finding・route・fix・Jev/Codex/合算費用だけを記録します。費用の取得不能は`unknown`/`unavailable`で、0円ではありません。
 - Hookを入れたら `jevx hooks uninstall` で戻せます。jevxのhandlerだけを取り除き、ほかのHookは残します。
 
@@ -87,7 +87,7 @@ APIキーがなくても、`jevx skills list`、`jevx doctor`、`jevx eval --dry
 - 会話の要約・書き換え、Codex公式Compactionの代替
 - HookだけでCodexのmodel/reasoning切替を保証すること。証拠なしは`degraded`です。
 - 費用上限や速度だけを成功条件にすること。速度・品質・費用を同時に評価します。
-- 設定オプションを増やすこと（既存の閾値・実行上限を維持し、価格はProvider usage/cost payloadを使います。一覧は[CLIリファレンス](../docs/developers/jevx-cli-reference.md#apiキーと設定)）
+- 一般的な設定オプションを増やすこと。例外は外部送信の対象境界を分離する明示opt-inだけです（価格はProvider usage/cost payloadを使います。一覧は[CLIリファレンス](../docs/developers/jevx-cli-reference.md#apiキーと設定)）
 
 理由と代替手段は [PHILOSOPHY.md](PHILOSOPHY.md#やらないことnon-goals) にあります。
 

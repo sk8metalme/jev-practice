@@ -650,6 +650,7 @@ async fn repeat_and_hook_commands_write_safe_reports() {
     let _ = run_hooks_with_config(
         HooksCommand::CompactAssist(CompactAssistArgs {
             state_dir: Some(root.path().join("stdin-compaction")),
+            allow_compact_context: false,
             _jevx_managed: false,
         }),
         Config::for_test(root.path().join("data")),
@@ -777,6 +778,7 @@ async fn gateway_success_and_new_hook_command_paths_are_exercised() {
                         repo: root.path().to_path_buf(),
                         dry_run: false,
                         allow_content: false,
+                        allow_compact_context: false,
                         json: false,
                     }),
                 },
@@ -795,6 +797,7 @@ async fn gateway_success_and_new_hook_command_paths_are_exercised() {
                 repo: root.path().to_path_buf(),
                 dry_run: true,
                 allow_content: false,
+                allow_compact_context: false,
                 json: false,
             },
             &data_config,
@@ -809,6 +812,7 @@ async fn gateway_success_and_new_hook_command_paths_are_exercised() {
                 repo: root.path().to_path_buf(),
                 dry_run: true,
                 allow_content: false,
+                allow_compact_context: false,
                 json: true,
             },
             &data_config,
@@ -835,6 +839,7 @@ async fn gateway_success_and_new_hook_command_paths_are_exercised() {
         run_compact_assist_from_reader(
             CompactAssistArgs {
                 state_dir: Some(root.path().join("reader-compaction")),
+                allow_compact_context: false,
                 _jevx_managed: false,
             },
             &data_config,
@@ -842,6 +847,26 @@ async fn gateway_success_and_new_hook_command_paths_are_exercised() {
         )
         .await
         .expect("compact assist"),
+        0
+    );
+
+    let blocked_state = root.path().join("blocked-state");
+    fs::write(&blocked_state, "not a directory").expect("blocked state path");
+    let mut compact_input_with_storage_error = Cursor::new(
+        br#"{"hook_event_name":"PreCompact","trigger":"manual","cwd":"/tmp"}"#.to_vec(),
+    );
+    assert_eq!(
+        run_compact_assist_from_reader(
+            CompactAssistArgs {
+                state_dir: Some(blocked_state),
+                allow_compact_context: false,
+                _jevx_managed: false,
+            },
+            &data_config,
+            &mut compact_input_with_storage_error,
+        )
+        .await
+        .expect("storage error is warning-only"),
         0
     );
 }
@@ -1000,6 +1025,7 @@ async fn hooks_uninstall_command_previews_then_removes_only_jevx_handlers() {
             repo: root.path().to_path_buf(),
             dry_run: false,
             allow_content: false,
+            allow_compact_context: false,
             json: true,
         },
         &config,

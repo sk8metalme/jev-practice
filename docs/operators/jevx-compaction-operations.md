@@ -11,11 +11,21 @@ compact-assistが返すのは、checkpoint metadataと任意のredacted manifest
 
 ## Hook契約
 
+現行のHook record、Compaction checkpoint、dedupe、Token/費用、data inventoryの正本は[費用観測契約](../developers/jevx-cost-observability.md)です。現在の出力はHook record v6、checkpoint v5、data inventory v7で、旧Hook schema v1〜v5とcheckpoint schema v1〜v4を読み取り時に移行します。運用上は、pending claimのleaseが評価予算に連動すること、Compaction用の安定lockもdata管理対象であること、symlink先をexportせず、directory identityが変わったpurgeを中止すること、壊れたcheckpoint行を黙って再利用しないことを確認します。
+
+`hooks stats`の`latencyMsP50/P95`はUserPromptSubmitだけ、`dedupeLatencyMsP50/P95`はdedupe hitだけを対象にする、という集計境界も上記の正本に従います。集計は次で確認する。
+
+Hook payloadにusage/costが含まれる場合はCompaction前後のToken・費用を記録します。直接payloadのbefore/afterはunavailableとして保存し、compact-assistで同一cycleのPreCompact/PostCompactを対応付けられた場合だけ削減量をMeasuredにします。標準Hookで取得できない値はunavailableのままとし、単価や実費を推測しません。
+
+~~~bash
+jevx hooks stats --input "$JEVX_HOME/hooks.jsonl" --json
+~~~
+
 `hooks shadow` が受理するknown eventは `SessionStart`、`PreCompact`、`PostCompact`、`UserPromptSubmit` だけです。known eventの受理時だけ `{"continue":true,"suppressOutput":true}` の固定応答を返します。未知event、event不一致、壊れたJSONは固定応答を返さずエラーにするため、「すべての入力に継続応答する」とは解釈しないでください。
 
 | イベント | 役割 | jevxの動作 | Codexへ返すもの |
 | --- | --- | --- | --- |
-| `PreCompact` | compact前。`trigger` は `manual` / `auto` | session・turn・cwdのhashとredacted contextのmetadataをcheckpointへ追記 | `continue: true` |
+| `PreCompact` | compact前。`trigger` は `manual` / `auto` | session・turn・cwdのhashを記録。別opt-in時のみredacted manifestのJev推薦とusage/costを記録 | `continue: true`。Jev結果はCompactionを変更しない |
 | `PostCompact` | compact後。`trigger` は `manual` / `auto` | compact完了のcheckpointを追記 | `continue: true` |
 | `SessionStart(source=compact)` | compact後、次のmodel request前 | 最新checkpointとredacted manifestを追加contextへ組み立てる | `hookSpecificOutput.additionalContext` |
 | `UserPromptSubmit` | ユーザー入力の送信前 | Shadow Modeで候補探索・Jev判定・prompt review・metricsを記録 | `continue: true`。本文送信は`--allow-content`時だけ |
@@ -29,8 +39,9 @@ compact-assistが返すのは、checkpoint metadataと任意のredacted manifest
 
 - 実験・実測は合成入力だけで行い、APIキー、認証ファイル、生の会話、Tool Result、manifest本文をリポジトリへ保存しない。
 - Hook recordとcheckpointにはprompt、session ID、turn ID、model ID、cwdを生で保存せず、hashまたは文字数だけを残す。
-- `trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否する。既存schema v1のloadでは該当metadataを正規化・欠損化して読み続けるため、過去ログの分析を止めない。
-- `SessionStart`の追加contextへ出すmanifestもredact後の最大4,000文字だけにし、秘密値を含むファイルを指定しない。
+- `trigger` / `source` / `selectedSkill`はwrite前にtrim・許可文字・最大長を検証し、unsafeな値は欠損化する。新規appendはunsafeなidentifierを拒否する。既存schema v1〜v5のloadでは該当metadataとusage presenceを移行して読み続けるため、過去ログの分析を止めない。
+- `SessionStart`の追加contextへ出すmanifestもredact後の最大4,000文字だけにし、秘密値を含むファイルを指定しない。PreCompactでJevへ送る場合は`hooks install --allow-compact-context`を明示する。送信するのは同じredacted manifestだけで、cwdの各要素、`.jevx`、manifestのsymlink・会話・Tool Resultは含めない。redactionは既知のcredential assignment、Bearer、PEM private-key形式をマスクするため、opt-in前にmanifestを確認する。
+- manifest読取やcheckpoint/record保存のローカルI/Oに失敗した場合もHookは`continue: true`を返し、stderrに固定warning codeを出す。観測レコードは欠落し得る。壊れたHook JSONは従来どおりエラーにする。
 - `UserPromptSubmit`のJev判定失敗は `errorCode` に変換し、Hookは `continue: true` でCodexの処理を止めない。
 - `hooks review`は既定で本文をJevへ送らず、redact済みローカル検出だけを行う。`--allow-content`を付けたinstall/reviewだけが選択したprompt/plan/diff/final answerを送る。Skill本文・設定本文、raw Tool result、API key、資格情報は常に除外する。install後のUserPromptSubmit shadowは、APIキー設定時にredact済みpromptを送る。
 - 費用はJev/Codex/totalを分け、推定`estimated`と実費`actual`、通貨、price version、`unknown`/`unavailable`をreceiptへ残す。費用上限や自動停止は行わない。

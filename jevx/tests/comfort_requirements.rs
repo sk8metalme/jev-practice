@@ -17,6 +17,7 @@ fn install_options(root: &Path, dry_run: bool) -> HookInstallOptions {
         records_path: root.join("state/hook-records.jsonl"),
         state_dir: root.join("state/compaction"),
         allow_review_content: false,
+        allow_compact_context: false,
         dry_run,
     }
 }
@@ -109,6 +110,7 @@ async fn compact_assist_records_safe_state_and_restores_redacted_manifest() {
         "goal: preserve the release checklist\nsecret=fixture-only\nAPI_KEY: fixture-api-key\npassword = fixture-password\nAuthorization: Bearer fixture-bearer\nAuthorization:Basic fixture-basic\n\"token\":\"fixture-json\"\nnext: run tests",
     )
     .expect("context");
+    let repo = fs::canonicalize(repo).expect("canonical repo");
     let state_dir = root.path().join("state");
     let config = Config::for_test(root.path().join("data"));
     let pre = run_compact_assist(

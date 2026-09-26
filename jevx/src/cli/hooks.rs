@@ -5,12 +5,12 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use jevx::compact_assist::run_compact_assist;
+use jevx::compact_assist::run_compact_assist_with_opt_in;
 use jevx::hook_config::{
     HookInstallOptions, HookScope, HookUninstallOptions, install_hooks, uninstall_hooks,
 };
 use jevx::hooks::{
-    analyze_hook_correlations, append_shadow_record, compact_evaluation,
+    analyze_hook_correlations, analyze_hook_stats, append_shadow_record, compact_evaluation,
     evaluate_conversation_compaction, load_conversation_cases, load_hook_records, run_shadow,
     write_compaction_report,
 };
@@ -37,6 +37,7 @@ pub(super) async fn run_hooks_with_config(
         HooksCommand::CompactEval(args) => run_compact_eval(args),
         HooksCommand::ConversationEval(args) => run_conversation_eval(args),
         HooksCommand::Correlate(args) => run_hook_correlation(args),
+        HooksCommand::Stats(args) => run_hook_stats(args),
     }
 }
 
@@ -261,7 +262,11 @@ pub(super) async fn run_hook_shadow_from_reader<R: Read>(
     )
     .await?;
     if let Some(output) = args.output {
-        append_shadow_record(&output, &result.record)?;
+        match append_shadow_record(&output, &result.record) {
+            Ok(()) => {}
+            Err(JevxError::Io(_)) => eprintln!("jevx warning: hook_record_write_failed"),
+            Err(error) => return Err(error),
+        }
     }
     println!("{}", serde_json::to_string(&result.response)?);
     Ok(0)
@@ -355,6 +360,7 @@ pub(super) fn run_hook_install(args: HookInstallArgs, config: &Config) -> Result
         records_path: data_home.join("hooks.jsonl"),
         state_dir: data_home.join("compaction"),
         allow_review_content: args.allow_content,
+        allow_compact_context: args.allow_compact_context,
         dry_run: args.dry_run,
     })?;
     if args.json {
@@ -405,7 +411,12 @@ pub(super) async fn run_compact_assist_from_reader<R: Read>(
     let state_dir = args
         .state_dir
         .unwrap_or_else(|| data_home.join("compaction"));
-    let result = run_compact_assist(&input, config, &state_dir).await?;
+    let result =
+        run_compact_assist_with_opt_in(&input, config, &state_dir, args.allow_compact_context)
+            .await?;
+    if let Some(warning_code) = result.warning_code.as_deref() {
+        eprintln!("jevx: compact-assist continued with warning: {warning_code}");
+    }
     println!("{}", serde_json::to_string(&result.response)?);
     Ok(0)
 }
@@ -444,6 +455,12 @@ pub(super) fn run_conversation_eval(args: ConversationEvalArgs) -> Result<i32, J
             report.summary.usage_measured_runs,
             report.summary.total_tokens,
             report.summary.total_cached_input_tokens
+        );
+        println!(
+            "Token savings: {} measured runs, {} saved tokens, reduction {}",
+            report.summary.token_savings_measured_runs,
+            format_optional_u64(report.summary.total_saved_tokens),
+            format_ratio(report.summary.token_reduction_rate)
         );
         if let Some(cache_rate) = report.summary.post_compaction_cache_hit_rate_p95 {
             println!("Post-compaction cache hit p95: {:.1}%", cache_rate * 100.0);
@@ -485,6 +502,55 @@ pub(super) fn run_hook_correlation(args: CorrelationArgs) -> Result<i32, JevxErr
         println!("Records: {}", report.record_count);
         println!("Duplicate groups: {}", report.duplicate_group_count);
         println!("Duplicate records: {}", report.duplicate_record_count);
+    }
+    Ok(0)
+}
+
+pub(super) fn run_hook_stats(args: HookStatsArgs) -> Result<i32, JevxError> {
+    let records = load_hook_records(&args.input)?;
+    let report = analyze_hook_stats(&records)?;
+    if let Some(output) = args.output {
+        fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+    }
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("jevx hook statistics");
+        println!("Records: {}", report.record_count);
+        println!("Events: {}", serde_json::to_string(&report.event_counts)?);
+        println!(
+            "Latency p50/p95: {}/{} ms",
+            format_optional_u64(report.latency_ms_p50),
+            format_optional_u64(report.latency_ms_p95)
+        );
+        println!(
+            "Dedupe: {} hits ({})",
+            report.dedupe_hit_count,
+            format_ratio(report.dedupe_rate)
+        );
+        println!(
+            "Dedupe latency p50/p95: {}/{} ms",
+            format_optional_u64(report.dedupe_latency_ms_p50),
+            format_optional_u64(report.dedupe_latency_ms_p95)
+        );
+        println!(
+            "Token savings: {} measured, before={} after={} saved={} reduction={}",
+            report.token_savings.measured_records,
+            format_optional_u64(report.token_savings.before_tokens),
+            format_optional_u64(report.token_savings.after_tokens),
+            format_optional_u64(report.token_savings.saved_tokens),
+            format_ratio(report.token_savings.reduction_rate)
+        );
+        println!(
+            "Cost: Jev {} Codex {} total {}",
+            display_cost_amount(report.jev_cost),
+            display_cost_amount(report.codex_cost),
+            display_cost_amount(report.total_cost)
+        );
+        println!(
+            "Cost status counts: {}",
+            serde_json::to_string(&report.cost_status_counts)?
+        );
     }
     Ok(0)
 }

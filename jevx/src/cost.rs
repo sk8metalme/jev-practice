@@ -152,11 +152,13 @@ impl CostAccumulator {
             self.invalid_metadata = true;
             return;
         }
+        let neutral_zero =
+            matches!(estimate.status, CostStatus::Available) && estimate.amount == Some(0.0);
         if let Some(basis) = self.basis {
-            if basis != estimate.basis {
+            if basis != estimate.basis && !neutral_zero {
                 self.invalid_metadata = true;
             }
-        } else {
+        } else if !neutral_zero {
             self.basis = Some(estimate.basis);
         }
         match estimate.status {
@@ -227,17 +229,49 @@ impl CostSummary {
 #[serde(rename_all = "camelCase")]
 pub struct CodexUsage {
     pub model: Option<String>,
+    #[serde(
+        rename = "reasoningEffort",
+        alias = "reasoning_effort",
+        alias = "reasoning"
+    )]
     pub reasoning_effort: Option<String>,
+    #[serde(rename = "mainTurns", alias = "main_turns")]
     pub main_turns: Option<u32>,
+    #[serde(rename = "subagentCount", alias = "subagent_count")]
     pub subagent_count: Option<u32>,
+    #[serde(rename = "inputTokens", alias = "input_tokens")]
     pub input_tokens: Option<u64>,
+    #[serde(
+        rename = "cachedInputTokens",
+        alias = "cached_input_tokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cached_input_tokens: Option<u64>,
+    #[serde(
+        rename = "cacheWriteInputTokens",
+        alias = "cache_write_input_tokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cache_write_input_tokens: Option<u64>,
+    #[serde(rename = "outputTokens", alias = "output_tokens")]
     pub output_tokens: Option<u64>,
+    #[serde(rename = "totalTokens", alias = "total_tokens")]
+    pub total_tokens: Option<u64>,
+    #[serde(rename = "reasoningTokens", alias = "reasoning_tokens")]
     pub reasoning_tokens: Option<u64>,
     /// Fallback/escalationで追加されたToken。通常のusageと混ぜずに保持する。
+    #[serde(rename = "additionalInputTokens", alias = "additional_input_tokens")]
     pub additional_input_tokens: Option<u64>,
+    #[serde(rename = "additionalOutputTokens", alias = "additional_output_tokens")]
     pub additional_output_tokens: Option<u64>,
+    #[serde(
+        rename = "additionalReasoningTokens",
+        alias = "additional_reasoning_tokens"
+    )]
     pub additional_reasoning_tokens: Option<u64>,
+    #[serde(rename = "elapsedMs", alias = "elapsed_ms")]
     pub elapsed_ms: Option<u64>,
+    #[serde(rename = "fallbackStage", alias = "fallback_stage")]
     pub fallback_stage: Option<String>,
     #[serde(default)]
     pub cost: CostEstimate,
@@ -247,6 +281,18 @@ pub struct CodexUsage {
 }
 
 impl CodexUsage {
+    pub fn has_usage_tokens(&self) -> bool {
+        self.input_tokens.is_some()
+            || self.cached_input_tokens.is_some()
+            || self.cache_write_input_tokens.is_some()
+            || self.output_tokens.is_some()
+            || self.total_tokens.is_some()
+            || self.reasoning_tokens.is_some()
+            || self.additional_input_tokens.is_some()
+            || self.additional_output_tokens.is_some()
+            || self.additional_reasoning_tokens.is_some()
+    }
+
     /// Checks metadata before it can enter a receipt or a report.
     pub fn is_valid(&self) -> bool {
         self.model
@@ -265,6 +311,25 @@ impl CodexUsage {
                 .additional_cost
                 .as_ref()
                 .is_none_or(CostEstimate::is_valid)
+            && self.total_usage_is_consistent()
+    }
+
+    fn total_usage_is_consistent(&self) -> bool {
+        let Some(total) = self.total_tokens else {
+            return true;
+        };
+        let Some(known) = self
+            .input_tokens
+            .unwrap_or_default()
+            .checked_add(self.output_tokens.unwrap_or_default())
+        else {
+            return false;
+        };
+        if self.input_tokens.is_some() && self.output_tokens.is_some() {
+            total == known
+        } else {
+            total >= known
+        }
     }
 }
 
@@ -624,6 +689,24 @@ mod tests {
             Some("fixture-1".to_owned()),
         ));
         assert_eq!(mixed.amount(), None);
+
+        let mut zero_before_estimated = CostAccumulator::default();
+        zero_before_estimated.add(&CostEstimate::actual(0.0, None, None));
+        zero_before_estimated.add(&CostEstimate::available(
+            0.1,
+            Some("USD".to_owned()),
+            Some("fixture-1".to_owned()),
+        ));
+        assert_eq!(zero_before_estimated.amount(), Some(0.1));
+
+        let mut zero_after_estimated = CostAccumulator::default();
+        zero_after_estimated.add(&CostEstimate::available(
+            0.1,
+            Some("USD".to_owned()),
+            Some("fixture-1".to_owned()),
+        ));
+        zero_after_estimated.add(&CostEstimate::actual(0.0, None, None));
+        assert_eq!(zero_after_estimated.amount(), Some(0.1));
 
         let mut mixed_version = CostAccumulator::default();
         mixed_version.add(&CostEstimate::available(
