@@ -76,6 +76,7 @@ jevxで「何をして、何をしないか」「何を互換性として守る�
 - [Codex Hook shadow / Compaction評価](research/evaluations/jevx-codex-hooks-evaluation.md): Hook shadow、設定、Compaction相当fixture
 - [実Codex Hook / 実会話型Compaction評価](research/evaluations/jevx-real-codex-compaction-evaluation-2026-09-21.md): 実CLI・実会話での確認記録
 - [Codex Compaction深掘り評価](research/evaluations/jevx-compaction-depth-evaluation-2026-09-21.md): Hook直接検証とCompaction評価
+- [3日間の実利用検証](research/evaluations/jevx-field-trial-2026-09-23.md): 普段のCodex利用でのHook可用性・遅延・安全性・記録の統計（2026-09-23〜26）
 
 ## 文書の読み方
 
