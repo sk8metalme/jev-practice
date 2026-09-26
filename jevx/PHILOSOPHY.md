@@ -35,7 +35,7 @@ jevxは、**Codexの作業を止めずに、決定的なローカル処理とJev
 
 ## データ境界
 
-既定では本文をJevへ送らない。hooks install --allow-content または hooks review --allow-content の明示opt-in時だけ、選択されたprompt／plan／diff／final answerをredactして送る。
+既定では本文をJevへ送らない。`hooks install --allow-content` / `hooks review --allow-content` は選択したprompt／plan／diff／final answerをredactして送る。別の明示opt-in `--allow-compact-context` は、利用者が作った通常ファイル `.jevx/compact-context.md` のredact済み・上限付きmanifestだけをPreCompactで送る（cwdの各要素、`.jevx`、manifestのsymlinkは追わない）。既知のcredential assignment、Bearer、PEM private-key形式をredactするため、opt-in前に内容を確認する。どちらも会話全文やCodexのTool Resultを送らない。
 
 - API key、資格情報、秘密値、raw Tool resultは常に除外する。
 - Skill本文と設定本文は、opt-inの有無にかかわらず送らない。Skill descriptionなど、候補探索に必要な限定メタデータだけをコード側で選ぶ。
@@ -46,7 +46,7 @@ jevxは、**Codexの作業を止めずに、決定的なローカル処理とJev
 
 - Skill本文の黙ったロード・実行、Jev確信度によるauto-allow、権限付与
 - Codex公式Compactionの置き換え、会話の勝手な要約・書き換え、Tool Resultの自動削除
-- prompt／plan／diff／final answerの明示opt-inなしの外部送信、Skill本文／設定本文の外部送信
+- prompt／plan／diff／final answer／compact-context manifestの明示opt-inなしの外部送信、Skill本文／設定本文の外部送信
 - API key、資格情報、秘密値、raw Tool resultの外部送信
 - HookだけでCodexのmodel／reasoning切替が必ず成功したという主張。証拠がなければdegraded
 - legacy/の現行機能化、Windows対応の約束、費用上限の導入（現段階は観測を優先）
@@ -63,7 +63,7 @@ jevxは、**Codexの作業を止めずに、決定的なローカル処理とJev
 - $JEVX_HOME配下のJSONL schema
 - hooks.jsonへ書く--jevx-managed付きcommandと、既存設定を保持するmerge／uninstall
 
-既存のsuggestion／telemetry／decision receiptは各現行schemaと旧schemaを読み取り、hook recordはschema v1〜v5をschema v6へ、Compaction checkpointはschema v1〜v3を読み取りつつ新規出力をschema v4へ、data inventoryはschema v7へ安全に移行する。data inventoryはmanaged leaf symlinkをリンク先へ追従せず、purge時のCompaction directory identityをlock保持中に検証する。review／route／fixはそれぞれschemaを持ち、receiptには本文を含めない。キーを消す・意味を変える場合はschemaVersionを上げ、移行とjevx/tests/contract_requirements.rsを同時に更新する。名前と意味がずれるキーは消さず、正しいキーを追加する。
+既存のsuggestion／telemetry／decision receiptは各現行schemaと旧schemaを読み取り、hook recordはschema v1〜v5をschema v6へ、Compaction checkpointはschema v1〜v4を読み取りつつ新規出力をschema v5へ、data inventoryはschema v7へ安全に移行する。data inventoryはmanaged leaf symlinkをリンク先へ追従せず、purge時のCompaction directory identityをlock保持中に検証する。review／route／fixはそれぞれschemaを持ち、receiptには本文を含めない。キーを消す・意味を変える場合はschemaVersionを上げ、移行とjevx/tests/contract_requirements.rsを同時に更新する。名前と意味がずれるキーは消さず、正しいキーを追加する。
 
 ## 成功条件
 

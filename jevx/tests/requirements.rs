@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::thread;
 
@@ -695,7 +695,7 @@ fn discovery_skips_hidden_and_target_directories_and_missing_roots() {
 
 #[test]
 fn redaction_handles_multiple_secret_shapes() {
-    let value = "api_key=abc secret=xyz password=pwd Bearer abc token: Bearer separated-token-bearer password Bearer separated-password-bearer sk-test tsk-test explain basic auth API_KEY: separated-api password: separated-password Authorization: Bearer separated-bearer Authorization: Basic separated-basic password = separated-space \"token\":\"json-secret\" Authorization:Bearer embedded-bearer Authorization=Basic embedded-basic";
+    let value = "api_key=abc secret=xyz password=pwd Bearer abc token: Bearer separated-token-bearer password Bearer separated-password-bearer sk-test tsk-test AWS_SECRET_ACCESS_KEY=aws-secret-value GITHUB_TOKEN=github-token-value AWS_ACCESS_KEY_ID=aws-access-id OPENAI_API_KEY=openai-key-value API key is phrase-secret-value private key is private-secret-value explain basic auth API_KEY: separated-api password: separated-password Authorization: Bearer separated-bearer Authorization: Basic separated-basic Proxy-Authorization: Basic proxy-secret Proxy-Authorization:Basic embedded-proxy-secret password = separated-space \"token\":\"json-secret\" Authorization:Bearer embedded-bearer Authorization=Basic embedded-basic";
     let redacted = jevx::redact(value);
     for secret in [
         "abc",
@@ -707,10 +707,18 @@ fn redaction_handles_multiple_secret_shapes() {
         "separated-password",
         "separated-bearer",
         "separated-basic",
+        "proxy-secret",
+        "embedded-proxy-secret",
         "separated-space",
         "json-secret",
         "embedded-bearer",
         "embedded-basic",
+        "aws-secret-value",
+        "github-token-value",
+        "aws-access-id",
+        "openai-key-value",
+        "phrase-secret-value",
+        "private-secret-value",
         "sk-test",
         "tsk-test",
     ] {
@@ -718,6 +726,74 @@ fn redaction_handles_multiple_secret_shapes() {
     }
     assert!(redacted.contains("explain basic auth"));
     assert!(redacted.matches("<redacted>").count() >= 8);
+    assert_eq!(jevx::redact("key decision: retain"), "key decision: retain");
+
+    let multiline = jevx::redact("api_key:\n  multiline-secret with spaces\nnext: keep");
+    assert!(
+        !multiline.contains("multiline-secret"),
+        "multiline credential leaked: {multiline}"
+    );
+    assert!(
+        !multiline.contains("with spaces"),
+        "credential continuation leaked: {multiline}"
+    );
+    assert!(multiline.contains("next: keep"));
+    let wrapped = jevx::redact("api_key:\n  first-part\n  second-part\nnext: keep");
+    assert!(!wrapped.contains("first-part"));
+    assert!(
+        !wrapped.contains("second-part"),
+        "wrapped credential leaked: {wrapped}"
+    );
+    assert!(wrapped.contains("next: keep"));
+    let inline_wrapped =
+        jevx::redact("api_key: first-part\n  second-part\n  third-part\nnext: keep");
+    for secret in ["first-part", "second-part", "third-part"] {
+        assert!(
+            !inline_wrapped.contains(secret),
+            "inline continuation leaked {secret}: {inline_wrapped}"
+        );
+    }
+    assert!(inline_wrapped.contains("next: keep"));
+    let block_scalar = jevx::redact("api_key: |\n  block-first\n  block-second\nnext: keep");
+    assert!(!block_scalar.contains("block-first"));
+    assert!(!block_scalar.contains("block-second"));
+    assert!(block_scalar.contains("next: keep"));
+    let mixed_indent = jevx::redact("  api_key:\n\tfirst-part\n\tsecond-part\n  next: keep");
+    assert!(!mixed_indent.contains("first-part"));
+    assert!(
+        !mixed_indent.contains("second-part"),
+        "mixed-indent credential leaked: {mixed_indent}"
+    );
+    assert!(mixed_indent.contains("next: keep"));
+    let multiline_authorization =
+        jevx::redact("Authorization:\n  Bearer\n    multiline-bearer-secret\nnext: keep");
+    assert!(!multiline_authorization.contains("multiline-bearer-secret"));
+    assert!(multiline_authorization.contains("next: keep"));
+    assert_eq!(
+        jevx::redact("token budget: 100 tokens"),
+        "token budget: 100 tokens"
+    );
+    assert_eq!(jevx::redact("token_budget: 100"), "token_budget: 100");
+    assert!(!jevx::redact("token = spaced-secret").contains("spaced-secret"));
+    assert!(!jevx::redact("token : spaced-colon-secret").contains("spaced-colon-secret"));
+    assert_eq!(jevx::redact("Bearer\n\nsecret"), "<redacted>\n\n<redacted>");
+    assert_eq!(
+        jevx::redact("Authorization:\nBearer\nsecret"),
+        "<redacted>\n<redacted>\n<redacted>"
+    );
+    assert_eq!(jevx::redact("api_key:\n\n"), "<redacted>\n\n");
+    assert!(!jevx::redact("api_key:\n:\nseparator-secret").contains("separator-secret"));
+    assert_eq!(
+        jevx::redact("api_key:\nis secret phrase\nnext: keep"),
+        "<redacted>\nis <redacted>\nnext: keep"
+    );
+    assert_eq!(jevx::redact("api_key=trailing-secret\n"), "<redacted>\n");
+
+    let private_key = "before\n-----BEGIN PRIVATE KEY-----\nMIIE-fixture-private-key-material\n-----END PRIVATE KEY-----\nafter";
+    let redacted_private_key = jevx::redact(private_key);
+    assert!(!redacted_private_key.contains("MIIE-fixture-private-key-material"));
+    assert!(redacted_private_key.contains("before"));
+    assert!(redacted_private_key.contains("after"));
 }
 
 #[tokio::test]
@@ -1125,6 +1201,46 @@ fn binary_reports_missing_key_as_json_error() {
         receipt.decision == jevx::DecisionStatus::Defer
             && receipt.fallback == Some(jevx::FallbackReason::MissingApiKey)
     }));
+}
+
+#[test]
+fn shadow_hook_returns_continue_when_record_write_fails() {
+    let binary = env!("CARGO_BIN_EXE_jevx");
+    let root = tempdir().expect("tempdir");
+    let blocked_output = root.path().join("blocked");
+    fs::write(&blocked_output, "not a directory").expect("blocked output path");
+    let input = serde_json::json!({
+        "hook_event_name": "PreCompact",
+        "trigger": "manual",
+        "cwd": root.path()
+    });
+    let mut child = Command::new(binary)
+        .args(["hooks", "shadow", "--event", "PreCompact", "--cwd"])
+        .arg(root.path())
+        .arg("--output")
+        .arg(blocked_output.join("hook-records.jsonl"))
+        .env("AI_GATEWAY_API_KEY", "")
+        .env("JEVX_HOME", root.path().join("jevx-home"))
+        .env("JEVX_TELEMETRY", "off")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn jevx");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(input.to_string().as_bytes())
+        .expect("write hook payload");
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().expect("wait for jevx");
+
+    assert!(output.status.success());
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).expect("hook JSON");
+    assert_eq!(response["continue"], true);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("hook_record_write_failed"));
 }
 
 #[test]

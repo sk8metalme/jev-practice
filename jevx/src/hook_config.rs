@@ -28,6 +28,7 @@ pub struct HookInstallOptions {
     pub records_path: PathBuf,
     pub state_dir: PathBuf,
     pub allow_review_content: bool,
+    pub allow_compact_context: bool,
     pub dry_run: bool,
 }
 
@@ -102,6 +103,7 @@ pub fn install_hooks(options: &HookInstallOptions) -> Result<HookInstallReport, 
         &options.records_path,
         &options.state_dir,
         options.allow_review_content,
+        options.allow_compact_context,
     );
     let config = merge_hook_config(existing.as_ref(), &generated)?;
     let changed = existing
@@ -249,6 +251,7 @@ fn generated_config(
     records_path: &Path,
     state_dir: &Path,
     allow_review_content: bool,
+    allow_compact_context: bool,
 ) -> Value {
     let shadow_command = format!(
         "{} hooks shadow --output {} {JEVX_MANAGED_FLAG}",
@@ -260,6 +263,11 @@ fn generated_config(
         shell_quote(executable),
         shell_quote(state_dir)
     );
+    let pre_compact_command = if allow_compact_context {
+        format!("{} --allow-compact-context", compact_assist_command)
+    } else {
+        compact_assist_command.clone()
+    };
     let review_content_flag = if allow_review_content {
         " --allow-content"
     } else {
@@ -289,7 +297,7 @@ fn generated_config(
             "PreCompact": [{
                 "matcher": "manual|auto",
                 "hooks": [command_handler(
-                    &compact_assist_command,
+                    &pre_compact_command,
                     "jevx: recording compact checkpoint",
                 )]
             }],
@@ -463,6 +471,7 @@ mod tests {
             Path::new("/events"),
             Path::new("/state"),
             false,
+            false,
         );
         let merged = merge_hook_config(Some(&existing), &generated).expect("merge");
         let groups = merged["hooks"]["UserPromptSubmit"]
@@ -479,11 +488,51 @@ mod tests {
     }
 
     #[test]
+    fn compact_content_opt_in_is_independent_and_off_by_default() {
+        let default = generated_config(
+            Path::new("/jevx"),
+            Path::new("/events"),
+            Path::new("/state"),
+            false,
+            false,
+        );
+        let compact_command = default["hooks"]["PreCompact"][0]["hooks"][0]["command"]
+            .as_str()
+            .expect("compact command");
+        assert!(!compact_command.contains("--allow-compact-context"));
+
+        let opted_in = generated_config(
+            Path::new("/jevx"),
+            Path::new("/events"),
+            Path::new("/state"),
+            false,
+            true,
+        );
+        let pre_compact = opted_in["hooks"]["PreCompact"][0]["hooks"][0]["command"]
+            .as_str()
+            .expect("pre compact command");
+        assert!(pre_compact.contains("--allow-compact-context"));
+        assert!(!pre_compact.contains("--allow-content"));
+        for event in ["SessionStart", "PostCompact"] {
+            let command = opted_in["hooks"][event][0]["hooks"][0]["command"]
+                .as_str()
+                .expect("compact command");
+            assert!(!command.contains("--allow-compact-context"));
+        }
+        let review_command = opted_in["hooks"]["UserPromptSubmit"][1]["hooks"][0]["command"]
+            .as_str()
+            .expect("review command");
+        assert!(!review_command.contains("--allow-compact-context"));
+        assert!(!review_command.contains("--allow-content"));
+    }
+
+    #[test]
     fn merge_rejects_invalid_hooks_shape() {
         let generated = generated_config(
             Path::new("/jevx"),
             Path::new("/events"),
             Path::new("/state"),
+            false,
             false,
         );
         let invalid = json!({"hooks": []});
@@ -511,6 +560,7 @@ mod tests {
             records_path: root.path().join("data/hooks.jsonl"),
             state_dir: root.path().join("data/compaction"),
             allow_review_content: false,
+            allow_compact_context: false,
             dry_run: false,
         };
         let report = install_hooks(&options).expect("install");
@@ -612,6 +662,7 @@ mod tests {
             records_path: root.path().join("data/hooks.jsonl"),
             state_dir: root.path().join("data/compaction"),
             allow_review_content: false,
+            allow_compact_context: false,
             dry_run: false,
         })
         .expect("install");

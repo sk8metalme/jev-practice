@@ -494,7 +494,7 @@ async fn compact_assist_carries_pre_usage_into_post_checkpoint() {
     .await
     .expect("post compact assist");
 
-    assert_eq!(post.checkpoint.schema_version, 4);
+    assert_eq!(post.checkpoint.schema_version, 5);
     assert_eq!(
         post.checkpoint
             .token_savings

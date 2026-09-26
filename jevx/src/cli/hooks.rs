@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use jevx::compact_assist::run_compact_assist;
+use jevx::compact_assist::run_compact_assist_with_opt_in;
 use jevx::hook_config::{
     HookInstallOptions, HookScope, HookUninstallOptions, install_hooks, uninstall_hooks,
 };
@@ -262,7 +262,11 @@ pub(super) async fn run_hook_shadow_from_reader<R: Read>(
     )
     .await?;
     if let Some(output) = args.output {
-        append_shadow_record(&output, &result.record)?;
+        match append_shadow_record(&output, &result.record) {
+            Ok(()) => {}
+            Err(JevxError::Io(_)) => eprintln!("jevx warning: hook_record_write_failed"),
+            Err(error) => return Err(error),
+        }
     }
     println!("{}", serde_json::to_string(&result.response)?);
     Ok(0)
@@ -356,6 +360,7 @@ pub(super) fn run_hook_install(args: HookInstallArgs, config: &Config) -> Result
         records_path: data_home.join("hooks.jsonl"),
         state_dir: data_home.join("compaction"),
         allow_review_content: args.allow_content,
+        allow_compact_context: args.allow_compact_context,
         dry_run: args.dry_run,
     })?;
     if args.json {
@@ -406,7 +411,12 @@ pub(super) async fn run_compact_assist_from_reader<R: Read>(
     let state_dir = args
         .state_dir
         .unwrap_or_else(|| data_home.join("compaction"));
-    let result = run_compact_assist(&input, config, &state_dir).await?;
+    let result =
+        run_compact_assist_with_opt_in(&input, config, &state_dir, args.allow_compact_context)
+            .await?;
+    if let Some(warning_code) = result.warning_code.as_deref() {
+        eprintln!("jevx: compact-assist continued with warning: {warning_code}");
+    }
     println!("{}", serde_json::to_string(&result.response)?);
     Ok(0)
 }

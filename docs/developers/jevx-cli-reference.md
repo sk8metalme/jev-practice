@@ -249,9 +249,10 @@ Reviewの出力は`continue`/`suppressOutput`と`review`を持つ。`review.sche
 ```bash
 jevx hooks install --scope user --dry-run --allow-content --json
 jevx hooks install --scope user --allow-content --json
+jevx hooks install --scope project --repo . --allow-compact-context --dry-run --json
 ```
 
-`--allow-content`はCodexのTool結果や会話全文の送信許可ではなく、Hook payloadの選択対象だけの許可。生成されたHookは`/hooks`でreview/trustし、不要になれば`hooks uninstall`でjevx管理handlerだけを外す。
+`--allow-content`はreview対象だけ、`--allow-compact-context`は利用者が作ったredacted manifestだけの許可で、別々に扱う。後者はPreCompact handlerにだけ設定され、通常ファイル `.jevx/compact-context.md` のredacted・上限付き内容をJevの推薦判定へ送る。cwdのいずれかの要素、`.jevx`、manifestがsymlinkの場合やmanifestが通常ファイルでない場合は読み込まず、会話全文やTool Resultも送らない。既知のcredential assignment、Bearer、PEM private-key形式をredactするため、opt-in前にmanifestを確認する。生成されたHookは`/hooks`でreview/trustし、不要になれば`hooks uninstall`でjevx管理handlerだけを外す。
 
 ## Jev Gatewayへ直接 `curl` する
 
@@ -502,7 +503,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 | イベント | matcher | jevx処理 | 外部送信 |
 | --- | --- | --- | --- |
 | `SessionStart` | `startup\|resume\|clear\|compact` | checkpointを補助contextとして復元 | なし |
-| `PreCompact` | `manual\|auto` | compact前のmetadataを記録 | なし |
+| `PreCompact` | `manual\|auto` | compact前metadata。別opt-in時のみredacted manifestのJev推薦 | `--allow-compact-context`時だけmanifest |
 | `PostCompact` | `manual\|auto` | compact後のmetadataを記録 + diff review | `--allow-content`時だけ対象本文 |
 | `UserPromptSubmit` | なし | Skill選択をshadow観測 + prompt review | `--allow-content`時だけ対象本文 |
 | `Stop` | なし | final-answer review | `--allow-content`時だけ対象本文 |
@@ -511,7 +512,9 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 ### Compaction補助の試作
 
-`hooks compact-assist` はHook JSONをstdinから読み、`<state-dir>/hook-records.jsonl` と `checkpoints.jsonl` に安全なmetadataだけを追記する。Hook recordはschema v6、checkpointはschema v4。直接のHook payloadにbefore/afterが同時にあっても別リクエストの可能性があるため`tokenSavings.status=unavailable`とし、未消費の同一session・turn・correlation cycleのPreCompact checkpointとPostCompactを対応付けられた場合だけtokenSavingsをMeasuredにする。PreCompact/PostCompactが交互に進む場合も同じcycleだけを消費し、壊れたcheckpoint行は明示的なエラーにする。Hook recordの `trigger` / `source` / `selectedSkill` はwrite前にbounded identifierへ正規化され、unsafeな値は欠損として扱われる。新規appendはunsafeなrecordを拒否し、既存schema v1〜v5のloadでは任意metadataと旧usage presenceを正規化・欠損化して過去ログを読み続ける。checkpoint schema v1〜v3もusageの欠落値を保ったまま移行する。詳しい契約は[費用観測契約](jevx-cost-observability.md)を参照してね。`SessionStart(source=compact)`のときは、同じセッションのcheckpointと、作業ディレクトリに任意で置いた `.jevx/compact-context.md` をredactして `additionalContext` に返す。
+`hooks compact-assist` はHook JSONをstdinから読み、`<state-dir>/hook-records.jsonl` と `checkpoints.jsonl` に安全なmetadataだけを追記する。Hook recordはschema v6、checkpointはschema v5。直接のHook payloadにbefore/afterが同時にあっても別リクエストの可能性があるため`tokenSavings.status=unavailable`とし、未消費の同一session・turn・correlation cycleのPreCompact checkpointとPostCompactを対応付けられた場合だけtokenSavingsをMeasuredにする。PreCompact/PostCompactが交互に進む場合も同じcycleだけを消費し、壊れたcheckpoint行は明示的なエラーにする。Hook recordの `trigger` / `source` / `selectedSkill` はwrite前にbounded identifierへ正規化され、unsafeな値は欠損として扱われる。新規appendはunsafeなrecordを拒否し、既存schema v1〜v5のloadでは任意metadataと旧usage presenceを正規化・欠損化して過去ログを読み続ける。checkpoint schema v1〜v4はusageの欠落値を保ったまま移行する。詳しい契約は[費用観測契約](jevx-cost-observability.md)を参照してね。`SessionStart(source=compact)`のときは、同じセッションのcheckpointと、作業ディレクトリに任意で置いた `.jevx/compact-context.md` をredactして `additionalContext` に返す。
+
+Jevによる「補足manifestを残す価値」の推薦は既定で無効。`hooks install --allow-compact-context`または単発の`hooks compact-assist --allow-compact-context`を明示した場合のみ、redact済み・上限付きmanifestをPreCompactで送る。回答はadvisoryで、公式Compactionや再開contextを変更しない。Jev latency、usage/cost、typed receiptを記録し、receiptの`replayId`はcheckpoint schema v5の`decisionReplayId`でPre/Postを対応付ける。本文そのものはreceiptやcheckpointへ保存しない。
 
 ```bash
 mkdir -p .jevx
@@ -524,7 +527,7 @@ printf '%s\n' \
       hooks compact-assist --state-dir /tmp/jevx-compaction
 ```
 
-checkpointには生のmanifest本文を保存せず、redacted本文のSHA-256、文字数、event名、相関ハッシュだけを保存する。Hook metadataもwrite前にbounded identifierへ正規化し、unsafeな値を保存しないよ。`additionalContext`も「補助情報」として返すだけで、Codexの会話履歴・現在のリポジトリ確認・公式Compactionの代替ではないよ。
+checkpointには生のmanifest本文を保存せず、redacted本文のSHA-256、文字数、event名、相関ハッシュ、Decision receiptのreplay IDだけを保存する。Hook metadataもwrite前にbounded identifierへ正規化し、unsafeな値を保存しないよ。`additionalContext`も「補助情報」として返すだけで、Codexの会話履歴・現在のリポジトリ確認・公式Compactionの代替ではないよ。
 
 この補助を使わず、発火だけを観測したい場合は従来どおり `hooks shadow` を使う。公式Hookのmatcherと出力契約は [Codex Hooks公式ドキュメント](https://learn.chatgpt.com/docs/hooks) を確認してね。
 
