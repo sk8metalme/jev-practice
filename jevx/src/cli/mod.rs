@@ -165,6 +165,7 @@ enum HooksCommand {
     CompactEval(CompactEvalArgs),
     ConversationEval(ConversationEvalArgs),
     Correlate(CorrelationArgs),
+    Stats(HookStatsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -236,6 +237,9 @@ struct HookInstallArgs {
     /// Explicitly allow redacted review content to reach Jev.
     #[arg(long)]
     allow_content: bool,
+    /// Explicitly allow the redacted local compact-context manifest to reach Jev.
+    #[arg(long)]
+    allow_compact_context: bool,
     #[arg(long)]
     json: bool,
 }
@@ -256,6 +260,9 @@ struct HookUninstallArgs {
 struct CompactAssistArgs {
     #[arg(long)]
     state_dir: Option<PathBuf>,
+    /// Send only the redacted local .jevx/compact-context.md manifest for an advisory PreCompact decision.
+    #[arg(long)]
+    allow_compact_context: bool,
     #[arg(long = "jevx-managed", hide = true)]
     _jevx_managed: bool,
 }
@@ -282,6 +289,16 @@ struct ConversationEvalArgs {
 
 #[derive(Debug, Args)]
 struct CorrelationArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct HookStatsArgs {
     #[arg(long)]
     input: PathBuf,
     #[arg(long)]

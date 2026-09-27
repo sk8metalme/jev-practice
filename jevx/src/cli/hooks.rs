@@ -5,14 +5,14 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use jevx::compact_assist::run_compact_assist;
+use jevx::compact_assist::run_compact_assist_with_opt_in;
 use jevx::hook_config::{
     HookInstallOptions, HookScope, HookUninstallOptions, install_hooks, uninstall_hooks,
 };
 use jevx::hooks::{
-    analyze_hook_correlations, append_shadow_record, compact_evaluation,
-    evaluate_conversation_compaction, load_conversation_cases, load_hook_records, run_shadow,
-    write_compaction_report,
+    DeferredHookShadowResult, analyze_hook_correlations, analyze_hook_stats, append_shadow_record,
+    compact_evaluation, evaluate_conversation_compaction, load_conversation_cases,
+    load_hook_records, run_shadow_deferred, write_compaction_report,
 };
 use jevx::review::{
     FixPlan, ReviewRequest, ReviewTarget, append_review_receipt, apply_fix_plan,
@@ -37,6 +37,7 @@ pub(super) async fn run_hooks_with_config(
         HooksCommand::CompactEval(args) => run_compact_eval(args),
         HooksCommand::ConversationEval(args) => run_conversation_eval(args),
         HooksCommand::Correlate(args) => run_hook_correlation(args),
+        HooksCommand::Stats(args) => run_hook_stats(args),
     }
 }
 
@@ -252,7 +253,7 @@ pub(super) async fn run_hook_shadow_from_reader<R: Read>(
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let skills = discover_skill_roots(&skill_roots(&cwd, &args.skill_dirs))?;
     let judge = GatewayJudge::from_config(&config).ok();
-    let result = run_shadow(
+    let mut outcome = run_shadow_deferred(
         &input,
         args.event.as_deref(),
         &skills,
@@ -260,11 +261,60 @@ pub(super) async fn run_hook_shadow_from_reader<R: Read>(
         judge.as_ref().map(|judge| judge as &dyn jevx::Judge),
     )
     .await?;
-    if let Some(output) = args.output {
-        append_shadow_record(&output, &result.record)?;
+    match persist_hook_shadow_record(&mut outcome, args.output.as_deref())? {
+        HookRecordPersistence::NotRequested => {}
+        HookRecordPersistence::Written => {}
+        HookRecordPersistence::WriteFailed => {
+            eprintln!("jevx warning: hook_record_write_failed");
+        }
+        HookRecordPersistence::DedupeCompletionFailed => {
+            eprintln!("jevx warning: hook_dedupe_complete_failed");
+        }
     }
-    println!("{}", serde_json::to_string(&result.response)?);
+    println!("{}", serde_json::to_string(&outcome.result().response)?);
     Ok(0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HookRecordPersistence {
+    NotRequested,
+    Written,
+    WriteFailed,
+    DedupeCompletionFailed,
+}
+
+fn persist_hook_shadow_record(
+    outcome: &mut DeferredHookShadowResult,
+    output: Option<&Path>,
+) -> Result<HookRecordPersistence, JevxError> {
+    let Some(output) = output else {
+        let _ = outcome.finish_dedupe(false);
+        return Ok(HookRecordPersistence::NotRequested);
+    };
+    match append_shadow_record(output, &outcome.result().record) {
+        Ok(()) if outcome.finish_dedupe(true).is_ok() => Ok(HookRecordPersistence::Written),
+        Ok(()) => {
+            let _ = append_dedupe_completion_diagnostic(output, &outcome.result().record);
+            Ok(HookRecordPersistence::DedupeCompletionFailed)
+        }
+        Err(JevxError::Io(_)) => {
+            let _ = outcome.finish_dedupe(false);
+            Ok(HookRecordPersistence::WriteFailed)
+        }
+        Err(error) => {
+            let _ = outcome.finish_dedupe(false);
+            Err(error)
+        }
+    }
+}
+
+fn append_dedupe_completion_diagnostic(
+    output: &Path,
+    record: &jevx::hooks::HookShadowRecord,
+) -> Result<(), JevxError> {
+    let mut diagnostic = record.clone();
+    diagnostic.dedupe_error = Some("complete_error".to_owned());
+    append_shadow_record(output, &diagnostic)
 }
 
 pub(super) fn run_compact_eval(args: CompactEvalArgs) -> Result<i32, JevxError> {
@@ -355,6 +405,7 @@ pub(super) fn run_hook_install(args: HookInstallArgs, config: &Config) -> Result
         records_path: data_home.join("hooks.jsonl"),
         state_dir: data_home.join("compaction"),
         allow_review_content: args.allow_content,
+        allow_compact_context: args.allow_compact_context,
         dry_run: args.dry_run,
     })?;
     if args.json {
@@ -405,7 +456,12 @@ pub(super) async fn run_compact_assist_from_reader<R: Read>(
     let state_dir = args
         .state_dir
         .unwrap_or_else(|| data_home.join("compaction"));
-    let result = run_compact_assist(&input, config, &state_dir).await?;
+    let result =
+        run_compact_assist_with_opt_in(&input, config, &state_dir, args.allow_compact_context)
+            .await?;
+    if let Some(warning_code) = result.warning_code.as_deref() {
+        eprintln!("jevx: compact-assist continued with warning: {warning_code}");
+    }
     println!("{}", serde_json::to_string(&result.response)?);
     Ok(0)
 }
@@ -444,6 +500,12 @@ pub(super) fn run_conversation_eval(args: ConversationEvalArgs) -> Result<i32, J
             report.summary.usage_measured_runs,
             report.summary.total_tokens,
             report.summary.total_cached_input_tokens
+        );
+        println!(
+            "Token savings: {} measured runs, {} saved tokens, reduction {}",
+            report.summary.token_savings_measured_runs,
+            format_optional_u64(report.summary.total_saved_tokens),
+            format_ratio(report.summary.token_reduction_rate)
         );
         if let Some(cache_rate) = report.summary.post_compaction_cache_hit_rate_p95 {
             println!("Post-compaction cache hit p95: {:.1}%", cache_rate * 100.0);
@@ -487,4 +549,174 @@ pub(super) fn run_hook_correlation(args: CorrelationArgs) -> Result<i32, JevxErr
         println!("Duplicate records: {}", report.duplicate_record_count);
     }
     Ok(0)
+}
+
+pub(super) fn run_hook_stats(args: HookStatsArgs) -> Result<i32, JevxError> {
+    let records = load_hook_records(&args.input)?;
+    let report = analyze_hook_stats(&records)?;
+    if let Some(output) = args.output {
+        fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+    }
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("jevx hook statistics");
+        println!("Records: {}", report.record_count);
+        println!("Events: {}", serde_json::to_string(&report.event_counts)?);
+        println!(
+            "Decisions: {}",
+            serde_json::to_string(&report.decision_counts)?
+        );
+        println!("Errors: {}", report.error_count);
+        println!(
+            "Latency p50/p95: {}/{} ms",
+            format_optional_u64(report.latency_ms_p50),
+            format_optional_u64(report.latency_ms_p95)
+        );
+        println!(
+            "Dedupe: {} hits ({})",
+            report.dedupe_hit_count,
+            format_ratio(report.dedupe_rate)
+        );
+        println!(
+            "Dedupe latency p50/p95: {}/{} ms",
+            format_optional_u64(report.dedupe_latency_ms_p50),
+            format_optional_u64(report.dedupe_latency_ms_p95)
+        );
+        println!(
+            "Token savings: {} measured, before={} after={} saved={} reduction={}",
+            report.token_savings.measured_records,
+            format_optional_u64(report.token_savings.before_tokens),
+            format_optional_u64(report.token_savings.after_tokens),
+            format_optional_u64(report.token_savings.saved_tokens),
+            format_ratio(report.token_savings.reduction_rate)
+        );
+        println!(
+            "Cost: Jev {} Codex {} total {} fallback-extra {}",
+            display_cost_amount(report.jev_cost),
+            display_cost_amount(report.codex_cost),
+            display_cost_amount(report.total_cost),
+            display_cost_amount(report.fallback_extra_cost)
+        );
+        println!(
+            "Cost status counts: {}",
+            serde_json::to_string(&report.cost_status_counts)?
+        );
+    }
+    Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use async_trait::async_trait;
+    use jevx::hooks::run_shadow;
+    use jevx::{Judge, JudgeRequest, JudgeResponse, SkillRecord};
+    use tempfile::tempdir;
+
+    struct CountingJudge(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Judge for CountingJudge {
+        async fn evaluate(&self, _request: JudgeRequest) -> Result<JudgeResponse, JevxError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(JudgeResponse::selected("pdf", 0.95, 12, Some((31, 7))))
+        }
+    }
+
+    #[tokio::test]
+    async fn dedupe_completes_only_after_hook_record_persistence() {
+        for should_persist in [true, false] {
+            let root = tempdir().expect("tempdir");
+            let config = Config::for_test(root.path().join("data"));
+            let calls = Arc::new(AtomicUsize::new(0));
+            let judge = CountingJudge(Arc::clone(&calls));
+            let skills = [SkillRecord::new(
+                "pdf".to_owned(),
+                "PDF処理".to_owned(),
+                root.path().join("pdf/SKILL.md"),
+                "test".to_owned(),
+            )];
+            let input = format!(
+                r#"{{"hook_event_name":"UserPromptSubmit","prompt":"pdf task","cwd":"{}","session_id":"session","turn_id":"turn"}}"#,
+                root.path().display()
+            );
+            let mut deferred = run_shadow_deferred(&input, None, &skills, &config, Some(&judge))
+                .await
+                .expect("deferred shadow");
+            let output = if should_persist {
+                root.path().join("hooks.jsonl")
+            } else {
+                let directory = root.path().join("hooks-output-directory");
+                fs::create_dir(&directory).expect("invalid output path");
+                directory
+            };
+            let persistence = persist_hook_shadow_record(&mut deferred, Some(&output))
+                .expect("record persistence result");
+            assert_eq!(
+                persistence,
+                if should_persist {
+                    HookRecordPersistence::Written
+                } else {
+                    HookRecordPersistence::WriteFailed
+                }
+            );
+
+            let second = run_shadow(&input, None, &skills, &config, Some(&judge))
+                .await
+                .expect("retry hook");
+            assert_eq!(second.record.dedupe_hit, should_persist);
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                if should_persist { 1 } else { 2 }
+            );
+        }
+    }
+
+    #[test]
+    fn dedupe_completion_diagnostic_is_persisted_as_an_observable_record() {
+        let root = tempdir().expect("tempdir");
+        let output = root.path().join("hooks.jsonl");
+        let record = jevx::hooks::HookShadowRecord {
+            schema_version: jevx::hooks::HOOK_SCHEMA_VERSION,
+            mode: "shadow".to_owned(),
+            hook_event_name: "UserPromptSubmit".to_owned(),
+            trigger: None,
+            source: None,
+            session_id_sha256: None,
+            turn_id_sha256: None,
+            model_sha256: None,
+            correlation_id_sha256: None,
+            prompt_sha256: None,
+            prompt_chars: None,
+            selected_skill: Some("pdf".to_owned()),
+            decision: Some(jevx::CandidateDecision::Selected),
+            elapsed_ms: 1,
+            discovery_ms: Some(1),
+            jev_response_ms: Some(1),
+            total_ms: Some(1),
+            input_tokens: Some(1),
+            output_tokens: Some(1),
+            error_code: None,
+            dedupe_error: None,
+            codex: None,
+            dedupe_hit: false,
+            dedupe_key_sha256: Some("key".to_owned()),
+            pre_compaction_usage: None,
+            compaction_usage: None,
+            post_compaction_usage: None,
+            post_compaction_cost: None,
+            compaction_elapsed_ms: None,
+            token_savings: None,
+            cost: Default::default(),
+        };
+        append_dedupe_completion_diagnostic(&output, &record).expect("diagnostic record");
+        let contents = fs::read_to_string(output).expect("read diagnostic");
+        assert!(contents.contains("\"dedupeError\":\"complete_error\""));
+    }
 }

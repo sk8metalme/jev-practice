@@ -8,6 +8,7 @@
 | 完了 | 費用観測基盤 | Jev/Codex/合算、推定/実費、通貨/価格版、status、task/turn/session集計 | 取得不能を0にせず、速度・品質と同じreceipt/レポートで比較できる |
 | 完了 | 意味レビュー縦スライス | 日本語clarity、文章/コード矛盾、コメント乖離をlocal + batched typed Jevで検出 | 4カテゴリfixture、replay、本文非保存、degraded/failureを検証できる |
 | 完了 | route候補とsafe fix | 難易度からmodel/reasoning/fallbackを推薦し、明示opt-in時のみfix | 適用証拠なしはdegraded、fixは`--yes`/confidence/hash/safe path gate |
+| 完了 | Opt-in Compaction manifest decision | Compactionが残す価値のある補足情報かを測りたいが、会話要約や公式Compactionの変更は行わない | 既定送信なし、redacted manifestのみPreCompactでtyped推薦、Compaction結果は不変、Jev latency/usage/costをreceiptとPre/Post相関で測定 |
 | P1 | Skill Calibration Packs | Skillごとの代表例、none、境界例、期待answer、閾値、反復分散を評価 | 新Skillをpackなしで本番相当評価へ進めず、miss / none / p95 / costを比較できる |
 | P1 | App Server / SDK route adapter | Hookで保証できないmodel/reasoning適用を明示境界へ移す | 実適用証拠、fallback追加費用、速度、品質、復旧を同時にfixture検証する |
 | P1 | Cost-backed baseline runner | Skill、review、compact、planのJev/Codex usageを同一task/turn/sessionへ相関 | speed20%・品質改善・費用変化を同じレポートで採否判定する |

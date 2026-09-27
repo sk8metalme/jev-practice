@@ -142,7 +142,7 @@ jevx data purge          # 削除対象の表示だけ
 jevx data purge --yes    # 実際に削除
 ```
 
-**境界**：`purge` が消すのはjevxが書いたTelemetry・Hook記録・Compaction checkpointだけです。`.jevx/compact-context.md`、Codexの `hooks.json`、評価で `--output` に指定したファイルには触れません。
+**境界**：`purge` が消すのはjevxが書いたTelemetry・Hook記録・Compaction checkpointと一時状態です。実行中のHookと競合しないよう安定lock自体は残します。`.jevx/compact-context.md`、Codexの `hooks.json`、評価で `--output` に指定したファイルには触れません。保存契約は[費用観測契約](../developers/jevx-cost-observability.md)を参照してください。
 
 ### 6. 意味レビューと費用の見方
 
@@ -195,6 +195,12 @@ jevx hooks correlate --input /tmp/jevx-hooks.jsonl --json
 ```
 
 **境界**：出力はrecord数、event counts、重複集計などの安全な集計に限定され、会話全文や生IDを復元する機能ではありません。通常利用のために定期実行するコマンドではなく、記録を調べるときの診断用です。
+
+速度・dedupe・Token削減量・費用statusをまとめて見るときは、`hooks stats`を使います。標準Hook payloadにusage/costがない場合、削減量や費用は推測されず、nullまたはunavailableとして表示されます。
+
+```bash
+jevx hooks stats --input /tmp/jevx-hooks.jsonl --json
+```
 
 ### 3. Skill選択の品質・ばらつき測定（`eval` / `eval-repeat`）
 
