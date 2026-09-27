@@ -1,5 +1,5 @@
 use std::fs::{self, OpenOptions};
-use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -297,32 +297,8 @@ fn atomic_write_state(path: &Path, state: &DedupeState) -> Result<(), JevxError>
     let base = path
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("hook-dedupe.json");
-    let temp_dir = parent.join(DEDUPE_TEMP_DIR_NAME);
-    fs::create_dir_all(&temp_dir)?;
-    for attempt in 0..100_u32 {
-        let temp = temp_dir.join(format!(".{base}.{}.{}.tmp", std::process::id(), attempt));
-        let mut file = match OpenOptions::new().create_new(true).write(true).open(&temp) {
-            Ok(file) => file,
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
-        };
-        let result = (|| {
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            fs::rename(&temp, path)?;
-            Ok::<(), std::io::Error>(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temp);
-        }
-        return result.map_err(JevxError::from);
-    }
-    Err(std::io::Error::new(
-        ErrorKind::AlreadyExists,
-        "could not allocate temporary hook dedupe state path",
-    )
-    .into())
+        .ok_or_else(|| JevxError::InvalidInput("invalid hook dedupe state filename".to_owned()))?;
+    crate::storage::atomic_replace_in_temp_directory(parent, DEDUPE_TEMP_DIR_NAME, base, &bytes)
 }
 
 fn prune_expired(
@@ -332,9 +308,11 @@ fn prune_expired(
     pending_ttl_ms: u64,
 ) -> bool {
     let original_len = entries.len();
-    entries.retain(|entry| now.saturating_sub(entry.created_at_ms) <= DEDUPE_TTL_MS);
+    entries
+        .retain(|entry| entry.created_at_ms <= now && now - entry.created_at_ms <= DEDUPE_TTL_MS);
     let original_pending_len = pending.len();
-    pending.retain(|entry| now.saturating_sub(entry.created_at_ms) <= pending_ttl_ms);
+    pending
+        .retain(|entry| entry.created_at_ms <= now && now - entry.created_at_ms <= pending_ttl_ms);
     entries.len() != original_len || pending.len() != original_pending_len
 }
 
@@ -460,6 +438,58 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert!(prune_expired(&mut entries, &mut pending, 60_001, 60_000));
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn future_timestamps_expire_after_wall_clock_moves_backwards() {
+        let mut entries = vec![CachedHookDecision {
+            key_sha256: "future".to_owned(),
+            created_at_ms: 101,
+            decision: CandidateDecision::None,
+            selected_skill: None,
+            discovery_ms: None,
+            jev_response_ms: None,
+            total_ms: None,
+            input_tokens: None,
+            output_tokens: None,
+        }];
+        let mut pending = vec![PendingHookDecision {
+            key_sha256: "future-pending".to_owned(),
+            created_at_ms: 101,
+        }];
+
+        assert!(prune_expired(&mut entries, &mut pending, 100, 1_000));
+        assert!(entries.is_empty());
+        assert!(pending.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_state_write_rejects_a_symlinked_temp_directory() {
+        let root = tempdir().expect("root");
+        let outside = tempdir().expect("outside");
+        std::os::unix::fs::symlink(outside.path(), root.path().join(DEDUPE_TEMP_DIR_NAME))
+            .expect("temp directory symlink");
+        let store = DedupeStore::new(root.path());
+        let entry = CachedHookDecision {
+            key_sha256: "key".to_owned(),
+            created_at_ms: 1,
+            decision: CandidateDecision::Selected,
+            selected_skill: Some("pdf".to_owned()),
+            discovery_ms: Some(1),
+            jev_response_ms: Some(1),
+            total_ms: Some(2),
+            input_tokens: Some(1),
+            output_tokens: Some(1),
+        };
+
+        assert!(store.insert(entry).is_err());
+        assert_eq!(
+            fs::read_dir(outside.path())
+                .expect("outside entries")
+                .count(),
+            0
+        );
     }
 
     #[test]

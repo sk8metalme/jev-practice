@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
+#[cfg(test)]
 use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -22,12 +23,17 @@ use crate::decision::{
     StatePlan, execute_contract,
 };
 use crate::hooks::{
-    HookShadowRecord, TokenSavings, TokenUsageSnapshot, append_shadow_record, hook_event_name,
+    HookShadowRecord, TokenSavings, TokenUsageSnapshot, append_shadow_record_at, hook_event_name,
     run_shadow,
 };
 use crate::recorder::{DecisionReceipt, DecisionRecorder, JsonlDecisionRecorder};
-use crate::redaction::{redact, sha256_hex};
-use crate::storage::append_json_line;
+use crate::redaction::{redact_with_status, sha256_hex};
+#[cfg(test)]
+use crate::storage::open_managed_directory;
+use crate::storage::{
+    append_json_line_at, open_managed_file_at, open_or_create_managed_directory,
+    read_managed_file_at, verify_directory_binding,
+};
 
 const CONTEXT_LIMIT: usize = 4_000;
 const CONTEXT_READ_LIMIT_BYTES: u64 = CONTEXT_LIMIT as u64 * 4 + 1;
@@ -203,43 +209,40 @@ async fn run_compact_assist_with_judge(
         } else {
             None
         };
-    let persistence = (|| {
-        fs::create_dir_all(state_dir)?;
-        with_compaction_lock(state_dir, || {
-            let prior_checkpoint = if is_compact_session_start(&payload) {
-                latest_checkpoint(state_dir, shadow.record.session_id_sha256.as_deref())?
-            } else {
-                None
-            };
-            let previous_pre_checkpoint = if is_post_compact(&payload) {
-                latest_pre_compaction_checkpoint(
-                    state_dir,
-                    shadow.record.session_id_sha256.as_deref(),
-                    shadow.record.turn_id_sha256.as_deref(),
-                    shadow.record.correlation_id_sha256.as_deref(),
-                )?
-            } else {
-                None
-            };
-            merge_previous_usage(&mut shadow.record, previous_pre_checkpoint.as_ref());
-            let checkpoint_replay_id = previous_pre_checkpoint
-                .as_ref()
-                .and_then(|previous| previous.decision_replay_id.clone())
-                .or_else(|| decision_replay_id.clone());
-            let checkpoint = checkpoint_from(
-                &payload,
-                &shadow.record,
-                &cwd,
-                context.as_ref(),
-                checkpoint_replay_id,
-            );
+    let persistence = with_compaction_lock(state_dir, |directory| {
+        let prior_checkpoint = if is_compact_session_start(&payload) {
+            latest_checkpoint_at(directory, shadow.record.session_id_sha256.as_deref())?
+        } else {
+            None
+        };
+        let previous_pre_checkpoint = if is_post_compact(&payload) {
+            latest_pre_compaction_checkpoint_at(
+                directory,
+                shadow.record.session_id_sha256.as_deref(),
+                shadow.record.turn_id_sha256.as_deref(),
+                shadow.record.correlation_id_sha256.as_deref(),
+            )?
+        } else {
+            None
+        };
+        merge_previous_usage(&mut shadow.record, previous_pre_checkpoint.as_ref());
+        let checkpoint_replay_id = previous_pre_checkpoint
+            .as_ref()
+            .and_then(|previous| previous.decision_replay_id.clone())
+            .or_else(|| decision_replay_id.clone());
+        let checkpoint = checkpoint_from(
+            &payload,
+            &shadow.record,
+            &cwd,
+            context.as_ref(),
+            checkpoint_replay_id,
+        );
 
-            shadow.record.elapsed_ms = elapsed_millis(started);
-            append_shadow_record(&state_dir.join("hook-records.jsonl"), &shadow.record)?;
-            append_checkpoint(&state_dir.join("checkpoints.jsonl"), &checkpoint)?;
-            Ok((prior_checkpoint, checkpoint))
-        })
-    })();
+        shadow.record.elapsed_ms = elapsed_millis(started);
+        append_checkpoint_at(directory, &checkpoint)?;
+        append_shadow_record_at(directory, &shadow.record)?;
+        Ok((prior_checkpoint, checkpoint))
+    });
     let (prior_checkpoint, checkpoint) = match persistence {
         Ok(result) => result,
         Err(JevxError::Io(_)) => {
@@ -376,22 +379,32 @@ fn elapsed_millis(started: Instant) -> u64 {
 
 fn with_compaction_lock<T, F>(state_dir: &Path, operation: F) -> Result<T, JevxError>
 where
-    F: FnOnce() -> Result<T, JevxError>,
+    F: FnOnce(&File) -> Result<T, JevxError>,
 {
-    let lock_path = state_dir.join(COMPACT_ASSIST_LOCK_FILE_NAME);
-    let lock = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(lock_path)?;
+    let directory = open_or_create_managed_directory(state_dir)?;
+    let lock = open_managed_file_at(
+        &directory,
+        COMPACT_ASSIST_LOCK_FILE_NAME,
+        libc::O_CREAT | libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        0o600,
+    )?;
+    if !lock.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "compaction lock must be a regular file",
+        )
+        .into());
+    }
     lock.lock_exclusive()?;
-    let result = operation();
+    verify_directory_binding(state_dir, &directory)?;
+    let result = operation(&directory);
+    let binding = verify_directory_binding(state_dir, &directory).map_err(JevxError::from);
     let unlock = lock.unlock();
-    match (result, unlock) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(JevxError::from(error)),
+    match (result, binding, unlock) {
+        (Ok(value), Ok(()), Ok(())) => Ok(value),
+        (Err(error), _, _) => Err(error),
+        (Ok(_), Err(error), _) => Err(error),
+        (Ok(_), Ok(()), Err(error)) => Err(JevxError::from(error)),
     }
 }
 
@@ -490,10 +503,20 @@ fn same_optional_identity(left: Option<&str>, right: Option<&str>) -> bool {
     }
 }
 
+#[cfg(test)]
 fn append_checkpoint(path: &Path, checkpoint: &CompactCheckpoint) -> Result<(), JevxError> {
-    append_json_line(path, checkpoint)
+    let parent = path
+        .parent()
+        .ok_or_else(|| JevxError::InvalidInput("checkpoint path must have a parent".to_owned()))?;
+    let directory = open_or_create_managed_directory(parent)?;
+    append_checkpoint_at(&directory, checkpoint)
 }
 
+fn append_checkpoint_at(directory: &File, checkpoint: &CompactCheckpoint) -> Result<(), JevxError> {
+    append_json_line_at(directory, "checkpoints.jsonl", checkpoint)
+}
+
+#[cfg(test)]
 fn latest_checkpoint(
     state_dir: &Path,
     session_id_sha256: Option<&str>,
@@ -503,8 +526,28 @@ fn latest_checkpoint(
     })
 }
 
+#[cfg(test)]
 fn latest_pre_compaction_checkpoint(
     state_dir: &Path,
+    session_id_sha256: Option<&str>,
+    turn_id_sha256: Option<&str>,
+    correlation_id_sha256: Option<&str>,
+) -> Result<Option<CompactCheckpoint>, JevxError> {
+    let directory = match open_managed_directory(state_dir) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    latest_pre_compaction_checkpoint_at(
+        &directory,
+        session_id_sha256,
+        turn_id_sha256,
+        correlation_id_sha256,
+    )
+}
+
+fn latest_pre_compaction_checkpoint_at(
+    directory: &File,
     session_id_sha256: Option<&str>,
     turn_id_sha256: Option<&str>,
     correlation_id_sha256: Option<&str>,
@@ -512,11 +555,12 @@ fn latest_pre_compaction_checkpoint(
     let Some(session_id_sha256) = session_id_sha256 else {
         return Ok(None);
     };
-    let path = state_dir.join("checkpoints.jsonl");
-    if !path.exists() {
+    let Some(content) = read_managed_file_at(directory, "checkpoints.jsonl")? else {
         return Ok(None);
-    }
-    let content = fs::read_to_string(path)?;
+    };
+    let content = std::str::from_utf8(&content).map_err(|_| {
+        JevxError::InvalidInput("compaction checkpoint journal is not valid UTF-8".to_owned())
+    })?;
     let mut pending = Vec::new();
     for (line_number, line) in content.lines().enumerate() {
         if line.trim().is_empty() {
@@ -527,15 +571,11 @@ fn latest_pre_compaction_checkpoint(
             continue;
         }
         match checkpoint.hook_event_name.as_str() {
-            "PreCompact" => pending.push(checkpoint),
-            "PostCompact" => {
-                if let Some(index) = pending
-                    .iter()
-                    .rposition(|pre| same_checkpoint_cycle(pre, &checkpoint))
-                {
-                    pending.remove(index);
-                }
+            "PreCompact" => {
+                pending.retain(|pre| !same_checkpoint_cycle(pre, &checkpoint));
+                pending.push(checkpoint);
             }
+            "PostCompact" => pending.retain(|pre| !same_checkpoint_cycle(pre, &checkpoint)),
             _ => {}
         }
     }
@@ -549,6 +589,7 @@ fn latest_pre_compaction_checkpoint(
     }))
 }
 
+#[cfg(test)]
 fn latest_checkpoint_where<F>(
     state_dir: &Path,
     session_id_sha256: Option<&str>,
@@ -560,11 +601,40 @@ where
     let Some(session_id_sha256) = session_id_sha256 else {
         return Ok(None);
     };
-    let path = state_dir.join("checkpoints.jsonl");
-    if !path.exists() {
+    let directory = match open_managed_directory(state_dir) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    latest_checkpoint_where_at(&directory, Some(session_id_sha256), event_matches)
+}
+
+fn latest_checkpoint_at(
+    directory: &File,
+    session_id_sha256: Option<&str>,
+) -> Result<Option<CompactCheckpoint>, JevxError> {
+    latest_checkpoint_where_at(directory, session_id_sha256, |event| {
+        matches!(event, "PreCompact" | "PostCompact")
+    })
+}
+
+fn latest_checkpoint_where_at<F>(
+    directory: &File,
+    session_id_sha256: Option<&str>,
+    event_matches: F,
+) -> Result<Option<CompactCheckpoint>, JevxError>
+where
+    F: Fn(&str) -> bool,
+{
+    let Some(session_id_sha256) = session_id_sha256 else {
         return Ok(None);
-    }
-    let content = fs::read_to_string(path)?;
+    };
+    let Some(content) = read_managed_file_at(directory, "checkpoints.jsonl")? else {
+        return Ok(None);
+    };
+    let content = std::str::from_utf8(&content).map_err(|_| {
+        JevxError::InvalidInput("compaction checkpoint journal is not valid UTF-8".to_owned())
+    })?;
     let mut latest = None;
     for (line_number, line) in content.lines().enumerate() {
         if line.trim().is_empty() {
@@ -608,6 +678,33 @@ fn parse_checkpoint(line: &str, line_number: usize) -> Result<CompactCheckpoint,
         }
     }
     checkpoint.schema_version = COMPACT_CHECKPOINT_SCHEMA_VERSION;
+    for (field, usage) in [
+        (
+            "preCompactionUsage",
+            checkpoint.pre_compaction_usage.as_ref(),
+        ),
+        ("compactionUsage", checkpoint.compaction_usage.as_ref()),
+        (
+            "postCompactionUsage",
+            checkpoint.post_compaction_usage.as_ref(),
+        ),
+    ] {
+        if let Some(usage) = usage {
+            usage.validate(&format!("checkpoint {field}"))?;
+        }
+    }
+    if checkpoint
+        .post_compaction_cost
+        .as_ref()
+        .is_some_and(|cost| !cost.is_valid())
+    {
+        return Err(JevxError::InvalidInput(format!(
+            "invalid compaction checkpoint cost at line {line_number}"
+        )));
+    }
+    if let Some(savings) = &checkpoint.token_savings {
+        savings.validate(&format!("checkpoint tokenSavings at line {line_number}"))?;
+    }
     Ok(checkpoint)
 }
 
@@ -638,8 +735,7 @@ fn read_context(cwd: &Path) -> Result<Option<ContextSnapshot>, JevxError> {
     if trimmed.is_empty() {
         return Ok(None);
     }
-    let sanitized = redact(trimmed);
-    let redaction_applied = sanitized != trimmed;
+    let (sanitized, redaction_applied) = redact_with_status(trimmed);
     let truncated =
         sanitized.chars().count() > CONTEXT_LIMIT || bytes.len() as u64 >= CONTEXT_READ_LIMIT_BYTES;
     let redacted = truncate(&sanitized, CONTEXT_LIMIT);
@@ -1324,6 +1420,24 @@ mod tests {
         assert_eq!(receipt["redactionReasons"], json!([]));
     }
 
+    #[test]
+    fn whitespace_normalization_does_not_claim_secret_redaction() {
+        let root = tempdir().expect("tempdir");
+        fs::create_dir_all(root.path().join(".jevx")).expect("context directory");
+        fs::write(
+            root.path().join(".jevx/compact-context.md"),
+            "  goal: keep the plan\n    detail: preserve indentation\n",
+        )
+        .expect("context manifest");
+        let cwd = fs::canonicalize(root.path()).expect("canonical cwd");
+
+        let snapshot = read_context(&cwd)
+            .expect("context read")
+            .expect("context snapshot");
+
+        assert!(!snapshot.redaction_applied);
+    }
+
     fn test_checkpoint(
         schema_version: u8,
         hook_event_name: &str,
@@ -1512,6 +1626,306 @@ mod tests {
                 .as_str()
                 .expect("context")
                 .contains("not found")
+        );
+    }
+
+    #[test]
+    fn checkpoint_lookup_handles_missing_invalid_utf8_and_foreign_session_data() {
+        let root = tempdir().expect("tempdir");
+        let state = root.path().join("state");
+        fs::create_dir(&state).expect("state directory");
+        assert!(
+            latest_pre_compaction_checkpoint(
+                &state,
+                Some("session-hash"),
+                Some("turn-hash"),
+                Some("cycle-hash"),
+            )
+            .expect("missing pre journal")
+            .is_none()
+        );
+        assert!(
+            latest_checkpoint(&state, Some("session-hash"))
+                .expect("missing journal")
+                .is_none()
+        );
+
+        let journal = state.join("checkpoints.jsonl");
+        fs::write(&journal, [0xff]).expect("invalid utf8 journal");
+        assert!(
+            latest_pre_compaction_checkpoint(
+                &state,
+                Some("session-hash"),
+                Some("turn-hash"),
+                Some("cycle-hash"),
+            )
+            .is_err()
+        );
+        assert!(latest_checkpoint(&state, Some("session-hash")).is_err());
+
+        fs::write(&journal, "\n").expect("blank journal");
+        assert!(
+            latest_checkpoint(&state, Some("session-hash"))
+                .expect("blank journal")
+                .is_none()
+        );
+
+        let foreign_state = root.path().join("foreign-state");
+        let mut foreign = test_checkpoint(
+            COMPACT_CHECKPOINT_SCHEMA_VERSION,
+            "PreCompact",
+            Some("turn-hash"),
+        );
+        foreign.session_id_sha256 = Some("foreign-session".to_owned());
+        append_checkpoint(&foreign_state.join("checkpoints.jsonl"), &foreign)
+            .expect("foreign checkpoint");
+        assert!(
+            latest_pre_compaction_checkpoint(
+                &foreign_state,
+                Some("session-hash"),
+                Some("turn-hash"),
+                Some("cycle-hash"),
+            )
+            .expect("foreign session is ignored")
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn checkpoint_reader_rejects_semantically_invalid_usage_cost_and_savings() {
+        let root = tempdir().expect("tempdir");
+        let cases = [
+            (
+                "usage",
+                CompactCheckpoint {
+                    pre_compaction_usage: Some(TokenUsageSnapshot {
+                        input_tokens: 1_000,
+                        total_tokens: 100,
+                        total_tokens_present: true,
+                        ..TokenUsageSnapshot::default()
+                    }),
+                    ..test_checkpoint(
+                        COMPACT_CHECKPOINT_SCHEMA_VERSION,
+                        "PreCompact",
+                        Some("turn-hash"),
+                    )
+                },
+            ),
+            (
+                "cost",
+                CompactCheckpoint {
+                    post_compaction_cost: Some(CostEstimate::available(
+                        -0.1,
+                        Some("USD".to_owned()),
+                        Some("fixture".to_owned()),
+                    )),
+                    ..test_checkpoint(
+                        COMPACT_CHECKPOINT_SCHEMA_VERSION,
+                        "PreCompact",
+                        Some("turn-hash"),
+                    )
+                },
+            ),
+            (
+                "savings",
+                CompactCheckpoint {
+                    token_savings: Some(TokenSavings {
+                        before_tokens: Some(100),
+                        after_tokens: Some(90),
+                        saved_tokens: Some(999),
+                        reduction_rate: Some(0.1),
+                        source: "hook_checkpoint".to_owned(),
+                        status: crate::hooks::MeasurementStatus::Measured,
+                    }),
+                    ..test_checkpoint(
+                        COMPACT_CHECKPOINT_SCHEMA_VERSION,
+                        "PreCompact",
+                        Some("turn-hash"),
+                    )
+                },
+            ),
+        ];
+
+        for (name, checkpoint) in cases {
+            let state = root.path().join(name);
+            append_checkpoint(&state.join("checkpoints.jsonl"), &checkpoint)
+                .expect("write invalid checkpoint fixture");
+            assert!(
+                latest_checkpoint(&state, Some("session-hash")).is_err(),
+                "invalid {name} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn one_post_compact_consumes_all_duplicate_pre_checkpoints_for_a_cycle() {
+        let root = tempdir().expect("tempdir");
+        let path = root.path().join("checkpoints.jsonl");
+        let first = test_checkpoint(
+            COMPACT_CHECKPOINT_SCHEMA_VERSION,
+            "PreCompact",
+            Some("turn-hash"),
+        );
+        let mut duplicate = first.clone();
+        duplicate.context_chars = 12;
+        let mut post = first.clone();
+        post.hook_event_name = "PostCompact".to_owned();
+
+        append_checkpoint(&path, &first).expect("first PreCompact");
+        append_checkpoint(&path, &duplicate).expect("duplicate PreCompact");
+        append_checkpoint(&path, &post).expect("PostCompact");
+
+        assert!(
+            latest_pre_compaction_checkpoint(
+                root.path(),
+                Some("session-hash"),
+                Some("turn-hash"),
+                Some("cycle-hash"),
+            )
+            .expect("lookup after PostCompact")
+            .is_none()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn compact_assist_refuses_a_symlinked_state_directory() {
+        let root = tempdir().expect("root");
+        let outside = tempdir().expect("outside");
+        let state_dir = root.path().join("compaction");
+        std::os::unix::fs::symlink(outside.path(), &state_dir).expect("state symlink");
+        let cwd = fs::canonicalize(root.path()).expect("canonical cwd");
+        let payload = json!({
+            "hook_event_name": "PostCompact",
+            "session_id": "session",
+            "cwd": cwd
+        })
+        .to_string();
+        let config = Config::for_test(root.path().join("data"));
+
+        let result = run_compact_assist(&payload, &config, &state_dir)
+            .await
+            .expect("non-blocking compact assist");
+
+        assert_eq!(
+            result.warning_code.as_deref(),
+            Some("compact_assist_storage_failed")
+        );
+        assert_eq!(
+            fs::read_dir(outside.path())
+                .expect("outside entries")
+                .count(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compaction_lock_rejects_symlink_and_non_regular_lock_files() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let root = tempdir().expect("root");
+        let state_dir = root.path().join("compaction");
+        fs::create_dir(&state_dir).expect("state directory");
+        let outside = root.path().join("outside");
+        fs::write(&outside, "outside").expect("outside target");
+        let lock_path = state_dir.join(COMPACT_ASSIST_LOCK_FILE_NAME);
+        std::os::unix::fs::symlink(&outside, &lock_path).expect("lock symlink");
+        assert!(with_compaction_lock(&state_dir, |_| Ok(())).is_err());
+
+        fs::remove_file(&lock_path).expect("remove symlink");
+        let encoded_path =
+            std::ffi::CString::new(lock_path.as_os_str().as_bytes()).expect("lock path has no NUL");
+        let result = unsafe { libc::mkfifo(encoded_path.as_ptr(), 0o600) };
+        assert_eq!(
+            result,
+            0,
+            "create FIFO lock: {}",
+            io::Error::last_os_error()
+        );
+        assert!(with_compaction_lock(&state_dir, |_| Ok(())).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compaction_lock_rejects_state_directory_replacement_after_operation() {
+        let root = tempdir().expect("root");
+        let state_dir = root.path().join("compaction");
+        let moved_dir = root.path().join("moved-compaction");
+        fs::create_dir(&state_dir).expect("state directory");
+
+        let result = with_compaction_lock(&state_dir, |_| {
+            fs::rename(&state_dir, &moved_dir)?;
+            fs::create_dir(&state_dir)?;
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        assert!(moved_dir.join(COMPACT_ASSIST_LOCK_FILE_NAME).is_file());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn post_checkpoint_is_persisted_before_record_failure_can_reuse_its_pre_cycle() {
+        let root = tempdir().expect("root");
+        let outside = tempdir().expect("outside");
+        let state_dir = root.path().join("compaction");
+        fs::create_dir(&state_dir).expect("state directory");
+        let session = "fixture-session";
+        let turn = "fixture-turn";
+        let mut pre = test_checkpoint(
+            COMPACT_CHECKPOINT_SCHEMA_VERSION,
+            "PreCompact",
+            Some("turn-hash"),
+        );
+        pre.session_id_sha256 = Some(sha256_hex(session));
+        pre.turn_id_sha256 = Some(sha256_hex(turn));
+        pre.correlation_id_sha256 = Some(sha256_hex(&format!("{session}:{turn}")));
+        let checkpoints = state_dir.join("checkpoints.jsonl");
+        append_checkpoint(&checkpoints, &pre).expect("pre checkpoint");
+        let outside_record = outside.path().join("hook-records.jsonl");
+        fs::write(&outside_record, "").expect("outside record target");
+        std::os::unix::fs::symlink(&outside_record, state_dir.join("hook-records.jsonl"))
+            .expect("record symlink");
+        let cwd = fs::canonicalize(root.path()).expect("canonical cwd");
+        let payload = json!({
+            "hook_event_name": "PostCompact",
+            "session_id": session,
+            "turn_id": turn,
+            "cwd": cwd,
+            "postCompactionUsage": {"inputTokens": 400, "totalTokens": 500}
+        })
+        .to_string();
+        let config = Config::for_test(root.path().join("data"));
+
+        let result = run_compact_assist(&payload, &config, &state_dir)
+            .await
+            .expect("non-blocking compact assist");
+
+        assert_eq!(
+            result.warning_code.as_deref(),
+            Some("compact_assist_storage_failed")
+        );
+        assert_eq!(
+            fs::read_to_string(outside_record).expect("outside file"),
+            ""
+        );
+        assert_eq!(
+            fs::read_to_string(&checkpoints)
+                .expect("checkpoint journal")
+                .lines()
+                .count(),
+            2
+        );
+        assert!(
+            latest_pre_compaction_checkpoint(
+                &state_dir,
+                Some(&sha256_hex(session)),
+                Some(&sha256_hex(turn)),
+                Some(&sha256_hex(&format!("{session}:{turn}"))),
+            )
+            .expect("consumed PreCompact")
+            .is_none()
         );
     }
 

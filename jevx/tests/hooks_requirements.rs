@@ -113,10 +113,10 @@ async fn hook_shadow_records_codex_usage_without_treating_missing_total_as_zero(
             "mainTurns": 1,
             "subagentCount": 2,
             "inputTokens": 100,
-            "outputTokens": 20,
+            "outputTokens": 50,
             "reasoningTokens": 40,
             "additionalInputTokens": 10,
-            "additionalOutputTokens": 3,
+            "additionalOutputTokens": 10,
             "additionalReasoningTokens": 5,
             "elapsedMs": 321,
             "fallbackStage": "luna",
@@ -149,7 +149,7 @@ async fn hook_shadow_records_codex_usage_without_treating_missing_total_as_zero(
     assert_eq!(codex.reasoning_effort.as_deref(), Some("max"));
     assert_eq!(codex.subagent_count, Some(2));
     assert_eq!(codex.additional_input_tokens, Some(10));
-    assert_eq!(codex.additional_output_tokens, Some(3));
+    assert_eq!(codex.additional_output_tokens, Some(10));
     assert_eq!(codex.additional_reasoning_tokens, Some(5));
     assert_eq!(codex.cost.amount, Some(0.42));
     assert_eq!(
@@ -474,7 +474,7 @@ fn conversation_compaction_records_codex_usage_and_fallback_extra_cost() {
             Some("codex-fixture-1".to_owned()),
         ),
         additional_input_tokens: Some(10),
-        additional_output_tokens: Some(3),
+        additional_output_tokens: Some(10),
         additional_reasoning_tokens: Some(5),
         additional_cost: Some(jevx::CostEstimate::actual(
             0.07,
@@ -485,7 +485,7 @@ fn conversation_compaction_records_codex_usage_and_fallback_extra_cost() {
     let report = evaluate_conversation_compaction(&[case]).expect("compaction evaluation");
     let usage = report.runs[0].codex_usage.as_ref().expect("codex usage");
     assert_eq!(usage.model.as_deref(), Some("gpt-5.6-sol"));
-    assert_eq!(usage.additional_output_tokens, Some(3));
+    assert_eq!(usage.additional_output_tokens, Some(10));
     assert_eq!(report.summary.codex_cost, Some(0.42));
     assert_eq!(report.summary.fallback_extra_cost, Some(0.07));
 }

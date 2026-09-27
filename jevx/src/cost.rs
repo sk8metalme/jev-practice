@@ -311,6 +311,18 @@ impl CodexUsage {
                 .additional_cost
                 .as_ref()
                 .is_none_or(CostEstimate::is_valid)
+            && self
+                .cached_input_tokens
+                .zip(self.input_tokens)
+                .is_none_or(|(cached, input)| cached <= input)
+            && self
+                .reasoning_tokens
+                .zip(self.output_tokens)
+                .is_none_or(|(reasoning, output)| reasoning <= output)
+            && self
+                .additional_reasoning_tokens
+                .zip(self.additional_output_tokens)
+                .is_none_or(|(reasoning, output)| reasoning <= output)
             && self.total_usage_is_consistent()
     }
 
@@ -520,6 +532,31 @@ mod tests {
         let three = pricing.estimate_three_part(Some(1_000), Some(2_000), Some(3_000));
         assert_eq!(three.status, CostStatus::Available);
         assert_eq!(three.amount, Some(0.014));
+    }
+
+    #[test]
+    fn codex_usage_rejects_breakdown_tokens_above_their_parent_totals() {
+        let cases = [
+            CodexUsage {
+                input_tokens: Some(10),
+                cached_input_tokens: Some(11),
+                ..CodexUsage::default()
+            },
+            CodexUsage {
+                output_tokens: Some(2),
+                reasoning_tokens: Some(3),
+                ..CodexUsage::default()
+            },
+            CodexUsage {
+                additional_output_tokens: Some(2),
+                additional_reasoning_tokens: Some(3),
+                ..CodexUsage::default()
+            },
+        ];
+
+        for usage in cases {
+            assert!(!usage.is_valid(), "impossible usage breakdown: {usage:?}");
+        }
     }
 
     #[test]

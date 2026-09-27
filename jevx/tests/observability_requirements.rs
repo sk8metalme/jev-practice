@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::Write;
+use std::process::Command;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -8,7 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use jevx::compact_assist::run_compact_assist;
-use jevx::hooks::{TokenUsageSnapshot, analyze_hook_stats, run_shadow};
+use jevx::hooks::{TokenUsageSnapshot, analyze_hook_stats, append_shadow_record, run_shadow};
 use jevx::{Config, Judge, JudgeRequest, JudgeResponse, SkillRecord};
 use tempfile::tempdir;
 use tokio::sync::Notify;
@@ -25,6 +26,10 @@ struct BlockingJudge {
     calls: Arc<AtomicUsize>,
     started: Arc<Notify>,
     release: Arc<Notify>,
+}
+
+struct NoneJudge {
+    calls: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -53,6 +58,14 @@ impl Judge for BlockingJudge {
     }
 }
 
+#[async_trait]
+impl Judge for NoneJudge {
+    async fn evaluate(&self, _request: JudgeRequest) -> Result<JudgeResponse, jevx::JevxError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(JudgeResponse::selected("none", 0.95, 12, Some((31, 7))))
+    }
+}
+
 fn skill(root: &std::path::Path) -> SkillRecord {
     SkillRecord::new(
         "pdf".to_owned(),
@@ -60,6 +73,80 @@ fn skill(root: &std::path::Path) -> SkillRecord {
         root.join("pdf/SKILL.md"),
         "fixture".to_owned(),
     )
+}
+
+#[tokio::test]
+async fn repeated_valid_none_decisions_reuse_the_dedupe_result() {
+    let root = tempdir().expect("tempdir");
+    let config = Config::for_test(root.path().join("data"));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let judge = NoneJudge {
+        calls: Arc::clone(&calls),
+    };
+    let input = format!(
+        r#"{{"hook_event_name":"UserPromptSubmit","prompt":"choose no skill","cwd":"{}","session_id":"none-session","turn_id":"none-turn"}}"#,
+        root.path().display()
+    );
+    let skills = [skill(root.path())];
+
+    let first = run_shadow(&input, None, &skills, &config, Some(&judge))
+        .await
+        .expect("first none result");
+    let second = run_shadow(&input, None, &skills, &config, Some(&judge))
+        .await
+        .expect("second none result");
+
+    assert_eq!(first.record.decision, Some(jevx::CandidateDecision::None));
+    assert!(!first.record.dedupe_hit);
+    assert!(second.record.dedupe_hit);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn plain_hook_stats_output_includes_errors_and_decision_counts() {
+    let root = tempdir().expect("tempdir");
+    let config = Config::for_test(root.path().join("data"));
+    let selected = run_shadow(
+        &format!(
+            r#"{{"hook_event_name":"UserPromptSubmit","prompt":"select","cwd":"{}","session_id":"stats-session","turn_id":"stats-turn"}}"#,
+            root.path().display()
+        ),
+        None,
+        &[skill(root.path())],
+        &config,
+        Some(&CountingJudge {
+            calls: Arc::new(AtomicUsize::new(0)),
+        }),
+    )
+    .await
+    .expect("selected record");
+    let failed = run_shadow(
+        &format!(
+            r#"{{"hook_event_name":"UserPromptSubmit","prompt":"fail","cwd":"{}","session_id":"stats-session","turn_id":"stats-turn"}}"#,
+            root.path().display()
+        ),
+        None,
+        &[skill(root.path())],
+        &config,
+        Some(&FailingJudge {
+            calls: Arc::new(AtomicUsize::new(0)),
+        }),
+    )
+    .await
+    .expect("failed record");
+    let input = root.path().join("hooks.jsonl");
+    append_shadow_record(&input, &selected.record).expect("write selected record");
+    append_shadow_record(&input, &failed.record).expect("write failed record");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jevx"))
+        .args(["hooks", "stats", "--input"])
+        .arg(&input)
+        .output()
+        .expect("run hooks stats");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Errors: 1"), "{stdout}");
+    assert!(stdout.contains("Decisions: {\"selected\":1}"), "{stdout}");
 }
 
 #[tokio::test]

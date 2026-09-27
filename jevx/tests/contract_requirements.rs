@@ -304,7 +304,7 @@ fn hook_stats_json_contract() {
         home.path(),
         &["hooks", "stats", "--input", input_arg, "--json"],
     );
-    assert_eq!(report["schemaVersion"], 6);
+    assert_eq!(report["schemaVersion"], 7);
     assert_has_keys(
         &report,
         &[
@@ -312,6 +312,7 @@ fn hook_stats_json_contract() {
             "recordCount",
             "eventCounts",
             "decisionCounts",
+            "errorCount",
             "dedupeHitCount",
             "latencyMsP50",
             "latencyMsP95",
@@ -319,6 +320,7 @@ fn hook_stats_json_contract() {
             "jevCost",
             "codexCost",
             "totalCost",
+            "fallbackExtraCost",
             "costStatusCounts",
         ],
     );

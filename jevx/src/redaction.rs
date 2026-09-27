@@ -13,12 +13,17 @@ const SENSITIVE_KEY_PARTS: [&str; 6] = [
 ];
 
 pub fn redact(value: &str) -> String {
+    redact_with_status(value).0
+}
+
+pub(crate) fn redact_with_status(value: &str) -> (String, bool) {
     let mut output = Vec::new();
     let mut inside_private_key = false;
     let mut redact_next_line = false;
     let mut redact_authorization_scheme = false;
     let mut continuation_indent = None;
     let mut continuation_started = false;
+    let mut redaction_applied = false;
 
     for line in value.lines() {
         if let Some(anchor_indent) = continuation_indent {
@@ -29,6 +34,7 @@ pub fn redact(value: &str) -> String {
 
             if leading_whitespace(line) > anchor_indent {
                 output.push("<redacted>".to_owned());
+                redaction_applied = true;
                 continuation_started = true;
                 continue;
             }
@@ -41,6 +47,22 @@ pub fn redact(value: &str) -> String {
             continuation_started = false;
         }
 
+        if inside_private_key {
+            output.push("<redacted>".to_owned());
+            redaction_applied = true;
+            inside_private_key = !is_private_key_end(line);
+            redact_next_line = false;
+            redact_authorization_scheme = false;
+            continue;
+        }
+        if is_private_key_begin(line) {
+            output.push("<redacted>".to_owned());
+            redaction_applied = true;
+            inside_private_key = !is_private_key_end(line);
+            redact_next_line = false;
+            redact_authorization_scheme = false;
+            continue;
+        }
         if redact_next_line {
             let mut tokens = line.split_whitespace();
             let Some(first) = tokens.next() else {
@@ -64,44 +86,33 @@ pub fn redact(value: &str) -> String {
             } else {
                 output.push("<redacted>".to_owned());
             }
+            redaction_applied = true;
             redact_next_line = false;
             redact_authorization_scheme = false;
             continue;
         }
-        if inside_private_key {
-            output.push("<redacted>".to_owned());
-            inside_private_key = !is_private_key_end(line);
-            redact_next_line = false;
-            redact_authorization_scheme = false;
-            continue;
-        }
-        if is_private_key_begin(line) {
-            output.push("<redacted>".to_owned());
-            inside_private_key = !is_private_key_end(line);
-            redact_next_line = false;
-            redact_authorization_scheme = false;
-            continue;
-        }
-        let (redacted, next_line, authorization_scheme, redact_continuation) =
+        let (redacted, next_line, authorization_scheme, redact_continuation, line_redacted) =
             redact_line(line, redact_next_line, redact_authorization_scheme);
         output.push(redacted);
         redact_next_line = next_line;
         redact_authorization_scheme = authorization_scheme;
         continuation_indent = redact_continuation.then(|| leading_whitespace(line));
+        redaction_applied |= line_redacted;
     }
     if value.ends_with('\n') {
         output.push(String::new());
     }
-    output.join("\n")
+    (output.join("\n"), redaction_applied)
 }
 
 fn redact_line(
     value: &str,
     mut redact_next: bool,
     mut redact_authorization_scheme: bool,
-) -> (String, bool, bool, bool) {
+) -> (String, bool, bool, bool, bool) {
     let mut output = Vec::new();
     let mut redact_continuation = false;
+    let mut redaction_applied = false;
 
     let mut tokens = value.split_whitespace().peekable();
     while let Some(token) = tokens.next() {
@@ -120,6 +131,7 @@ fn redact_line(
                 continue;
             }
             output.push("<redacted>".to_owned());
+            redaction_applied = true;
             redact_next = false;
             redact_authorization_scheme = false;
             continue;
@@ -127,6 +139,7 @@ fn redact_line(
 
         if let Some(has_value) = sensitive_assignment(token) {
             output.push("<redacted>".to_owned());
+            redaction_applied |= has_value;
             redact_next = !has_value || has_embedded_authorization_scheme(token);
             redact_authorization_scheme = is_authorization_key(token) && redact_next;
             redact_continuation = true;
@@ -144,6 +157,7 @@ fn redact_line(
             redact_next = true;
         } else if is_secret_token(token) {
             output.push("<redacted>".to_owned());
+            redaction_applied = true;
         } else {
             output.push(token.to_owned());
         }
@@ -154,6 +168,7 @@ fn redact_line(
         redact_next,
         redact_authorization_scheme,
         redact_continuation,
+        redaction_applied,
     )
 }
 
@@ -331,11 +346,23 @@ pub fn sha256_hex(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::redact_path;
+    use super::{redact, redact_path};
     use std::path::Path;
 
     #[test]
     fn redacted_path_preserves_parent_components() {
         assert!(redact_path(Path::new("private/../secret")).contains(".."));
+    }
+
+    #[test]
+    fn private_key_after_a_sensitive_label_redacts_the_entire_pem_block() {
+        let output = redact(
+            "secret:\n-----BEGIN PRIVATE KEY-----\nfixture-key-body\n-----END PRIVATE KEY-----\nnext: keep",
+        );
+
+        assert!(!output.contains("fixture-key-body"));
+        assert!(!output.contains("BEGIN PRIVATE KEY"));
+        assert!(!output.contains("END PRIVATE KEY"));
+        assert!(output.contains("next: keep"));
     }
 }

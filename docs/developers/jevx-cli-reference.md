@@ -545,7 +545,7 @@ cargo run --locked --manifest-path jevx/Cargo.toml -- \
 
 ### Hookの速度・費用・Token削減量を集計する
 
-hooks statsは保存済みHook recordから観測値だけを集計する。標準Hook payloadにusage/costがなければ、削減量・費用はnullまたはstatus countのままになる。
+hooks statsは保存済みHook recordから観測値だけを集計する。標準Hook payloadにusage/costがなければ、削減量・費用はnullまたはstatus countのままになる。通常表示にも`Decisions`と`Errors`を出すので、失敗が成功イベントに埋もれない。JSON stats schemaはv7で、`fallbackExtraCost`にCodexの追加費用を分けて示す。
 
 ~~~bash
 jevx hooks stats \
@@ -554,7 +554,7 @@ jevx hooks stats \
   --output /tmp/jevx-hook-stats.json
 ~~~
 
-JSONにはevent別件数、decision/error、UserPromptSubmitの全体およびdedupe hitのp50/p95、dedupe率、usage measured件数、before/after/saved Token、reduction rate、Jev/Codex/totalの費用合算とcost statusを含める。`latencyMsP50/P95`はUserPromptSubmitだけを対象にし、SessionStart/PreCompact/PostCompactの処理時間を混ぜない。費用が混在・欠落して安全に合算できない場合は金額をnullにする。
+JSONにはevent別件数、decision/error、UserPromptSubmitの全体およびdedupe hitのp50/p95、dedupe率、usage measured件数、before/after/saved Token、reduction rate、Jev/Codex/totalの費用合算、Codexの`fallbackExtraCost`とcost statusを含める。`latencyMsP50/P95`はUserPromptSubmitだけを対象にし、SessionStart/PreCompact/PostCompactの処理時間を混ぜない。費用が混在・欠落して安全に合算できない場合は金額をnullにする。
 
 ## Compactionの評価
 

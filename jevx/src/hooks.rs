@@ -16,6 +16,7 @@ use crate::storage::append_json_line;
 use crate::types::{CandidateDecision, Judge, SkillRecord, SuggestInput};
 
 pub const HOOK_SCHEMA_VERSION: u8 = 6;
+const HOOK_STATS_SCHEMA_VERSION: u8 = 7;
 const LEGACY_HOOK_SCHEMA_VERSION: u8 = 1;
 const OLDER_HOOK_SCHEMA_VERSION: u8 = 2;
 const PREVIOUS_HOOK_SCHEMA_VERSION: u8 = 3;
@@ -122,6 +123,47 @@ pub struct HookShadowRecord {
 pub struct HookShadowResult {
     pub response: HookResponse,
     pub record: HookShadowRecord,
+}
+
+#[doc(hidden)]
+pub struct DeferredHookShadowResult {
+    pub(crate) result: HookShadowResult,
+    completion: Option<PendingDedupeCompletion>,
+}
+
+struct PendingDedupeCompletion {
+    store: DedupeStore,
+    key_sha256: String,
+    decision: CandidateDecision,
+    selected_skill: Option<String>,
+}
+
+impl DeferredHookShadowResult {
+    pub fn result(&self) -> &HookShadowResult {
+        &self.result
+    }
+
+    pub fn finish_dedupe(&mut self, record_persisted: bool) -> Result<(), JevxError> {
+        let Some(completion) = self.completion.take() else {
+            return Ok(());
+        };
+        if record_persisted {
+            let result = completion.store.complete(
+                &completion.key_sha256,
+                completion.decision,
+                completion.selected_skill,
+            );
+            if let Err(error) = result {
+                // A transient persistence failure must not leave the owner claim
+                // blocking the same key until the lease expires.
+                let _ = completion.store.release(&completion.key_sha256);
+                return Err(error);
+            }
+            Ok(())
+        } else {
+            completion.store.release(&completion.key_sha256)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -232,7 +274,7 @@ impl TokenSavings {
         }
     }
 
-    fn validate(&self, context: &str) -> Result<(), JevxError> {
+    pub(crate) fn validate(&self, context: &str) -> Result<(), JevxError> {
         if !safe_identifier(&self.source, 32) {
             return Err(JevxError::InvalidInput(format!(
                 "{context}: tokenSavings source is invalid"
@@ -403,7 +445,7 @@ impl<'de> Deserialize<'de> for TokenUsageSnapshot {
 }
 
 impl TokenUsageSnapshot {
-    fn validate(&self, context: &str) -> Result<(), JevxError> {
+    pub(crate) fn validate(&self, context: &str) -> Result<(), JevxError> {
         if self.cached_input_tokens > self.input_tokens {
             return Err(JevxError::InvalidInput(format!(
                 "{context}: cachedInputTokens must not exceed inputTokens"
@@ -510,6 +552,8 @@ pub struct HookStatsReport {
     pub codex_cost: Option<f64>,
     #[serde(rename = "totalCost")]
     pub total_cost: Option<f64>,
+    #[serde(rename = "fallbackExtraCost")]
+    pub fallback_extra_cost: Option<f64>,
     #[serde(rename = "costStatusCounts")]
     pub cost_status_counts: BTreeMap<String, usize>,
 }
@@ -746,6 +790,29 @@ pub async fn run_shadow(
     config: &Config,
     judge: Option<&dyn Judge>,
 ) -> Result<HookShadowResult, JevxError> {
+    let outcome = run_shadow_inner(input, expected_event, skills, config, judge, false).await?;
+    Ok(outcome.result)
+}
+
+#[doc(hidden)]
+pub async fn run_shadow_deferred(
+    input: &str,
+    expected_event: Option<&str>,
+    skills: &[SkillRecord],
+    config: &Config,
+    judge: Option<&dyn Judge>,
+) -> Result<DeferredHookShadowResult, JevxError> {
+    run_shadow_inner(input, expected_event, skills, config, judge, true).await
+}
+
+async fn run_shadow_inner(
+    input: &str,
+    expected_event: Option<&str>,
+    skills: &[SkillRecord],
+    config: &Config,
+    judge: Option<&dyn Judge>,
+    defer_dedupe_completion: bool,
+) -> Result<DeferredHookShadowResult, JevxError> {
     let started = Instant::now();
     let payload: Value = serde_json::from_str(input)?;
     let event = hook_event_name(&payload)
@@ -834,6 +901,7 @@ pub async fn run_shadow(
         record.cost.jev = CostEstimate::actual(0.0, None, None);
     }
 
+    let mut pending_completion = None;
     if event == "UserPromptSubmit" {
         let cwd = payload
             .get("cwd")
@@ -857,7 +925,10 @@ pub async fn run_shadow(
                     record.cost.jev = CostEstimate::actual(0.0, None, None);
                     apply_provider_cost(&mut record);
                     record.elapsed_ms = elapsed_ms(started);
-                    return Ok(shadow_result(record));
+                    return Ok(DeferredHookShadowResult {
+                        result: shadow_result(record),
+                        completion: None,
+                    });
                 }
                 Ok(DedupeAcquire::Owner(remaining)) => {
                     if remaining.is_zero() {
@@ -873,7 +944,10 @@ pub async fn run_shadow(
                         );
                         apply_provider_cost(&mut record);
                         record.elapsed_ms = elapsed_ms(started);
-                        return Ok(shadow_result(record));
+                        return Ok(DeferredHookShadowResult {
+                            result: shadow_result(record),
+                            completion: None,
+                        });
                     }
                     decision_config.timeout = remaining;
                 }
@@ -882,14 +956,20 @@ pub async fn run_shadow(
                     record.dedupe_error = Some("wait_timeout".to_owned());
                     apply_provider_cost(&mut record);
                     record.elapsed_ms = elapsed_ms(started);
-                    return Ok(shadow_result(record));
+                    return Ok(DeferredHookShadowResult {
+                        result: shadow_result(record),
+                        completion: None,
+                    });
                 }
                 Ok(DedupeAcquire::Saturated) => {
                     record.cost.jev = CostEstimate::actual(0.0, None, None);
                     record.dedupe_error = Some("capacity_exceeded".to_owned());
                     apply_provider_cost(&mut record);
                     record.elapsed_ms = elapsed_ms(started);
-                    return Ok(shadow_result(record));
+                    return Ok(DeferredHookShadowResult {
+                        result: shadow_result(record),
+                        completion: None,
+                    });
                 }
                 Err(_) => dedupe_error = Some("claim_error"),
             }
@@ -906,7 +986,10 @@ pub async fn run_shadow(
             record.dedupe_error = dedupe_error.map(str::to_owned);
             apply_provider_cost(&mut record);
             record.elapsed_ms = elapsed_ms(started);
-            return Ok(shadow_result(record));
+            return Ok(DeferredHookShadowResult {
+                result: shadow_result(record),
+                completion: None,
+            });
         };
         let Some(judge) = judge else {
             record.cost.jev = CostEstimate::actual(0.0, None, None);
@@ -920,7 +1003,10 @@ pub async fn run_shadow(
             }
             apply_provider_cost(&mut record);
             record.elapsed_ms = elapsed_ms(started);
-            return Ok(shadow_result(record));
+            return Ok(DeferredHookShadowResult {
+                result: shadow_result(record),
+                completion: None,
+            });
         };
         let input = SuggestInput::new(prompt.to_owned(), cwd);
         match suggest_with_judge(input, skills.to_vec(), &decision_config, judge).await {
@@ -940,10 +1026,19 @@ pub async fn run_shadow(
                 }
                 record.dedupe_error = dedupe_error.map(str::to_owned);
                 if let (Some(key), Some(store)) = (dedupe_key.as_deref(), dedupe_store.as_ref()) {
-                    if result.metrics.fallback != Some(true)
+                    let valid_none = decision == CandidateDecision::None
+                        && result.reason_code.as_deref() == Some("none_selected");
+                    if (result.metrics.fallback != Some(true) || valid_none)
                         && !matches!(decision, CandidateDecision::Error)
                     {
-                        if store
+                        if defer_dedupe_completion {
+                            pending_completion = Some(PendingDedupeCompletion {
+                                store: store.clone(),
+                                key_sha256: key.to_owned(),
+                                decision,
+                                selected_skill: record.selected_skill.clone(),
+                            });
+                        } else if store
                             .complete(key, decision, record.selected_skill.clone())
                             .is_err()
                             && record.dedupe_error.is_none()
@@ -969,7 +1064,10 @@ pub async fn run_shadow(
     }
     apply_provider_cost(&mut record);
     record.elapsed_ms = elapsed_ms(started);
-    Ok(shadow_result(record))
+    Ok(DeferredHookShadowResult {
+        result: shadow_result(record),
+        completion: pending_completion,
+    })
 }
 
 async fn wait_for_dedupe_claim(
@@ -1282,6 +1380,14 @@ pub fn append_shadow_record(path: &Path, record: &HookShadowRecord) -> Result<()
     append_json_line(path, record)
 }
 
+pub(crate) fn append_shadow_record_at(
+    directory: &std::fs::File,
+    record: &HookShadowRecord,
+) -> Result<(), JevxError> {
+    validate_hook_record(record, "hook record")?;
+    crate::storage::append_json_line_at(directory, "hook-records.jsonl", record)
+}
+
 pub fn load_hook_records(path: &Path) -> Result<Vec<HookShadowRecord>, JevxError> {
     let content = fs::read_to_string(path)?;
     let mut records = Vec::new();
@@ -1398,6 +1504,7 @@ pub fn analyze_hook_stats(records: &[HookShadowRecord]) -> Result<HookStatsRepor
     let mut jev_cost = CostAccumulator::default();
     let mut codex_cost = CostAccumulator::default();
     let mut total_cost_value = CostAccumulator::default();
+    let mut fallback_extra_cost = CostAccumulator::default();
 
     for record in records {
         validate_hook_record(record, "hook record")?;
@@ -1437,6 +1544,13 @@ pub fn analyze_hook_stats(records: &[HookShadowRecord]) -> Result<HookStatsRepor
         jev_cost.add(&record.cost.jev);
         codex_cost.add(&record.cost.codex);
         total_cost_value.add(&record.cost.total);
+        if let Some(estimate) = record
+            .codex
+            .as_ref()
+            .and_then(|usage| usage.additional_cost.as_ref())
+        {
+            fallback_extra_cost.add(estimate);
+        }
         for (name, estimate) in [
             ("jev", &record.cost.jev),
             ("codex", &record.cost.codex),
@@ -1477,7 +1591,7 @@ pub fn analyze_hook_stats(records: &[HookShadowRecord]) -> Result<HookStatsRepor
     };
 
     Ok(HookStatsReport {
-        schema_version: HOOK_SCHEMA_VERSION,
+        schema_version: HOOK_STATS_SCHEMA_VERSION,
         mode: "live".to_owned(),
         record_count: records.len(),
         event_counts,
@@ -1500,6 +1614,7 @@ pub fn analyze_hook_stats(records: &[HookShadowRecord]) -> Result<HookStatsRepor
         jev_cost: jev_cost.amount(),
         codex_cost: codex_cost.amount(),
         total_cost: total_cost_value.amount(),
+        fallback_extra_cost: fallback_extra_cost.amount(),
         cost_status_counts,
     })
 }
@@ -1697,6 +1812,13 @@ fn validate_hook_record(record: &HookShadowRecord, context: &str) -> Result<(), 
     ) {
         return Err(JevxError::InvalidInput(format!(
             "{context}: unsupported hook event"
+        )));
+    }
+    if record.dedupe_hit
+        && (record.hook_event_name != "UserPromptSubmit" || record.dedupe_key_sha256.is_none())
+    {
+        return Err(JevxError::InvalidInput(format!(
+            "{context}: dedupeHit requires a keyed UserPromptSubmit event"
         )));
     }
     if !record.cost.jev.is_valid() || !record.cost.codex.is_valid() || !record.cost.total.is_valid()
@@ -2291,6 +2413,17 @@ fn error_code(error: &JevxError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{JudgeRequest, JudgeResponse};
+    use async_trait::async_trait;
+
+    struct CacheTestJudge;
+
+    #[async_trait]
+    impl Judge for CacheTestJudge {
+        async fn evaluate(&self, _request: JudgeRequest) -> Result<JudgeResponse, JevxError> {
+            Ok(JudgeResponse::selected("pdf", 0.95, 12, Some((31, 7))))
+        }
+    }
 
     fn record(event: &str) -> HookShadowRecord {
         HookShadowRecord {
@@ -2789,6 +2922,113 @@ mod tests {
     }
 
     #[test]
+    fn hook_stats_expose_fallback_extra_cost_and_a_new_report_schema() {
+        let mut value = record("PostCompact");
+        value.codex = Some(CodexUsage {
+            additional_cost: Some(CostEstimate::available(
+                0.07,
+                Some("USD".to_owned()),
+                Some("codex-fixture-1".to_owned()),
+            )),
+            ..CodexUsage::default()
+        });
+        let report = analyze_hook_stats(&[value]).expect("hook stats");
+        let json = serde_json::to_value(report).expect("report json");
+
+        assert_eq!(json["schemaVersion"], 7);
+        assert_eq!(json["fallbackExtraCost"], 0.07);
+    }
+
+    #[test]
+    fn hook_record_rejects_dedupe_hits_outside_keyed_user_prompt_events() {
+        let mut wrong_event = record("SessionStart");
+        wrong_event.dedupe_hit = true;
+        wrong_event.dedupe_key_sha256 = Some("key-hash".to_owned());
+        assert!(validate_hook_record(&wrong_event, "test").is_err());
+
+        let mut missing_key = record("UserPromptSubmit");
+        missing_key.dedupe_hit = true;
+        assert!(validate_hook_record(&missing_key, "test").is_err());
+    }
+
+    #[tokio::test]
+    async fn deferred_dedupe_completion_releases_owner_when_record_persistence_fails() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let config = Config::for_test(root.path().join("data"));
+        let skill = SkillRecord::new(
+            "pdf".to_owned(),
+            "PDFを扱う".to_owned(),
+            root.path().join("pdf/SKILL.md"),
+            "test".to_owned(),
+        );
+        let payload = serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "select pdf",
+            "cwd": root.path(),
+            "session_id": "session",
+            "turn_id": "turn"
+        })
+        .to_string();
+        let mut outcome =
+            run_shadow_deferred(&payload, None, &[skill], &config, Some(&CacheTestJudge))
+                .await
+                .expect("deferred hook result");
+        let key = outcome
+            .result
+            .record
+            .dedupe_key_sha256
+            .as_deref()
+            .expect("dedupe key")
+            .to_owned();
+        let store = DedupeStore::with_pending_ttl(
+            config.telemetry_path.parent().expect("data home"),
+            config.timeout,
+        );
+        let output_directory = root.path().join("record-output");
+        std::fs::create_dir(&output_directory).expect("unwritable output target");
+        assert!(append_shadow_record(&output_directory, &outcome.result.record).is_err());
+        outcome
+            .finish_dedupe(false)
+            .expect("release failed persistence claim");
+
+        assert!(store.lookup(&key).expect("lookup").is_none());
+        assert_eq!(
+            store.claim(&key).expect("reclaim owner"),
+            DedupeClaim::Owner
+        );
+    }
+
+    #[test]
+    fn deferred_dedupe_completion_reports_persistence_failure() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let data_home = root.path().join("data");
+        let store = DedupeStore::new(&data_home);
+        let key = "completion-failure";
+        assert_eq!(store.claim(key).expect("claim owner"), DedupeClaim::Owner);
+        let state_path = data_home.join(crate::hook_dedupe::DEDUPE_FILE_NAME);
+        std::fs::remove_file(&state_path).expect("remove state file");
+        std::fs::create_dir(&state_path).expect("block state path");
+
+        let mut deferred = DeferredHookShadowResult {
+            result: HookShadowResult {
+                response: HookResponse {
+                    continue_running: true,
+                    suppress_output: true,
+                },
+                record: record("UserPromptSubmit"),
+            },
+            completion: Some(PendingDedupeCompletion {
+                store,
+                key_sha256: key.to_owned(),
+                decision: CandidateDecision::Selected,
+                selected_skill: Some("pdf".to_owned()),
+            }),
+        };
+
+        assert!(deferred.finish_dedupe(true).is_err());
+    }
+
+    #[test]
     fn current_hook_records_reject_total_tokens_above_known_components() {
         let mut value = record("PreCompact");
         value.pre_compaction_usage = Some(TokenUsageSnapshot {
@@ -2996,6 +3236,51 @@ mod tests {
             }
             other => panic!("expected owner, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn pending_dedupe_claim_times_out_without_calling_jev() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut config = Config::for_test(root.path().join("data"));
+        config.timeout = Duration::from_millis(30);
+        let skill = SkillRecord::new(
+            "pdf".to_owned(),
+            "PDFを扱う".to_owned(),
+            root.path().join("pdf/SKILL.md"),
+            "test".to_owned(),
+        );
+        let payload = serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "select pdf",
+            "cwd": root.path(),
+            "session_id": "session",
+            "turn_id": "turn"
+        })
+        .to_string();
+
+        let first =
+            run_shadow_deferred(&payload, None, std::slice::from_ref(&skill), &config, None)
+                .await
+                .expect("initial deferred result");
+        let key = first
+            .result
+            .record
+            .dedupe_key_sha256
+            .as_deref()
+            .expect("dedupe key");
+        let data_home = config.telemetry_path.parent().expect("data home");
+        let owner = DedupeStore::with_pending_ttl(data_home, Duration::from_secs(60));
+        assert_eq!(owner.claim(key).expect("claim owner"), DedupeClaim::Owner);
+
+        let timed_out = run_shadow_deferred(&payload, None, &[skill], &config, None)
+            .await
+            .expect("safe timeout result");
+
+        assert_eq!(
+            timed_out.result.record.dedupe_error.as_deref(),
+            Some("wait_timeout")
+        );
+        assert!(timed_out.completion.is_none());
     }
 
     #[tokio::test]
